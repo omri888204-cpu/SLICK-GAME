@@ -1,0 +1,19 @@
+# slick-game — Netlify build & SPA routing
+# Docs: https://docs.netlify.com/configure-builds/file-based-configuration/
+#
+# Important: In Netlify UI → Site settings → Build & deploy → Build settings,
+# leave "Publish directory" EMPTY or set exactly to `dist` so it matches this file.
+# A wrong publish path (e.g. `.` or `public`) causes missing `index.html` and 404s.
+
+[build]
+  command = "npm ci && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# SPA: unknown paths → index.html (required for client-only Vite apps)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

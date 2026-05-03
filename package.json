@@ -1,0 +1,38 @@
+{
+  "name": "slick-game",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SLICK — vertical platformer (PixiJS v8). Web deploy via dist/ + netlify.toml / vercel.json.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "web:build": "npm run build",
+    "web:preview": "vite preview --host",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "preview": "vite preview --host",
+    "typecheck": "tsc --noEmit",
+    "android:add": "cap add android",
+    "android:sync": "vite build && cap sync android",
+    "android:open": "cap open android",
+    "android:apk": "npm run android:sync && cd android && gradlew.bat assembleDebug",
+    "ios:add": "cap add ios",
+    "ios:sync": "vite build && cap sync ios",
+    "ios:open": "cap open ios"
+  },
+  "dependencies": {
+    "@pixi/sound": "^6.0.1",
+    "gsap": "^3.15.0",
+    "pixi-filters": "^6.1.5",
+    "pixi.js": "^8.18.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.3.0",
+    "prettier": "^3.8.3",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.59.1",
+    "vite": "^6.0.7"
+  }
+}
