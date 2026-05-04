@@ -1,5 +1,7 @@
 # slick-game — שיתוף WEB (SLICK)
 
+**אתר חי:** [https://slick-game.netlify.app](https://slick-game.netlify.app)
+
 ## חיבור `dist` ל‑Netlify (הכי ישיר)
 
 1. **בנייה מקומית** (בתיקיית הפרויקט):
