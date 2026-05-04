@@ -9,6 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "web:build": "npm run build",
     "web:preview": "vite preview --host",
+    "deploy:netlify": "npm run build && npx --yes netlify-cli deploy --dir=dist --prod",
+    "deploy:netlify:draft": "npm run build && npx --yes netlify-cli deploy --dir=dist",
     "lint": "eslint .",
     "format": "prettier --write .",
     "preview": "vite preview --host",
@@ -24,6 +26,7 @@
   "dependencies": {
     "@pixi/sound": "^6.0.1",
     "gsap": "^3.15.0",
+    "pixi-dragonbones-runtime": "^8.0.3",
     "pixi-filters": "^6.1.5",
     "pixi.js": "^8.18.1"
   },

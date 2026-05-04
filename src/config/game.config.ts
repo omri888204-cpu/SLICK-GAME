@@ -146,6 +146,36 @@ export const STAIRS = {
   compactPlatformArtScale: 0.72,
 };
 
+/** Pickups: placement on platform tops, motion, collect VFX. */
+export const COLLECTIBLES = {
+  coinPoints: 10,
+  diamondPoints: 50,
+  diamondSpawnChance: 0.24,
+  /** One pickup per platform slot; capped by stair pool size. */
+  maxActive: 16,
+  coinRadius: 15,
+  diamondRadius: 17,
+  /** Pixels above platform top surface (negative Y = toward sky in spawn math: y = platform.y - this). */
+  aboveSurfacePx: 8,
+  /** Keep pickups inset from platform left/right edges. */
+  platformEdgeMarginPx: 24,
+  /** Fake “coin spin”: horizontal scale oscillates (Hz). */
+  coinSpinHz: 0.5,
+  coinMinScaleX: 0.2,
+  /** Idle bob amplitude (px), visual only. */
+  bobAmplitudePx: 2.6,
+  bobHz: 2.2,
+  diamondPulseHz: 2.6,
+  diamondPulseScale: 0.12,
+  diamondAlphaMin: 0.68,
+  diamondAlphaMax: 1,
+  collectDurationSec: 0.4,
+  collectRisePx: 80,
+  /** Soft glow rings (px beyond main shape). */
+  glowOuterPx: 6,
+  glowMidPx: 3,
+};
+
 /** Hyper scoreboard: punch, bloom, shake. */
 export const SCORE_UI = {
   shakeDurationSec: 0.22,

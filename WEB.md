@@ -1,5 +1,44 @@
 # slick-game — שיתוף WEB (SLICK)
 
+## חיבור `dist` ל‑Netlify (הכי ישיר)
+
+1. **בנייה מקומית** (בתיקיית הפרויקט):
+
+   ```bash
+   npm run build
+   ```
+
+2. פתח [app.netlify.com](https://app.netlify.com) והתחבר.
+
+3. **Sites → Add new site → Deploy manually** (לפעמים נקרא "Deploy with drag and drop").
+
+4. **גרור לתוך החלון את כל תיקיית `dist`** (לא את `src` ולא את שורש הפרויקט).  
+   הנתיב אצלך: `C:\Users\omri8\Projects\sky-climber\dist`
+
+5. אחרי שהעלאה מסתיימת תקבל כתובת `https://random-name.netlify.app`. אפשר לשנות ל־**slick-game** ב־**Site configuration → Domain management** (אם השם פנוי).
+
+**אם מחובר Git לריפו:** אין צורך לגרור `dist` — Netlify מריץ `npm ci && npm run build` ומפרסם את `dist` לפי `netlify.toml`.
+
+### פריסה מהטרמינל (Netlify CLI)
+
+פעם ראשונה:
+
+```bash
+npx netlify-cli login
+cd C:\Users\omri8\Projects\sky-climber
+npx netlify-cli init
+```
+
+אחר כך:
+
+```bash
+npm run deploy:netlify
+```
+
+(`deploy:netlify:draft` מעלה ל־draft בלי production.)
+
+---
+
 המשחק בנוי כאתר סטטי. אחרי `npm run build` נוצרת תיקיית **`dist/`** — אותה מעלים לאחסון.
 
 ## אופציה 1: Netlify (פשוט)

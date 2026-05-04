@@ -5,10 +5,12 @@ import {
   Graphics,
   Sprite,
   Text,
+  TextStyle,
   Texture,
   type Ticker,
 } from 'pixi.js';
-import { COMBO, GRAPPLE, SCORE_UI, STAIRS } from '../../config/game.config';
+import { PixiFactory, type PixiArmatureDisplay } from 'pixi-dragonbones-runtime';
+import { COMBO, COLLECTIBLES, GRAPPLE, SCORE_UI, STAIRS } from '../../config/game.config';
 import { HyperScoreboard } from '../ui/HyperScoreboard';
 import { Player } from '../entities/Player';
 import { InputManager } from '../systems/InputManager';
@@ -33,9 +35,145 @@ type BeastParticle = {
   age: number;
 };
 
+type DiamondShineSpark = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  age: number;
+};
+
+type CollectibleKind = 'coin' | 'diamond';
+
+type Collectible = {
+  kind: CollectibleKind;
+  /** Stable index into `this.platforms` — world position derived from platform top each frame. */
+  platformIdx: number;
+  /** 0..1 along usable width (between edge margins). */
+  along: number;
+  r: number;
+  phase: 'active' | 'collecting';
+  /** Normalized collect tween 0..1. */
+  collectT: number;
+  collectStartX: number;
+  collectStartY: number;
+};
+
+type SfxId =
+  | 'tongue_shoot'
+  | 'tongue_hit'
+  | 'collect_coin'
+  | 'collect_diamond'
+  | 'player_land';
+
+/** Remote clips when `public/audio/<name>.*` is missing (see `SFX_LOCAL`). */
+const SFX_REMOTE: Record<SfxId, string> = {
+  tongue_shoot:
+    'https://assets.mixkit.co/active_storage/sfx/3169/3169-preview.mp3',
+  tongue_hit:
+    'https://assets.mixkit.co/active_storage/sfx/2180/2180-preview.mp3',
+  collect_coin:
+    'https://labs.phaser.io/assets/audio/SoundEffects/p-ping.mp3',
+  collect_diamond: 'https://labs.phaser.io/assets/audio/SoundEffects/pickup.wav',
+  player_land:
+    'https://assets.mixkit.co/active_storage/sfx/2070/2070-preview.mp3',
+};
+
+/** Game binaries (music, DragonBones, diamond SFX) live in `public/assets/`. */
+const GAME_ASSETS = `${import.meta.env.BASE_URL}assets`;
+
+const SFX_LOCAL: Record<SfxId, string> = {
+  tongue_shoot: `${import.meta.env.BASE_URL}audio/tongue_shoot.mp3`,
+  tongue_hit: `${import.meta.env.BASE_URL}audio/tongue_hit.mp3`,
+  collect_coin: `${import.meta.env.BASE_URL}audio/collect_coin.mp3`,
+  collect_diamond: `${GAME_ASSETS}/diamond_collect.mp3`,
+  player_land: `${import.meta.env.BASE_URL}audio/player_land.mp3`,
+};
+
+/** DragonBones export: `*_ske.json`, `*_tex.json`, `*_tex.png` in `public/assets/`. */
+const TONGUE_DB_SKE = `${GAME_ASSETS}/tongue_ske.json`;
+const TONGUE_DB_TEX_JSON = `${GAME_ASSETS}/tongue_tex.json`;
+const TONGUE_DB_TEX_PNG = `${GAME_ASSETS}/tongue_tex.png`;
+/** Rest length of the rig in data space; tune if tongue appears too short/long. */
+const TONGUE_DB_REST_LENGTH_PX = 118;
+const TONGUE_DB_BASE_SCALE = 1;
+
+/**
+ * HTMLAudio-based SFX with pooled `cloneNode` playback and local → remote fallback URLs.
+ */
+class PlaySceneSfx {
+  private readonly prototypes = new Map<SfxId, HTMLAudioElement>();
+  private master = 0.42;
+
+  async load(): Promise<void> {
+    await Promise.all(
+      (Object.keys(SFX_REMOTE) as SfxId[]).map((id) => this.loadOne(id)),
+    );
+  }
+
+  private loadOne(id: SfxId): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.prototypes.set(id, audio);
+        resolve();
+      };
+
+      const audio = new Audio();
+      audio.preload = 'auto';
+
+      const useRemote = (): void => {
+        audio.removeEventListener('error', onLocalError);
+        audio.src = SFX_REMOTE[id];
+        audio.load();
+        audio.addEventListener('canplaythrough', () => finish(), { once: true });
+        audio.addEventListener('error', () => finish(), { once: true });
+      };
+
+      const onLocalError = (): void => {
+        useRemote();
+      };
+
+      audio.addEventListener('canplaythrough', () => finish(), { once: true });
+      audio.addEventListener('error', onLocalError, { once: true });
+      audio.src = SFX_LOCAL[id];
+      audio.load();
+    });
+  }
+
+  play(id: SfxId, volume = 1): void {
+    const template = this.prototypes.get(id);
+    if (!template?.src) {
+      return;
+    }
+    const clip = template.cloneNode(true) as HTMLAudioElement;
+    clip.volume = Math.max(0, Math.min(1, volume * this.master));
+    void clip.play().catch(() => {
+      /* autoplay policy / decode */
+    });
+  }
+
+  dispose(): void {
+    for (const a of this.prototypes.values()) {
+      a.pause();
+      a.removeAttribute('src');
+      a.load();
+    }
+    this.prototypes.clear();
+  }
+}
+
 const CHECKER_BACKGROUND_COLOR_SPREAD = 10;
 /** Pixels at image edges this dark (and connected) are cleared — removes black letterbox around Photoroom exports. */
 const DARK_BG_MAX_CHANNEL = 42;
+
+const COLLECTIBLE_HUD_W = 184;
+const COLLECTIBLE_HUD_H = 78;
 
 export class PlayScene implements Scene {
   readonly name = 'play';
@@ -50,10 +188,27 @@ export class PlayScene implements Scene {
   private platformSpriteLayer = new Container();
   private platformLayer = new Graphics();
   private rippleLayer = new Graphics();
+  private collectiblesGfx = new Graphics();
   private gameShake = new Container();
-  private tongueLayer = new Graphics();
+  private tongueRoot = new Container();
+  private tongueVector = new Graphics();
+  private tongueArmature: PixiArmatureDisplay | null = null;
+  private tongueDbReady = false;
   private player = new Player();
   private scoreboard?: HyperScoreboard;
+  private collectibleHudRoot = new Container();
+  private collectibleHudBg = new Graphics();
+  private collectibleHudGoldText?: Text;
+  private collectibleHudDiamondText?: Text;
+  private collectibles: Collectible[] = [];
+  private goldCount = 0;
+  private diamondCount = 0;
+  /** Displayed counts (lerp toward real counts for smooth HUD). */
+  private hudGoldShown = 0;
+  private hudDiamondShown = 0;
+  /** 1 = full collectible HUD punch, decays each frame. */
+  private collectibleHudBump = 0;
+  private sfx = new PlaySceneSfx();
   private platformTexture?: Texture;
   private platformTextureSlime?: Texture;
   private platformTextureVolcano?: Texture;
@@ -79,17 +234,19 @@ export class PlayScene implements Scene {
   private runTime = 0;
   private comboPopups: ComboPopup[] = [];
   private beastParticles: BeastParticle[] = [];
+  private diamondShineSparks: DiamondShineSpark[] = [];
   private beastParticleSpawnAcc = 0;
   private shakeTime = 0;
   private shakeOffsetX = 0;
   private shakeOffsetY = 0;
+  private bgm?: HTMLAudioElement;
 
   async init(app: Application): Promise<void> {
     this.app = app;
     this.width = app.screen.width;
     this.height = app.screen.height;
 
-    await Promise.all([this.loadPlatformSprite(), this.player.load()]);
+    await Promise.all([this.loadPlatformSprite(), this.player.load(), this.sfx.load()]);
 
     app.stage.addChild(this.gameShake);
     this.gameShake.addChild(this.background);
@@ -99,18 +256,26 @@ export class PlayScene implements Scene {
       this.platformSpriteLayer,
       this.platformLayer,
       this.rippleLayer,
-      this.tongueLayer,
+      this.collectiblesGfx,
+      this.tongueRoot,
       this.fxLayer,
       this.player,
     );
+    this.tongueRoot.addChild(this.tongueVector);
 
     this.scoreboard = new HyperScoreboard();
     this.scoreboard.position.set(10, 6);
     this.scoreboard.onResize(this.width);
     app.stage.addChild(this.scoreboard);
 
+    this.setupCollectibleHud(app);
+    this.layoutCollectibleHud();
+
     this.input = new InputManager(app);
     this.input.attach();
+
+    await this.tryLoadTongueArmature();
+    this.startBackgroundMusic();
 
     this.resetRun();
     this.drawStaticWorld();
@@ -127,6 +292,7 @@ export class PlayScene implements Scene {
       this.grapple.extendT += dt;
       if (this.grapple.extendT >= GRAPPLE.extendSec) {
         this.grapple.phase = 'pull';
+        this.sfx.play('tongue_hit', 0.95);
       }
     }
 
@@ -204,6 +370,7 @@ export class PlayScene implements Scene {
       );
     }
 
+    const wasGrounded = this.player.body.grounded;
     const result = this.physics.update(
       this.player.body,
       this.platforms,
@@ -213,6 +380,10 @@ export class PlayScene implements Scene {
     );
     if (result.landedPlatform) {
       this.player.onLand(result.impactVy);
+      if (!wasGrounded) {
+        const landVol = Math.min(1, result.impactVy / 520);
+        this.sfx.play('player_land', 0.35 + landVol * 0.65);
+      }
       const p = result.landedPlatform;
       const landGain = Math.max(0, p.stairId - this.lastScoredStairId);
       if (landGain > 0) {
@@ -235,6 +406,9 @@ export class PlayScene implements Scene {
     this.updateRipples(dt);
     this.updateBeastParticles(dt);
     this.updateComboPopups(dt);
+    this.updateDiamondShineSparks(dt);
+    this.updateCollectibles(dt);
+    this.updateCollectibleHudSmooth(dt);
     const mult = this.getComboMultiplier();
     this.player.update(
       dt,
@@ -260,6 +434,7 @@ export class PlayScene implements Scene {
       this.scoreboard.onResize(width);
       this.scoreboard.position.set(10, 6);
     }
+    this.layoutCollectibleHud();
   }
 
   destroy(): void {
@@ -267,6 +442,12 @@ export class PlayScene implements Scene {
     this.clearPlatformSprites();
     this.clearFloatingComboUi();
     this.scoreboard?.destroy();
+    this.collectibleHudRoot.destroy({ children: true });
+    this.sfx.dispose();
+    this.stopBackgroundMusic();
+    this.tongueArmature?.dispose(true);
+    this.tongueArmature = null;
+    this.tongueDbReady = false;
     this.gameShake.destroy({ children: true });
   }
 
@@ -283,6 +464,7 @@ export class PlayScene implements Scene {
           extendT: 0,
           hookStairId: hit.platform.stairId,
         };
+        this.sfx.play('tongue_shoot', 0.88);
       }
     }
 
@@ -385,6 +567,9 @@ export class PlayScene implements Scene {
     this.lastScoredStairId = -1;
     this.cameraY = 0;
     this.highestY = 0;
+    this.goldCount = 0;
+    this.diamondCount = 0;
+    this.collectibles = [];
     this.comboChain = 0;
     this.lastChainTime = -1e9;
     this.beastParticles = [];
@@ -392,9 +577,16 @@ export class PlayScene implements Scene {
     this.shakeTime = 0;
     this.shakeOffsetX = 0;
     this.shakeOffsetY = 0;
+    this.diamondShineSparks = [];
     this.createPlatforms();
+    this.spawnCollectibleField();
     this.resetPlayer();
     this.scoreboard?.reset();
+    this.hudGoldShown = this.goldCount;
+    this.hudDiamondShown = this.diamondCount;
+    this.collectibleHudBump = 0;
+    this.collectibleHudRoot.scale.set(1);
+    this.refreshCollectibleHudText();
   }
 
   private checkFallGameOver(): void {
@@ -610,6 +802,127 @@ export class PlayScene implements Scene {
     this.comboPopups = [];
   }
 
+  private startBackgroundMusic(): void {
+    this.stopBackgroundMusic();
+    const bgm = new Audio(`${GAME_ASSETS}/music.mp3`);
+    bgm.loop = true;
+    bgm.volume = 0.2;
+    this.bgm = bgm;
+    void bgm.play().catch(() => {
+      /* autoplay: may need user gesture */
+    });
+  }
+
+  private stopBackgroundMusic(): void {
+    if (this.bgm) {
+      this.bgm.pause();
+      this.bgm.removeAttribute('src');
+      this.bgm.load();
+    }
+    this.bgm = undefined;
+  }
+
+  private async tryLoadTongueArmature(): Promise<void> {
+    this.tongueDbReady = false;
+    this.tongueArmature?.dispose(true);
+    this.tongueArmature = null;
+    try {
+      const [skeRes, texJsonRes] = await Promise.all([
+        fetch(TONGUE_DB_SKE),
+        fetch(TONGUE_DB_TEX_JSON),
+      ]);
+      if (!skeRes.ok || !texJsonRes.ok) {
+        return;
+      }
+      const ske = (await skeRes.json()) as { armature?: Array<{ name?: string }> };
+      const texJson = await texJsonRes.json();
+      const tex = await Assets.load<Texture>(TONGUE_DB_TEX_PNG);
+      const factory = PixiFactory.factory;
+      factory.parseDragonBonesData(ske, 'tongue');
+      factory.parseTextureAtlasData(texJson, tex, 'tongue');
+      const armName = ske.armature?.[0]?.name ?? 'Armature';
+      const display = factory.buildArmatureDisplay(armName, 'tongue');
+      if (!display) {
+        return;
+      }
+      display.eventMode = 'none';
+      display.visible = false;
+      display.animation.play(null, 0);
+      this.tongueRoot.addChild(display);
+      this.tongueArmature = display;
+      this.tongueDbReady = true;
+    } catch {
+      this.tongueDbReady = false;
+    }
+  }
+
+  private syncTongueArmatureToGrapple(
+    mouth: { x: number; y: number },
+    tip: { x: number; y: number },
+    beastMode: boolean,
+  ): void {
+    const arm = this.tongueArmature;
+    if (!arm || !this.tongueDbReady) {
+      return;
+    }
+    const dx = tip.x - mouth.x;
+    const dy = tip.y - mouth.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 4) {
+      arm.visible = false;
+      return;
+    }
+    arm.visible = true;
+    arm.position.set(mouth.x, mouth.y);
+    arm.rotation = Math.atan2(dy, dx) - Math.PI / 2;
+    const stretch = (len / TONGUE_DB_REST_LENGTH_PX) * TONGUE_DB_BASE_SCALE;
+    arm.scale.set(stretch);
+    arm.tint = beastMode ? COMBO.beastTongueFill : 0xffffff;
+  }
+
+  private spawnDiamondCollectShine(x: number, y: number): void {
+    const n = 16;
+    for (let i = 0; i < n; i += 1) {
+      const a = (i / n) * Math.PI * 2 + (Math.random() - 0.5) * 0.55;
+      const sp = 160 + Math.random() * 140;
+      this.diamondShineSparks.push({
+        x,
+        y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        life: 0.34 + Math.random() * 0.14,
+        age: 0,
+      });
+    }
+  }
+
+  private updateDiamondShineSparks(dt: number): void {
+    this.diamondShineSparks = this.diamondShineSparks
+      .map((s) => ({
+        ...s,
+        age: s.age + dt,
+        x: s.x + s.vx * dt * 0.42,
+        y: s.y + s.vy * dt * 0.42,
+        vx: s.vx * (1 - dt * 2.8),
+        vy: s.vy * (1 - dt * 2.8),
+      }))
+      .filter((s) => s.age < s.life);
+    if (this.diamondShineSparks.length > 120) {
+      this.diamondShineSparks.splice(0, this.diamondShineSparks.length - 120);
+    }
+  }
+
+  private drawDiamondShineSparks(): void {
+    for (const s of this.diamondShineSparks) {
+      const u = s.age / s.life;
+      const alpha = (1 - u) * 0.88;
+      const r = 1.8 + 4.2 * (1 - u);
+      this.fxLayer.circle(s.x, s.y, r + 2.5).fill({ color: 0x6af0ff, alpha: alpha * 0.22 });
+      this.fxLayer.circle(s.x, s.y, r).fill({ color: 0xe8ffff, alpha });
+      this.fxLayer.circle(s.x - 0.8, s.y - 0.8, r * 0.35).fill({ color: 0xffffff, alpha: alpha * 0.9 });
+    }
+  }
+
   private drawStaticWorld(): void {
     this.background.clear();
     this.background.rect(0, 0, this.width, this.height).fill({ color: 0x000000 });
@@ -619,8 +932,13 @@ export class PlayScene implements Scene {
     this.jelly.clear();
     this.platformLayer.clear();
     this.rippleLayer.clear();
-    this.tongueLayer.clear();
+    this.collectiblesGfx.clear();
+    this.tongueVector.clear();
     this.fxLayer.clear();
+
+    if (this.tongueArmature && this.tongueDbReady) {
+      this.tongueArmature.visible = false;
+    }
 
     for (const ripple of this.ripples) {
       const radius = 28 + ripple.age * 130;
@@ -641,8 +959,16 @@ export class PlayScene implements Scene {
     if (drawProceduralTongue) {
       const mouth = this.getMouthWorld();
       const tip = this.getTongueTipWorld(mouth);
-      this.drawGrappleTongue(mouth, tip, this.getComboMultiplier() >= COMBO.beastModeMinMultiplier);
+      const beastMode = this.getComboMultiplier() >= COMBO.beastModeMinMultiplier;
+      if (this.tongueDbReady && this.tongueArmature) {
+        this.syncTongueArmatureToGrapple(mouth, tip, beastMode);
+      } else {
+        this.drawGrappleTongue(mouth, tip, beastMode);
+      }
     }
+
+    this.drawCollectibles();
+    this.drawDiamondShineSparks();
 
     for (const p of this.beastParticles) {
       const u = p.age / COMBO.beastParticleLifeSec;
@@ -679,6 +1005,375 @@ export class PlayScene implements Scene {
     return { x: this.grapple.targetX, y: this.grapple.targetY };
   }
 
+  private setupCollectibleHud(app: Application): void {
+    this.collectibleHudGoldText = new Text({
+      text: 'Gold     0',
+      style: new TextStyle({
+        fontFamily: 'system-ui, Segoe UI, sans-serif',
+        fontSize: 15,
+        fill: '#ffd24a',
+        stroke: { color: '#1a1020', width: 3 },
+      }),
+    });
+    this.collectibleHudDiamondText = new Text({
+      text: 'Diamonds 0',
+      style: new TextStyle({
+        fontFamily: 'system-ui, Segoe UI, sans-serif',
+        fontSize: 15,
+        fill: '#9df6ff',
+        stroke: { color: '#1a1020', width: 3 },
+      }),
+    });
+    this.collectibleHudRoot.addChild(
+      this.collectibleHudBg,
+      this.collectibleHudGoldText,
+      this.collectibleHudDiamondText,
+    );
+    app.stage.addChild(this.collectibleHudRoot);
+  }
+
+  private layoutCollectibleHud(): void {
+    const margin = 12;
+    this.collectibleHudRoot.pivot.set(COLLECTIBLE_HUD_W, 0);
+    this.collectibleHudRoot.position.set(this.width - margin, margin);
+    this.collectibleHudBg.clear();
+    this.collectibleHudBg
+      .roundRect(0, 0, COLLECTIBLE_HUD_W, COLLECTIBLE_HUD_H, 10)
+      .fill({ color: 0x120818, alpha: 0.74 })
+      .stroke({ width: 1, color: 0x4a3a62, alpha: 0.55 });
+    this.collectibleHudGoldText?.position.set(14, 12);
+    this.collectibleHudDiamondText?.position.set(14, 44);
+  }
+
+  private refreshCollectibleHudText(): void {
+    if (this.collectibleHudGoldText) {
+      this.collectibleHudGoldText.text = `Gold     ${Math.round(this.hudGoldShown)}`;
+    }
+    if (this.collectibleHudDiamondText) {
+      this.collectibleHudDiamondText.text = `Diamonds ${Math.round(this.hudDiamondShown)}`;
+    }
+  }
+
+  private updateCollectibleHudSmooth(dt: number): void {
+    const k = 1 - Math.exp(-13 * dt);
+    this.hudGoldShown += (this.goldCount - this.hudGoldShown) * k;
+    this.hudDiamondShown += (this.diamondCount - this.hudDiamondShown) * k;
+    this.refreshCollectibleHudText();
+
+    if (this.collectibleHudBump > 0) {
+      this.collectibleHudBump = Math.max(0, this.collectibleHudBump - dt * 4.5);
+      const s = 1 + 0.08 * this.collectibleHudBump;
+      this.collectibleHudRoot.scale.set(s);
+    } else {
+      this.collectibleHudRoot.scale.set(1);
+    }
+  }
+
+  private getOccupiedActivePlatformIndices(): Set<number> {
+    const s = new Set<number>();
+    for (const c of this.collectibles) {
+      if (c.phase === 'active') {
+        s.add(c.platformIdx);
+      }
+    }
+    return s;
+  }
+
+  private pickPlatformSpawnSlot(
+    r: number,
+    occupied: Set<number>,
+  ): { platformIdx: number; along: number } | null {
+    const candidates: number[] = [];
+    const margin = COLLECTIBLES.platformEdgeMarginPx;
+    for (let i = 0; i < this.platforms.length; i += 1) {
+      if (occupied.has(i)) {
+        continue;
+      }
+      const p = this.platforms[i];
+      const innerW = p.width - 2 * margin - 2 * r;
+      if (innerW < 4) {
+        continue;
+      }
+      candidates.push(i);
+    }
+    if (candidates.length === 0) {
+      return null;
+    }
+    const platformIdx = candidates[Math.floor(Math.random() * candidates.length)];
+    return { platformIdx, along: Math.random() };
+  }
+
+  private getCollectibleAnchor(c: Collectible): { x: number; y: number } | null {
+    const p = this.platforms[c.platformIdx];
+    if (!p) {
+      return null;
+    }
+    const margin = COLLECTIBLES.platformEdgeMarginPx;
+    const innerW = p.width - 2 * margin - 2 * c.r;
+    if (innerW < 4) {
+      return null;
+    }
+    const x = p.x + margin + c.r + c.along * innerW;
+    const y = p.y - COLLECTIBLES.aboveSurfacePx;
+    return { x, y };
+  }
+
+  private spawnCollectibleField(): void {
+    this.collectibles = [];
+    const n = Math.min(COLLECTIBLES.maxActive, this.platforms.length);
+    let occupied = this.getOccupiedActivePlatformIndices();
+    for (let i = 0; i < n; i += 1) {
+      const kind = Math.random() < COLLECTIBLES.diamondSpawnChance ? 'diamond' : 'coin';
+      const r = kind === 'coin' ? COLLECTIBLES.coinRadius : COLLECTIBLES.diamondRadius;
+      const slot = this.pickPlatformSpawnSlot(r, occupied);
+      if (!slot) {
+        break;
+      }
+      occupied = new Set(occupied);
+      occupied.add(slot.platformIdx);
+      this.collectibles.push({
+        kind,
+        platformIdx: slot.platformIdx,
+        along: slot.along,
+        r,
+        phase: 'active',
+        collectT: 0,
+        collectStartX: 0,
+        collectStartY: 0,
+      });
+    }
+  }
+
+  private distPointToSegment(
+    px: number,
+    py: number,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+  ): number {
+    const abx = bx - ax;
+    const aby = by - ay;
+    const abLenSq = abx * abx + aby * aby;
+    if (abLenSq < 1e-6) {
+      return Math.hypot(px - ax, py - ay);
+    }
+    const apx = px - ax;
+    const apy = py - ay;
+    const t = Math.max(0, Math.min(1, (apx * abx + apy * aby) / abLenSq));
+    const qx = ax + t * abx;
+    const qy = ay + t * aby;
+    return Math.hypot(px - qx, py - qy);
+  }
+
+  private getTongueHitHalfWidth(): number {
+    return Math.max(GRAPPLE.tongueOutlineWidth, GRAPPLE.tongueWidth) * 0.5 + 6;
+  }
+
+  private circleHitsTongue(cx: number, cy: number, r: number): boolean {
+    if (!this.grapple) {
+      return false;
+    }
+    const grappleProgress = Player.computeGrappleAnimProgress(this.grapple, GRAPPLE.extendSec);
+    const tongueOut =
+      this.grapple.phase === 'pull' || grappleProgress < GRAPPLE.proceduralTongueUntil;
+    if (!tongueOut) {
+      return false;
+    }
+    const mouth = this.getMouthWorld();
+    const tip = this.getTongueTipWorld(mouth);
+    const dx = tip.x - mouth.x;
+    const dy = tip.y - mouth.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 4) {
+      return false;
+    }
+    const nx = (-dy / len) * 16;
+    const ny = (dx / len) * 16;
+    const mx = (mouth.x + tip.x) * 0.5 + nx;
+    const my = (mouth.y + tip.y) * 0.5 + ny;
+    const half = this.getTongueHitHalfWidth() + r;
+    const d = Math.min(
+      this.distPointToSegment(cx, cy, mouth.x, mouth.y, mx, my),
+      this.distPointToSegment(cx, cy, mx, my, tip.x, tip.y),
+    );
+    return d <= half;
+  }
+
+  private circleHitsPlayerBody(cx: number, cy: number, r: number): boolean {
+    const b = this.player.body;
+    const tx = Math.max(b.x, Math.min(cx, b.x + b.width));
+    const ty = Math.max(b.y, Math.min(cy, b.y + b.height));
+    const dx = cx - tx;
+    const dy = cy - ty;
+    return dx * dx + dy * dy < r * r;
+  }
+
+  private tryPickupCollectible(c: Collectible): void {
+    if (c.phase !== 'active') {
+      return;
+    }
+    const pos = this.getCollectibleAnchor(c);
+    if (!pos) {
+      return;
+    }
+    const hit =
+      this.circleHitsPlayerBody(pos.x, pos.y, c.r) ||
+      this.circleHitsTongue(pos.x, pos.y, c.r);
+    if (!hit) {
+      return;
+    }
+    const add = c.kind === 'coin' ? COLLECTIBLES.coinPoints : COLLECTIBLES.diamondPoints;
+    this.score += add;
+    this.scoreboard?.onPointsGained(add);
+    if (c.kind === 'coin') {
+      this.goldCount += 1;
+      this.sfx.play('collect_coin', 0.9);
+    } else {
+      this.diamondCount += 1;
+      this.sfx.play('collect_diamond', 0.92);
+      this.spawnDiamondCollectShine(pos.x, pos.y);
+    }
+    this.collectibleHudBump = 1;
+    c.phase = 'collecting';
+    c.collectT = 0;
+    c.collectStartX = pos.x;
+    c.collectStartY = pos.y;
+  }
+
+  private respawnCollectible(c: Collectible): void {
+    const kind = Math.random() < COLLECTIBLES.diamondSpawnChance ? 'diamond' : 'coin';
+    c.kind = kind;
+    c.r = kind === 'coin' ? COLLECTIBLES.coinRadius : COLLECTIBLES.diamondRadius;
+    c.phase = 'active';
+    c.collectT = 0;
+    const occupied = this.getOccupiedActivePlatformIndices();
+    const slot = this.pickPlatformSpawnSlot(c.r, occupied);
+    if (slot) {
+      c.platformIdx = slot.platformIdx;
+      c.along = slot.along;
+    } else {
+      c.platformIdx = Math.floor(Math.random() * this.platforms.length);
+      c.along = Math.random();
+    }
+  }
+
+  private updateCollectibles(dt: number): void {
+    const dur = Math.max(1e-6, COLLECTIBLES.collectDurationSec);
+    for (const c of this.collectibles) {
+      if (c.phase === 'collecting') {
+        c.collectT = Math.min(1, c.collectT + dt / dur);
+        if (c.collectT >= 1) {
+          this.respawnCollectible(c);
+        }
+        continue;
+      }
+      this.tryPickupCollectible(c);
+    }
+  }
+
+  private drawCollectibles(): void {
+    const t = this.runTime;
+    for (const c of this.collectibles) {
+      let cx: number;
+      let cy: number;
+      let alphaMul = 1;
+
+      if (c.phase === 'collecting') {
+        const u = c.collectT;
+        const ease = 1 - (1 - u) * (1 - u);
+        cx = c.collectStartX;
+        cy = c.collectStartY - COLLECTIBLES.collectRisePx * ease;
+        alphaMul = 1 - u;
+      } else {
+        const anchor = this.getCollectibleAnchor(c);
+        if (!anchor) {
+          continue;
+        }
+        const bob =
+          Math.sin(t * Math.PI * 2 * COLLECTIBLES.bobHz + c.platformIdx * 0.71 + c.along * 3.1) *
+          COLLECTIBLES.bobAmplitudePx;
+        cx = anchor.x;
+        cy = anchor.y + bob;
+      }
+
+      const baseR = c.r;
+
+      if (c.kind === 'coin') {
+        const spin01 =
+          (Math.cos(t * Math.PI * 2 * COLLECTIBLES.coinSpinHz + c.along * 4.2) + 1) * 0.5;
+        const scaleX = COLLECTIBLES.coinMinScaleX + (1 - COLLECTIBLES.coinMinScaleX) * spin01;
+        const rx = baseR * scaleX;
+        const ry = baseR;
+        const go = COLLECTIBLES.glowOuterPx;
+        const gm = COLLECTIBLES.glowMidPx;
+        this.collectiblesGfx
+          .ellipse(cx, cy, rx + go, ry + go)
+          .fill({ color: 0xffaa33, alpha: 0.1 * alphaMul });
+        this.collectiblesGfx
+          .ellipse(cx, cy, rx + gm, ry + gm)
+          .fill({ color: 0xffcc55, alpha: 0.2 * alphaMul });
+        this.collectiblesGfx
+          .ellipse(cx, cy, rx, ry)
+          .fill({ color: 0xffd24a, alpha: alphaMul })
+          .stroke({ width: 2.2, color: 0xaa7010, alpha: alphaMul * 0.95 });
+        this.collectiblesGfx
+          .ellipse(cx - rx * 0.32, cy - ry * 0.22, rx * 0.38, ry * 0.24)
+          .fill({ color: 0xfff2a0, alpha: alphaMul * 0.65 });
+      } else {
+        const pulse = Math.sin(t * Math.PI * 2 * COLLECTIBLES.diamondPulseHz + c.platformIdx * 0.45);
+        const pulse01 = (pulse + 1) * 0.5;
+        const scale = 1 + COLLECTIBLES.diamondPulseScale * pulse;
+        let collectBurst = 1;
+        if (c.phase === 'collecting') {
+          const u = c.collectT;
+          collectBurst = 1 + 0.62 * Math.sin(Math.min(1, u / 0.22) * Math.PI * 0.92);
+        }
+        const diamondAlpha =
+          COLLECTIBLES.diamondAlphaMin +
+          (COLLECTIBLES.diamondAlphaMax - COLLECTIBLES.diamondAlphaMin) * pulse01;
+        const alpha = diamondAlpha * alphaMul;
+        const s = baseR * 1.05 * scale * collectBurst;
+        const go = COLLECTIBLES.glowOuterPx;
+        const gm = COLLECTIBLES.glowMidPx;
+
+        this.collectiblesGfx
+          .moveTo(cx, cy - s - go * 0.65)
+          .lineTo(cx + (s + go) * 0.92, cy)
+          .lineTo(cx, cy + s + go * 0.65)
+          .lineTo(cx - (s + go) * 0.92, cy)
+          .lineTo(cx, cy - s - go * 0.65)
+          .fill({ color: 0x44eeff, alpha: alpha * 0.12 });
+
+        this.collectiblesGfx
+          .moveTo(cx, cy - s - gm * 0.45)
+          .lineTo(cx + (s + gm) * 0.92, cy)
+          .lineTo(cx, cy + s + gm * 0.45)
+          .lineTo(cx - (s + gm) * 0.92, cy)
+          .lineTo(cx, cy - s - gm * 0.45)
+          .fill({ color: 0x7af0ff, alpha: alpha * 0.28 });
+
+        this.collectiblesGfx
+          .moveTo(cx, cy - s)
+          .lineTo(cx + s * 0.92, cy)
+          .lineTo(cx, cy + s)
+          .lineTo(cx - s * 0.92, cy)
+          .lineTo(cx, cy - s)
+          .fill({ color: 0x7af0ff, alpha })
+          .stroke({ width: 2.2, color: 0x208899, alpha: alpha * 0.95 });
+
+        const hx = pulse01;
+        this.collectiblesGfx
+          .moveTo(cx - s * 0.15, cy - s * 0.72)
+          .lineTo(cx + s * 0.35 * hx, cy - s * 0.35)
+          .lineTo(cx + s * 0.12, cy - s * 0.05)
+          .lineTo(cx - s * 0.22, cy - s * 0.5)
+          .lineTo(cx - s * 0.15, cy - s * 0.72)
+          .fill({ color: 0xe8ffff, alpha: alpha * 0.55 * hx });
+      }
+    }
+  }
+
   private drawGrappleTongue(
     mouth: { x: number; y: number },
     tip: { x: number; y: number },
@@ -700,7 +1395,7 @@ export class PlayScene implements Scene {
     const mx = (mouth.x + tip.x) * 0.5 + nx;
     const my = (mouth.y + tip.y) * 0.5 + ny;
 
-    this.tongueLayer
+    this.tongueVector
       .moveTo(mouth.x, mouth.y)
       .lineTo(mx, my)
       .lineTo(tip.x, tip.y)
@@ -711,7 +1406,7 @@ export class PlayScene implements Scene {
         join: 'round',
         alpha: 0.88,
       });
-    this.tongueLayer
+    this.tongueVector
       .moveTo(mouth.x, mouth.y)
       .lineTo(mx, my)
       .lineTo(tip.x, tip.y)
