@@ -1941,11 +1941,14 @@ export class PlayScene implements Scene {
     // Temple Run style: full-screen touch lanes + swipe actions.
     // Joystick/button UI is intentionally disabled for now (kept in git history for future restore).
     this.touchControlsLayer.eventMode = 'passive';
+    this.touchControlsLayer.sortableChildren = true;
     this.touchControlsLayer.zIndex = 999;
     this.touchRightTongueButton.eventMode = 'static';
     this.touchRightJumpButton.eventMode = 'static';
     this.touchRightTongueButton.cursor = 'pointer';
     this.touchRightJumpButton.cursor = 'pointer';
+    this.touchRightTongueButton.zIndex = 1001;
+    this.touchRightJumpButton.zIndex = 1001;
     this.touchRightTongueLabel = new Text({
       text: 'TONGUE',
       style: new TextStyle({
@@ -1972,9 +1975,13 @@ export class PlayScene implements Scene {
     this.touchRightJumpLabel.anchor.set(0.5);
     this.touchRightTongueLabel.eventMode = 'none';
     this.touchRightJumpLabel.eventMode = 'none';
+    this.touchRightTongueLabel.zIndex = 1002;
+    this.touchRightJumpLabel.zIndex = 1002;
     this.touchRightTongueButton.visible = true;
+    this.touchRightJumpButton.visible = true;
     this.touchRightTongueButton.eventMode = 'static';
     this.touchRightTongueLabel.visible = true;
+    this.touchRightJumpLabel.visible = true;
     this.touchFeedbackLayer.eventMode = 'none';
     this.touchControlsLayer.addChild(
       this.touchFeedbackLayer,
@@ -2068,6 +2075,9 @@ export class PlayScene implements Scene {
     p.lastX = event.global.x;
     p.lastY = event.global.y;
     p.side = p.lastX < this.width * 0.5 ? 'left' : 'right';
+    if (this.touchControlPointerId === null && this.isTouchNearChameleon(p.lastX, p.lastY)) {
+      this.touchControlPointerId = event.pointerId;
+    }
     this.tryHandleSwipeUp(event.pointerId, false);
   };
 
@@ -2169,11 +2179,17 @@ export class PlayScene implements Scene {
       -vecY >= TOUCH_SWIPE_UP_MIN_PX
     ) {
       const now = performance.now();
+      const isControlTouch = pointerId === this.touchControlPointerId;
       const zoom = this.getCameraZoom();
       const playerCx = this.player.body.x + this.player.body.width * 0.5;
       const playerScreenX = (playerCx - this.cameraX) * zoom;
       const swipeOnLeft = p.lastX < playerScreenX;
-      if (swipeOnLeft) {
+      if (isControlTouch) {
+        if (now - this.touchLastJumpMs >= TOUCH_ACTION_RETRIGGER_MS) {
+          this.touchLastJumpMs = now;
+          this.input?.queueJump();
+        }
+      } else if (swipeOnLeft) {
         if (now - this.touchLastGrappleMs >= TOUCH_ACTION_RETRIGGER_MS) {
           this.touchLastGrappleMs = now;
           this.input?.queueGrapple();
@@ -2192,11 +2208,16 @@ export class PlayScene implements Scene {
     const zoom = this.getCameraZoom();
     const padX = 0;
     const padY = 0;
-    const playerCx = this.player.body.x + this.player.body.width * 0.5;
-    const playerCy = this.player.body.y + this.player.body.height * 0.5;
-    const px = (playerCx - this.cameraX) * zoom + padX;
-    const py = (playerCy - this.cameraY) * zoom + padY;
-    return Math.hypot(screenX - px, screenY - py) <= TOUCH_LOCK_RADIUS_PX;
+    const playerLeft = (this.player.body.x - this.cameraX) * zoom + padX;
+    const playerTop = (this.player.body.y - this.cameraY) * zoom + padY;
+    const playerW = Math.max(1, this.player.body.width * zoom);
+    const playerH = Math.max(1, this.player.body.height * zoom);
+    const margin = Math.max(TOUCH_LOCK_RADIUS_PX * 0.28, Math.min(playerW, playerH) * 0.35);
+    const left = playerLeft - margin;
+    const right = playerLeft + playerW + margin;
+    const top = playerTop - margin;
+    const bottom = playerTop + playerH + margin;
+    return screenX >= left && screenX <= right && screenY >= top && screenY <= bottom;
   }
 
   private spawnTouchRipple(x: number, y: number, life: number): void {
@@ -2244,11 +2265,12 @@ export class PlayScene implements Scene {
       gfx.clear();
       const gold = 0xffea80;
       const boost = pressed ? 1.35 : 1;
-      gfx.circle(x, y, radius + 16).fill({ color: gold, alpha: 0.035 * boost });
-      gfx.circle(x, y, radius + 10).fill({ color: gold, alpha: 0.08 * boost });
-      gfx.circle(x, y, radius).stroke({ color: gold, alpha: pressed ? 0.95 : 0.74, width: 1.4 });
-      gfx.circle(x, y, radius - 9).stroke({ color: gold, alpha: pressed ? 0.46 : 0.24, width: 1 });
-      gfx.alpha = pressed ? 0.98 : 0.9;
+      gfx.circle(x, y, radius + 18).fill({ color: gold, alpha: 0.09 * boost });
+      gfx.circle(x, y, radius + 10).fill({ color: 0x1b1324, alpha: pressed ? 0.72 : 0.62 });
+      gfx.circle(x, y, radius + 4).stroke({ color: 0x000000, alpha: 0.42, width: 3 });
+      gfx.circle(x, y, radius).stroke({ color: gold, alpha: pressed ? 0.98 : 0.9, width: 2.8 });
+      gfx.circle(x, y, radius - 8).stroke({ color: gold, alpha: pressed ? 0.58 : 0.44, width: 1.6 });
+      gfx.alpha = 1;
     };
     drawButton(
       this.touchRightTongueButton,
