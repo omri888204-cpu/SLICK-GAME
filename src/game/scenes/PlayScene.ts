@@ -309,6 +309,28 @@ const TOUCH_SWIPE_UPWARD_RATIO_MIN = 0.4;
 const TOUCH_FOLLOW_DISTANCE_PX = 70;
 const TOUCH_LOCK_RADIUS_PX = 120;
 const TOUCH_ACTION_RETRIGGER_MS = 110;
+
+/** Every this many px climbed (upward), platform scroll speed gets +10% (multiplicative, capped). */
+const ALTITUDE_SPEED_BAND_PX = 1000;
+const ALTITUDE_SCROLL_MULT_PER_BAND = 0.1;
+const ALTITUDE_SCROLL_MULT_MAX = 2.5;
+/** Max horizontal platform drift (px/s) including level + altitude scaling. */
+const ALTITUDE_SCROLL_SPEED_CAP_PX = 115;
+/** Blend toward this cool color on background as altitude speed mult rises (0..1). */
+const ALTITUDE_WIND_TINT_COOL = 0x142a38;
+const ALTITUDE_WIND_TINT_MAX_BLEND = 0.32;
+const ALTITUDE_WIND_MAX_PARTICLES = 72;
+
+type WindParticle = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  age: number;
+  life: number;
+  len: number;
+};
+
 export class PlayScene implements Scene {
   readonly name = 'play';
 
@@ -353,6 +375,11 @@ export class PlayScene implements Scene {
   private action360ButtonGfx = new Graphics();
   private action360ButtonLabel?: Text;
   private action360ButtonPressed = false;
+  /** Player `body.y` at run start — climb height = baseline minus current y (px). */
+  private climbBaselineY = 0;
+  private windParticles: WindParticle[] = [];
+  private windSpawnAcc = 0;
+  private climbHudText?: Text;
   /** While `runTime < this`, climbing combo expires using `TONGUE_BOOST_COMBO_CLIMB_SEC` instead of `COMBO.chainWindowSec`. */
   private tongueBoostComboExtendUntil = -Infinity;
   private collectibles: Collectible[] = [];
@@ -471,6 +498,7 @@ export class PlayScene implements Scene {
     this.setupTouchControlsOverlay(app);
     this.setupTongueBoostButton(app);
     this.setupAction360Button(app);
+    this.setupClimbHud(app);
 
     await this.tryLoadTongueArmature();
     this.startBackgroundMusic();
@@ -576,16 +604,17 @@ export class PlayScene implements Scene {
         0,
         this.highestY < -650,
         this.grapple,
-        mult >= COMBO.beastModeMinMultiplier,
-      );
-      this.physics.applyWorldBounds(this.player.body, this.worldWidth);
-      this.drawDynamicWorld();
-      this.updateScreenShake(dt);
-      const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
-      this.scoreboard?.update(dt, this.score, mult, heightMeters, this.runTime, this.level);
-      this.syncCollectibleHudPosition();
-      return;
-    }
+      mult >= COMBO.beastModeMinMultiplier,
+    );
+    this.physics.applyWorldBounds(this.player.body, this.worldWidth);
+    this.tickAltitudePresentation(dt);
+    this.drawDynamicWorld();
+    this.updateScreenShake(dt);
+    const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
+    this.scoreboard?.update(dt, this.score, mult, heightMeters, this.runTime, this.level);
+    this.syncCollectibleHudPosition();
+    return;
+  }
 
     const axis = this.input?.getHorizontalAxis() ?? 0;
     const pulling = this.grapple?.phase === 'pull';
@@ -692,6 +721,7 @@ export class PlayScene implements Scene {
       this.grapple,
       boostVisualActive,
     );
+    this.tickAltitudePresentation(dt);
     this.drawDynamicWorld();
     this.updateScreenShake(dt);
     const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
@@ -713,6 +743,7 @@ export class PlayScene implements Scene {
       this.scoreboard.position.set(10, 6);
     }
     this.layoutCollectibleHud();
+    this.layoutClimbHud();
     this.input?.onResize();
 
     // Mobile browser chrome toggles height in small steps; resetting the whole run felt like “stuck” stairs.
@@ -936,7 +967,7 @@ export class PlayScene implements Scene {
       this.cameraY - 2000,
     );
 
-    const recycleSpeed = LEVEL_PLATFORM_SPEED_BASE + this.level * LEVEL_PLATFORM_SPEED_PER_LEVEL;
+    const recycleSpeed = this.getBaseScrollSpeedPx();
     for (const p of toRecycle) {
       this.nextStairId += 1;
       p.stairId = this.nextStairId;
@@ -1100,6 +1131,8 @@ export class PlayScene implements Scene {
     this.flashSkillBoostCooldownTime = 0;
     this.flashSkillBoostRearmStairId = 0;
     this.wasBeastModeActiveLastFrame = false;
+    this.windParticles = [];
+    this.windSpawnAcc = 0;
     this.syncBoostHudButtonsVisibility();
     this.jumpArcAssistTime = 0;
     this.jumpArcAssistDuration = 0;
@@ -1436,6 +1469,7 @@ export class PlayScene implements Scene {
     this.grappleReloadingLogged = false;
     this.lastScoredStairId = this.platforms[0]?.stairId ?? 0;
     this.player.update(0, 0, false, null, false);
+    this.climbBaselineY = this.player.body.y;
   }
 
   private landOn(platform: Platform): void {
@@ -1490,10 +1524,12 @@ export class PlayScene implements Scene {
     this.cameraY = Math.min(0, this.cameraY);
 
     this.world.position.set(-this.cameraX, -this.cameraY);
+    const parallaxBoost = 1 + 0.1 * Math.max(0, this.getAltitudeSpeedMultiplier() - 1);
     this.background.tilePosition.set(
-      -this.cameraX * BACKGROUND_PARALLAX_X,
-      -this.cameraY * BACKGROUND_PARALLAX_Y,
+      -this.cameraX * BACKGROUND_PARALLAX_X * parallaxBoost,
+      -this.cameraY * BACKGROUND_PARALLAX_Y * parallaxBoost,
     );
+    this.applyBackgroundTintForAltitude();
   }
 
   private snapCameraToPlayer(): void {
@@ -1509,10 +1545,12 @@ export class PlayScene implements Scene {
     this.cameraY = Math.min(0, this.cameraY);
     this.cameraY = Math.max(this.worldMinY, this.cameraY);
     this.world.position.set(-this.cameraX, -this.cameraY);
+    const parallaxBoost = 1 + 0.1 * Math.max(0, this.getAltitudeSpeedMultiplier() - 1);
     this.background.tilePosition.set(
-      -this.cameraX * BACKGROUND_PARALLAX_X,
-      -this.cameraY * BACKGROUND_PARALLAX_Y,
+      -this.cameraX * BACKGROUND_PARALLAX_X * parallaxBoost,
+      -this.cameraY * BACKGROUND_PARALLAX_Y * parallaxBoost,
     );
+    this.applyBackgroundTintForAltitude();
   }
 
 
@@ -1836,15 +1874,18 @@ export class PlayScene implements Scene {
   }
 
   private updatePlatformDifficulty(dt: number): void {
+    void dt;
     const widthRatio = Math.max(0.5, 1 - this.level * LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL);
     const edgePad = PLATFORM_EDGE_PADDING_PX;
+    const scroll = this.getBaseScrollSpeedPx();
     for (const p of this.platforms) {
+      const wasScrolling = Math.abs(p.driftVx) > 0.25;
       const targetBaseWidth = Math.max(
         LEVEL_PLATFORM_MIN_BASE_WIDTH,
         p.baseWidth * widthRatio,
       );
       p.width = targetBaseWidth * PLATFORM_SCALE;
-      p.driftVx = 0;
+      p.driftVx = wasScrolling ? p.driftDir * scroll : 0;
       if (p.x < edgePad) {
         p.x = edgePad;
       } else if (p.x + p.width > this.worldWidth - edgePad) {
@@ -1924,8 +1965,55 @@ export class PlayScene implements Scene {
     return palette[idx];
   }
 
+  /** Pixels climbed upward from this run’s spawn baseline (`player.y` decreases when going up). */
+  private getClimbHeightPx(): number {
+    return Math.max(0, this.climbBaselineY - this.player.body.y);
+  }
+
+  /** +10% map scroll speed per `ALTITUDE_SPEED_BAND_PX` climbed (capped). */
+  private getAltitudeSpeedMultiplier(): number {
+    const bands = Math.floor(this.getClimbHeightPx() / ALTITUDE_SPEED_BAND_PX);
+    return Math.min(ALTITUDE_SCROLL_MULT_MAX, 1 + ALTITUDE_SCROLL_MULT_PER_BAND * bands);
+  }
+
+  /** Level-based horizontal stair drift before altitude scaling. */
+  private getLevelScrollSpeedPx(): number {
+    return LEVEL_PLATFORM_SPEED_BASE + this.level * LEVEL_PLATFORM_SPEED_PER_LEVEL;
+  }
+
+  /**
+   * Effective platform drift speed (px/s): scales with climb height, capped so difficulty doesn’t explode.
+   * Recycled stairs and re-synced scrolling platforms use this value.
+   */
+  private getBaseScrollSpeedPx(): number {
+    const scaled = this.getLevelScrollSpeedPx() * this.getAltitudeSpeedMultiplier();
+    return Math.min(ALTITUDE_SCROLL_SPEED_CAP_PX, scaled);
+  }
+
+  private mixRgbInt(c0: number, c1: number, t: number): number {
+    const u = Math.max(0, Math.min(1, t));
+    const r0 = (c0 >> 16) & 255;
+    const g0 = (c0 >> 8) & 255;
+    const b0 = c0 & 255;
+    const r1 = (c1 >> 16) & 255;
+    const g1 = (c1 >> 8) & 255;
+    const b1 = c1 & 255;
+    const r = Math.round(r0 + (r1 - r0) * u);
+    const g = Math.round(g0 + (g1 - g0) * u);
+    const b = Math.round(b0 + (b1 - b0) * u);
+    return (r << 16) | (g << 8) | b;
+  }
+
+  /** Subtle cool shift on the tiling background as altitude speed multiplier rises. */
+  private applyBackgroundTintForAltitude(): void {
+    const mult = this.getAltitudeSpeedMultiplier();
+    const tintBlend =
+      Math.min(1, (mult - 1) / Math.max(1e-6, ALTITUDE_SCROLL_MULT_MAX - 1)) * ALTITUDE_WIND_TINT_MAX_BLEND;
+    this.background.tint = this.mixRgbInt(this.currentBackgroundColor, ALTITUDE_WIND_TINT_COOL, tintBlend);
+  }
+
   private drawStaticWorld(): void {
-    this.background.tint = this.currentBackgroundColor;
+    this.applyBackgroundTintForAltitude();
     this.background.position.set(
       WORLD_BOUNDS_X - BACKGROUND_HORIZONTAL_PAD_PX,
       this.worldMinY - BACKGROUND_VERTICAL_PAD_PX,
@@ -1953,6 +2041,8 @@ export class PlayScene implements Scene {
         .ellipse(ripple.x, ripple.y, radius, radius * 0.28)
         .stroke({ color: 0x8b5cff, alpha: alpha * 0.12, width: 1 });
     }
+
+    this.drawWindParticles();
 
     for (const platform of this.platforms) {
       this.drawCrystalPlatform(platform);
@@ -2141,6 +2231,104 @@ export class PlayScene implements Scene {
     this.action360ButtonPressed = false;
     this.redrawAction360Button(false);
   };
+
+  private setupClimbHud(app: Application): void {
+    void app;
+    this.climbHudText = new Text({
+      text: '',
+      style: new TextStyle({
+        fontFamily: 'system-ui, Segoe UI, sans-serif',
+        fontSize: 11,
+        fill: '#cfe8ff',
+        stroke: { color: '#080812', width: 3 },
+      }),
+    });
+    this.climbHudText.anchor.set(1, 0);
+    this.climbHudText.zIndex = 1003;
+    this.climbHudText.alpha = 0.9;
+    this.uiLayer.addChild(this.climbHudText);
+    this.layoutClimbHud();
+    this.refreshClimbHudText();
+  }
+
+  private layoutClimbHud(): void {
+    if (!this.climbHudText) {
+      return;
+    }
+    const y =
+      BOOST_BTN_SCREEN_MARGIN_TOP_PX +
+      TONGUE_BOOST_BTN_H +
+      (this.width <= MOBILE_NARROW_UI_MAX_W ? 5 : 6);
+    this.climbHudText.position.set(this.width - BOOST_BTN_SCREEN_MARGIN_RIGHT_PX, y);
+  }
+
+  private refreshClimbHudText(): void {
+    if (!this.climbHudText) {
+      return;
+    }
+    const mult = this.getAltitudeSpeedMultiplier();
+    const mApprox = Math.round(this.getClimbHeightPx() / 12);
+    this.climbHudText.text = `${mApprox}m  ·  ×${mult.toFixed(2)}`;
+  }
+
+  private tickAltitudePresentation(dt: number): void {
+    this.updateWindParticles(dt);
+    this.spawnWindParticlesForAltitude(dt);
+    this.refreshClimbHudText();
+  }
+
+  private spawnWindParticlesForAltitude(dt: number): void {
+    const mult = this.getAltitudeSpeedMultiplier();
+    if (mult <= 1.001 || this.windParticles.length >= ALTITUDE_WIND_MAX_PARTICLES) {
+      return;
+    }
+    this.windSpawnAcc += dt * (mult - 1) * 26;
+    const vw = this.worldWidthFromScreen();
+    const vh = this.worldHeightFromScreen();
+    while (this.windSpawnAcc >= 1 && this.windParticles.length < ALTITUDE_WIND_MAX_PARTICLES) {
+      this.windSpawnAcc -= 1;
+      const x = this.cameraX + vw + 40 + Math.random() * 120;
+      const y = this.cameraY + Math.random() * vh;
+      const speed = 280 + (mult - 1) * 210;
+      this.windParticles.push({
+        x,
+        y,
+        vx: -speed - Math.random() * 180,
+        vy: -40 + Math.random() * 80,
+        age: 0,
+        life: 0.38 + Math.random() * 0.28,
+        len: 22 + Math.random() * 44,
+      });
+    }
+  }
+
+  private updateWindParticles(dt: number): void {
+    const leftCull = this.cameraX - 260;
+    this.windParticles = this.windParticles
+      .map((p) => ({
+        ...p,
+        age: p.age + dt,
+        x: p.x + p.vx * dt,
+        y: p.y + p.vy * dt,
+      }))
+      .filter((p) => p.age < p.life && p.x > leftCull);
+  }
+
+  private drawWindParticles(): void {
+    for (const p of this.windParticles) {
+      const u = p.age / p.life;
+      const alpha = (1 - u) * 0.38;
+      const x1 = p.x;
+      const y1 = p.y;
+      const x2 = p.x + p.len * 0.94;
+      const y2 = p.y + (p.vy / Math.max(120, Math.abs(p.vx))) * p.len * 0.12;
+      this.fxLayer.moveTo(x1, y1).lineTo(x2, y2).stroke({
+        width: 1.25,
+        color: 0xd8f0ff,
+        alpha,
+      });
+    }
+  }
 
   /** Positions TONGUE (right) and 360 (just to its left) along the top-right of the screen. */
   private layoutBoostHudButtons(): void {
