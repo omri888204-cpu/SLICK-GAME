@@ -1972,9 +1972,9 @@ export class PlayScene implements Scene {
     this.touchRightJumpLabel.anchor.set(0.5);
     this.touchRightTongueLabel.eventMode = 'none';
     this.touchRightJumpLabel.eventMode = 'none';
-    this.touchRightTongueButton.visible = false;
-    this.touchRightTongueButton.eventMode = 'none';
-    this.touchRightTongueLabel.visible = false;
+    this.touchRightTongueButton.visible = true;
+    this.touchRightTongueButton.eventMode = 'static';
+    this.touchRightTongueLabel.visible = true;
     this.touchFeedbackLayer.eventMode = 'none';
     this.touchControlsLayer.addChild(
       this.touchFeedbackLayer,
@@ -2089,7 +2089,9 @@ export class PlayScene implements Scene {
     }
     event.preventDefault();
     event.stopPropagation();
-    // Mobile touch mode: tongue is disabled.
+    this.touchRightTonguePressed = true;
+    this.redrawRightTouchButtons();
+    this.input.queueGrapple();
   };
 
   private readonly handleRightTongueUp = (): void => {
@@ -2171,7 +2173,12 @@ export class PlayScene implements Scene {
       const playerCx = this.player.body.x + this.player.body.width * 0.5;
       const playerScreenX = (playerCx - this.cameraX) * zoom;
       const swipeOnLeft = p.lastX < playerScreenX;
-      if (!swipeOnLeft && now - this.touchLastJumpMs >= TOUCH_ACTION_RETRIGGER_MS) {
+      if (swipeOnLeft) {
+        if (now - this.touchLastGrappleMs >= TOUCH_ACTION_RETRIGGER_MS) {
+          this.touchLastGrappleMs = now;
+          this.input?.queueGrapple();
+        }
+      } else if (now - this.touchLastJumpMs >= TOUCH_ACTION_RETRIGGER_MS) {
         this.touchLastJumpMs = now;
         this.input?.queueJump();
       }
