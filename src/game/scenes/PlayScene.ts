@@ -1008,6 +1008,7 @@ export class PlayScene implements Scene {
     this.createPlatforms();
     this.spawnCollectibleField();
     this.resetPlayer();
+    this.snapCameraToPlayer();
     this.scoreboard?.reset();
     this.hudGoldShown = this.goldCount;
     this.hudDiamondShown = this.diamondCount;
@@ -1371,6 +1372,22 @@ export class PlayScene implements Scene {
     this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
     this.cameraY = Math.min(0, this.cameraY);
 
+    this.world.position.set(-this.cameraX, -this.cameraY);
+    this.background.tilePosition.set(
+      -this.cameraX * BACKGROUND_PARALLAX_X,
+      -this.cameraY * BACKGROUND_PARALLAX_Y,
+    );
+  }
+
+  private snapCameraToPlayer(): void {
+    const viewportW = this.worldWidthFromScreen();
+    const viewportH = this.worldHeightFromScreen();
+    const playerCx = this.player.body.x + this.player.body.width * 0.5;
+    this.cameraX = playerCx - viewportW * 0.5;
+    const maxCamX = Math.max(0, this.worldWidth - viewportW);
+    this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
+    this.cameraY = Math.min(0, this.player.body.y - viewportH * 0.45);
+    this.cameraY = Math.max(this.worldMinY, this.cameraY);
     this.world.position.set(-this.cameraX, -this.cameraY);
     this.background.tilePosition.set(
       -this.cameraX * BACKGROUND_PARALLAX_X,
