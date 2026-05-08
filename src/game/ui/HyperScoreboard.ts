@@ -293,6 +293,15 @@ export class HyperScoreboard extends Container {
     this.level = Math.max(1, level);
   }
 
+  /** Right edge of the `Lv#` label from the left of the panel (local px). Used to align Gold/Diamond HUD. */
+  getLevelLabelRightLocal(): number {
+    return 6 + this.levelLabel.width;
+  }
+
+  getPanelHeight(): number {
+    return this.panelH;
+  }
+
   triggerLevelUp(): void {
     this.levelUpAge = 0.7;
     this.levelPulseAge = 0.35;

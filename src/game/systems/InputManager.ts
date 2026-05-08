@@ -5,6 +5,8 @@ export class InputManager {
   private keys = new Set<string>();
   private jumpQueued = false;
   private grappleQueued = false;
+  /** Boost-mode 360 skill (keyboard); cleared each frame via `consumeAction360`. */
+  private action360Queued = false;
   private readonly touchControlsEnabled = InputManager.detectTouchControls();
   private touchHoldLeft = false;
   private touchHoldRight = false;
@@ -67,6 +69,12 @@ export class InputManager {
   consumeGrapple(): boolean {
     const queued = this.grappleQueued;
     this.grappleQueued = false;
+    return queued;
+  }
+
+  consumeAction360(): boolean {
+    const queued = this.action360Queued;
+    this.action360Queued = false;
     return queued;
   }
 
@@ -161,6 +169,10 @@ export class InputManager {
 
     if (event.code === 'KeyE' && !event.repeat) {
       this.grappleQueued = true;
+    }
+
+    if (event.code === 'KeyQ' && !event.repeat) {
+      this.action360Queued = true;
     }
 
     this.keys.add(event.code);

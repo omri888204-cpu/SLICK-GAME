@@ -4,6 +4,7 @@ import {
   Container,
   FederatedPointerEvent,
   Graphics,
+  Point,
   Rectangle,
   Sprite,
   Text,
@@ -235,6 +236,8 @@ const DARK_BG_MAX_CHANNEL = 42;
 
 const COLLECTIBLE_HUD_W = 156;
 const COLLECTIBLE_HUD_H = 64;
+/** Horizontal gap between `Lv#` and the Gold/Diamond strip (scoreboard local px). */
+const COLLECT_AFTER_LEVEL_GAP = 8;
 /** Touch-only boost tongue button — sits under Gold/Diamonds (right-aligned). */
 const TONGUE_BOOST_BTN_W = 118;
 const TONGUE_BOOST_BTN_H = 38;
@@ -273,7 +276,12 @@ const BACKGROUND_VERTICAL_PAD_PX = 24000;
 const PLAYER_SPAWN_CLEARANCE_PX = 14;
 const GRAPPLE_VERTICAL_REACH_PLATFORMS = 2;
 const GRAPPLE_MIN_TARGET_DISTANCE_PX = 150;
-const GRAPPLE_VERTICAL_BOOST_VY = -400;
+/** Minimum upward speed while tongue-pulling (px/s, negative = up); higher magnitude = faster climb. */
+const GRAPPLE_VERTICAL_BOOST_VY = -640;
+/** Horizontal easing toward the stair center during tongue pull (× dt). */
+const GRAPPLE_PULL_HORIZONTAL_LERP_PER_SEC = 17;
+/** Gap between TONGUE and 360 boost HUD buttons (screen px). */
+const BOOST_ACTION_BTN_GAP_PX = 8;
 const GRAPPLE_STOP_ABOVE_PLATFORM_PX = 20;
 const LEVEL_MAX = 100;
 const LEVEL_SCORE_STEP = 1000;
@@ -339,6 +347,10 @@ export class PlayScene implements Scene {
   private tongueBoostButtonGfx = new Graphics();
   private tongueBoostLabel?: Text;
   private tongueBoostButtonPressed = false;
+  private action360ButtonRoot = new Container();
+  private action360ButtonGfx = new Graphics();
+  private action360ButtonLabel?: Text;
+  private action360ButtonPressed = false;
   /** While `runTime < this`, climbing combo expires using `TONGUE_BOOST_COMBO_CLIMB_SEC` instead of `COMBO.chainWindowSec`. */
   private tongueBoostComboExtendUntil = -Infinity;
   private collectibles: Collectible[] = [];
@@ -456,6 +468,7 @@ export class PlayScene implements Scene {
     this.input.attach();
     this.setupTouchControlsOverlay(app);
     this.setupTongueBoostButton(app);
+    this.setupAction360Button(app);
 
     await this.tryLoadTongueArmature();
     this.startBackgroundMusic();
@@ -474,7 +487,7 @@ export class PlayScene implements Scene {
     this.expireComboIfNeeded();
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
     this.updateFlashSkillBoost(dt);
-    this.syncTongueBoostButtonVisibility();
+    this.syncBoostHudButtonsVisibility();
     this.updateTouchRipples(dt);
     this.updateGrappleCooldownFeedback();
     this.updateLevelProgress();
@@ -505,8 +518,8 @@ export class PlayScene implements Scene {
         const pullTargetY = hookPlatform.y - body.height - GRAPPLE_STOP_ABOVE_PLATFORM_PX;
         const hookCenterX = hookPlatform.x + hookPlatform.width * 0.5;
         const targetBodyX = hookCenterX - body.width * 0.5;
-        body.x += (targetBodyX - body.x) * Math.min(1, dt * 10);
-        body.vx *= Math.max(0, 1 - 10 * dt);
+        body.x += (targetBodyX - body.x) * Math.min(1, dt * GRAPPLE_PULL_HORIZONTAL_LERP_PER_SEC);
+        body.vx *= Math.max(0, 1 - 12 * dt);
         body.vy = Math.min(body.vy, GRAPPLE_VERTICAL_BOOST_VY);
         if (body.y <= pullTargetY) {
           body.y = pullTargetY;
@@ -568,6 +581,7 @@ export class PlayScene implements Scene {
       this.updateScreenShake(dt);
       const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
       this.scoreboard?.update(dt, this.score, mult, heightMeters, this.runTime, this.level);
+      this.syncCollectibleHudPosition();
       return;
     }
 
@@ -680,6 +694,7 @@ export class PlayScene implements Scene {
     this.updateScreenShake(dt);
     const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
     this.scoreboard?.update(dt, this.score, mult, heightMeters, this.runTime, this.level);
+    this.syncCollectibleHudPosition();
   }
 
   resize(width: number, height: number): void {
@@ -743,8 +758,11 @@ export class PlayScene implements Scene {
       return;
     }
     const wantGrapple = this.input?.consumeGrapple() ?? false;
+    const want360 = this.input?.consumeAction360() ?? false;
     if (wantGrapple && this.canUseTongueGrapple()) {
       this.triggerGrappleAction();
+    } else if (want360 && this.canUseTongueGrapple()) {
+      this.perform360Action();
     }
 
     const jumpPressed = this.input?.consumeJump() ?? false;
@@ -1080,7 +1098,7 @@ export class PlayScene implements Scene {
     this.flashSkillBoostCooldownTime = 0;
     this.flashSkillBoostRearmStairId = 0;
     this.wasBeastModeActiveLastFrame = false;
-    this.syncTouch360Visibility();
+    this.syncBoostHudButtonsVisibility();
     this.jumpArcAssistTime = 0;
     this.jumpArcAssistDuration = 0;
     this.tongueBoostComboExtendUntil = -Infinity;
@@ -1123,7 +1141,7 @@ export class PlayScene implements Scene {
       this.lastChainTime = -1e9;
       this.flashSkillBoostRearmStairId = this.lastScoredStairId + FLASH_REARM_STAIRS_REQUIRED;
     }
-    this.syncTouch360Visibility();
+    this.syncBoostHudButtonsVisibility();
   }
 
   private isFlashSkillBoostActive(): boolean {
@@ -1152,7 +1170,7 @@ export class PlayScene implements Scene {
   }
 
   private perform360Action(): void {
-    if (!this.canUseTongueGrapple() || this.action360State) {
+    if (!this.canUseTongueGrapple() || this.action360State || this.grapple) {
       return;
     }
     const body = this.player.body;
@@ -1338,7 +1356,7 @@ export class PlayScene implements Scene {
     this.grapple = null;
     this.flashSkillBoostTime = 0;
     this.wasBeastModeActiveLastFrame = false;
-    this.syncTouch360Visibility();
+    this.syncBoostHudButtonsVisibility();
   }
 
   private spawnAction360Sparks(x: number, y: number): void {
@@ -1381,10 +1399,6 @@ export class PlayScene implements Scene {
       this.fxLayer.circle(s.x, s.y, r).fill({ color: 0xffe066, alpha });
       this.fxLayer.circle(s.x - 0.9, s.y - 0.9, r * 0.38).fill({ color: 0xffffff, alpha: alpha * 0.8 });
     }
-  }
-
-  private syncTouch360Visibility(): void {
-    // Full-screen touch mode: 360 on-screen button is hidden/disabled.
   }
 
   private checkFallGameOver(): void {
@@ -2022,7 +2036,8 @@ export class PlayScene implements Scene {
       this.collectibleHudGoldText,
       this.collectibleHudDiamondText,
     );
-    this.uiLayer.addChild(this.collectibleHudRoot);
+    this.collectibleHudRoot.zIndex = 12;
+    this.scoreboard?.addChild(this.collectibleHudRoot);
   }
 
   /** Tongue grapple is only available during Flash skill boost (beast combo activation window). */
@@ -2056,16 +2071,91 @@ export class PlayScene implements Scene {
     this.tongueBoostButtonGfx.on('pointercancel', this.handleTongueBoostButtonUp);
     this.uiLayer.addChild(this.tongueBoostButtonRoot);
     this.redrawTongueBoostButton(false);
-    this.syncTongueBoostButtonVisibility();
+    this.syncBoostHudButtonsVisibility();
   }
 
-  private layoutTongueBoostButton(): void {
-    const margin = this.width < 440 ? 16 : 12;
-    const topOffset = this.width < 440 ? 86 : 74;
-    const hudTop = Math.max(margin, margin + topOffset);
-    const rightX = Math.max(COLLECTIBLE_HUD_W + margin, this.width - margin);
+  private setupAction360Button(app: Application): void {
+    void app;
+    this.action360ButtonRoot.zIndex = 1001;
+    this.action360ButtonGfx.eventMode = 'static';
+    this.action360ButtonGfx.cursor = 'pointer';
+    this.action360ButtonLabel = new Text({
+      text: '360',
+      style: new TextStyle({
+        fontFamily: 'Arial Black, Heebo, sans-serif',
+        fontSize: 12,
+        fontWeight: '800',
+        fill: '#9df6ff',
+        stroke: { color: '#102428', width: 2 },
+        letterSpacing: 0.6,
+      }),
+    });
+    this.action360ButtonLabel.anchor.set(0.5);
+    this.action360ButtonLabel.position.set(TONGUE_BOOST_BTN_W * 0.5, TONGUE_BOOST_BTN_H * 0.5);
+    this.action360ButtonLabel.eventMode = 'none';
+    this.action360ButtonRoot.addChild(this.action360ButtonGfx, this.action360ButtonLabel);
+    this.action360ButtonGfx.on('pointerdown', this.handleAction360ButtonDown);
+    this.action360ButtonGfx.on('pointerup', this.handleAction360ButtonUp);
+    this.action360ButtonGfx.on('pointerupoutside', this.handleAction360ButtonUp);
+    this.action360ButtonGfx.on('pointercancel', this.handleAction360ButtonUp);
+    this.uiLayer.addChild(this.action360ButtonRoot);
+    this.redrawAction360Button(false);
+    this.syncBoostHudButtonsVisibility();
+  }
+
+  private redrawAction360Button(pressed: boolean): void {
+    const gfx = this.action360ButtonGfx;
+    gfx.clear();
+    const accent = 0x66eeff;
+    const boost = pressed ? 1.25 : 1;
+    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).fill({
+      color: 0x102428,
+      alpha: pressed ? 0.82 : 0.72,
+    });
+    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).stroke({
+      color: accent,
+      alpha: pressed ? 0.98 : 0.85,
+      width: pressed ? 2.4 : 2,
+    });
+    gfx.roundRect(2, 2, TONGUE_BOOST_BTN_W - 4, TONGUE_BOOST_BTN_H - 4, 8).stroke({
+      color: accent,
+      alpha: 0.22 * boost,
+      width: 1,
+    });
+    if (this.action360ButtonLabel) {
+      this.action360ButtonLabel.alpha = pressed ? 1 : 0.92;
+    }
+  }
+
+  private readonly handleAction360ButtonDown = (event: FederatedPointerEvent): void => {
+    if (!this.isFlashSkillBoostActive()) {
+      return;
+    }
+    event.stopPropagation();
+    this.action360ButtonPressed = true;
+    this.redrawAction360Button(true);
+    this.perform360Action();
+  };
+
+  private readonly handleAction360ButtonUp = (): void => {
+    this.action360ButtonPressed = false;
+    this.redrawAction360Button(false);
+  };
+
+  /** Positions TONGUE (right) and 360 (just to its left) below the collectible HUD. */
+  private layoutBoostHudButtons(): void {
+    const pad = 10;
+    const b = this.collectibleHudRoot.getBounds();
+    const cornerGlobal = new Point(b.right, b.bottom + pad);
+    const lp = this.uiLayer.toLocal(cornerGlobal);
+    const tongueRightX = lp.x;
+    const tongueLeftX = tongueRightX - TONGUE_BOOST_BTN_W;
+    const action360RightX = tongueLeftX - BOOST_ACTION_BTN_GAP_PX;
+    this.action360ButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
+    this.action360ButtonRoot.position.set(action360RightX, lp.y);
+    this.action360ButtonGfx.hitArea = new Rectangle(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H);
     this.tongueBoostButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
-    this.tongueBoostButtonRoot.position.set(rightX, hudTop + COLLECTIBLE_HUD_H + 10);
+    this.tongueBoostButtonRoot.position.set(tongueRightX, lp.y);
     this.tongueBoostButtonGfx.hitArea = new Rectangle(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H);
   }
 
@@ -2093,12 +2183,15 @@ export class PlayScene implements Scene {
     }
   }
 
-  private syncTongueBoostButtonVisibility(): void {
+  private syncBoostHudButtonsVisibility(): void {
     const show = this.isFlashSkillBoostActive();
     this.tongueBoostButtonRoot.visible = show;
+    this.action360ButtonRoot.visible = show;
     if (!show) {
       this.tongueBoostButtonPressed = false;
       this.redrawTongueBoostButton(false);
+      this.action360ButtonPressed = false;
+      this.redrawAction360Button(false);
     }
   }
 
@@ -2313,13 +2406,23 @@ export class PlayScene implements Scene {
     }
   }
 
-  private layoutCollectibleHud(): void {
-    const margin = this.width < 440 ? 16 : 12;
-    const topOffset = this.width < 440 ? 86 : 74;
+  /** Places Gold/Diamond strip next to `Lv#` and aligns TONGUE below (no gfx redraw). Call each frame after `scoreboard.update`. */
+  private syncCollectibleHudPosition(): void {
+    const sb = this.scoreboard;
+    if (!sb) {
+      return;
+    }
+    const midY = sb.getPanelHeight() * 0.5;
     this.collectibleHudRoot.pivot.set(COLLECTIBLE_HUD_W, 0);
-    const x = Math.max(COLLECTIBLE_HUD_W + margin, this.width - margin);
-    const y = Math.max(margin, margin + topOffset);
-    this.collectibleHudRoot.position.set(x, y);
+    this.collectibleHudRoot.position.set(
+      sb.getLevelLabelRightLocal() + COLLECT_AFTER_LEVEL_GAP + COLLECTIBLE_HUD_W,
+      midY - COLLECTIBLE_HUD_H * 0.5,
+    );
+    this.layoutBoostHudButtons();
+  }
+
+  private layoutCollectibleHud(): void {
+    this.syncCollectibleHudPosition();
     this.collectibleHudBg.clear();
     this.collectibleHudBg
       .roundRect(0, 0, COLLECTIBLE_HUD_W, COLLECTIBLE_HUD_H, 10)
@@ -2327,7 +2430,6 @@ export class PlayScene implements Scene {
       .stroke({ width: 1, color: 0x4a3a62, alpha: 0.55 });
     this.collectibleHudGoldText?.position.set(12, 10);
     this.collectibleHudDiamondText?.position.set(12, 36);
-    this.layoutTongueBoostButton();
   }
 
   private refreshCollectibleHudText(): void {
