@@ -1,7 +1,6 @@
 import {
   Application,
   Assets,
-  Circle,
   Container,
   FederatedPointerEvent,
   Graphics,
@@ -316,17 +315,6 @@ export class PlayScene implements Scene {
   private collectibleHudBg = new Graphics();
   private touchControlsLayer = new Container();
   private touchFeedbackLayer = new Graphics();
-  private touchRightTongueButton = new Graphics();
-  private touchRightJumpButton = new Graphics();
-  private touchRightTongueLabel?: Text;
-  private touchRightJumpLabel?: Text;
-  private touchRightTonguePressed = false;
-  private touchRightJumpPressed = false;
-  private touchRightButtonRadius = 42;
-  private touchRightTongueX = 0;
-  private touchRightTongueY = 0;
-  private touchRightJumpX = 0;
-  private touchRightJumpY = 0;
   private touchPointers = new Map<number, TouchPointerTrack>();
   private touchControlPointerId: number | null = null;
   private touchRipples: TouchRipple[] = [];
@@ -668,7 +656,6 @@ export class PlayScene implements Scene {
     }
     this.layoutCollectibleHud();
     this.input?.onResize();
-    this.layoutTouchControlsOverlay();
 
     // Mobile browser chrome toggles height in small steps; resetting the whole run felt like “stuck” stairs.
     const minorViewportJitter =
@@ -693,14 +680,6 @@ export class PlayScene implements Scene {
       this.app?.stage.off('pointerup', this.handleTouchPointerUpOrCancel);
       this.app?.stage.off('pointerupoutside', this.handleTouchPointerUpOrCancel);
       this.app?.stage.off('pointercancel', this.handleTouchPointerUpOrCancel);
-      this.touchRightTongueButton.off('pointerdown', this.handleRightTongueDown);
-      this.touchRightTongueButton.off('pointerup', this.handleRightTongueUp);
-      this.touchRightTongueButton.off('pointerupoutside', this.handleRightTongueUp);
-      this.touchRightTongueButton.off('pointercancel', this.handleRightTongueUp);
-      this.touchRightJumpButton.off('pointerdown', this.handleRightJumpDown);
-      this.touchRightJumpButton.off('pointerup', this.handleRightJumpUp);
-      this.touchRightJumpButton.off('pointerupoutside', this.handleRightJumpUp);
-      this.touchRightJumpButton.off('pointercancel', this.handleRightJumpUp);
       this.touchPointers.clear();
       this.touchControlPointerId = null;
       this.input?.clearTouchHolds();
@@ -1938,103 +1917,18 @@ export class PlayScene implements Scene {
     if (!this.input?.isTouchControlsActive()) {
       return;
     }
-    // Temple Run style: full-screen touch lanes + swipe actions.
-    // Joystick/button UI is intentionally disabled for now (kept in git history for future restore).
+    // Full-screen touch + swipe; on-screen JUMP/TONGUE buttons removed for now.
     this.touchControlsLayer.eventMode = 'passive';
     this.touchControlsLayer.sortableChildren = true;
     this.touchControlsLayer.zIndex = 999;
-    this.touchRightTongueButton.eventMode = 'static';
-    this.touchRightJumpButton.eventMode = 'static';
-    this.touchRightTongueButton.cursor = 'pointer';
-    this.touchRightJumpButton.cursor = 'pointer';
-    this.touchRightTongueButton.zIndex = 1001;
-    this.touchRightJumpButton.zIndex = 1001;
-    this.touchRightTongueLabel = new Text({
-      text: 'TONGUE',
-      style: new TextStyle({
-        fontFamily: 'Arial Black, Heebo, sans-serif',
-        fontSize: 11,
-        fontWeight: '800',
-        fill: '#ffea80',
-        stroke: { color: '#261c06', width: 2 },
-        letterSpacing: 0.8,
-      }),
-    });
-    this.touchRightJumpLabel = new Text({
-      text: 'JUMP',
-      style: new TextStyle({
-        fontFamily: 'Arial Black, Heebo, sans-serif',
-        fontSize: 11,
-        fontWeight: '800',
-        fill: '#ffea80',
-        stroke: { color: '#261c06', width: 2 },
-        letterSpacing: 0.8,
-      }),
-    });
-    this.touchRightTongueLabel.anchor.set(0.5);
-    this.touchRightJumpLabel.anchor.set(0.5);
-    this.touchRightTongueLabel.eventMode = 'none';
-    this.touchRightJumpLabel.eventMode = 'none';
-    this.touchRightTongueLabel.zIndex = 1002;
-    this.touchRightJumpLabel.zIndex = 1002;
-    this.touchRightTongueButton.visible = true;
-    this.touchRightJumpButton.visible = true;
-    this.touchRightTongueButton.eventMode = 'static';
-    this.touchRightTongueLabel.visible = true;
-    this.touchRightJumpLabel.visible = true;
     this.touchFeedbackLayer.eventMode = 'none';
-    this.touchControlsLayer.addChild(
-      this.touchFeedbackLayer,
-      this.touchRightTongueButton,
-      this.touchRightJumpButton,
-      this.touchRightTongueLabel,
-      this.touchRightJumpLabel,
-    );
+    this.touchControlsLayer.addChild(this.touchFeedbackLayer);
     this.uiLayer.addChild(this.touchControlsLayer);
     app.stage.on('pointerdown', this.handleTouchPointerDown);
     app.stage.on('pointermove', this.handleTouchPointerMove);
     app.stage.on('pointerup', this.handleTouchPointerUpOrCancel);
     app.stage.on('pointerupoutside', this.handleTouchPointerUpOrCancel);
     app.stage.on('pointercancel', this.handleTouchPointerUpOrCancel);
-    this.touchRightTongueButton.on('pointerdown', this.handleRightTongueDown);
-    this.touchRightTongueButton.on('pointerup', this.handleRightTongueUp);
-    this.touchRightTongueButton.on('pointerupoutside', this.handleRightTongueUp);
-    this.touchRightTongueButton.on('pointercancel', this.handleRightTongueUp);
-    this.touchRightJumpButton.on('pointerdown', this.handleRightJumpDown);
-    this.touchRightJumpButton.on('pointerup', this.handleRightJumpUp);
-    this.touchRightJumpButton.on('pointerupoutside', this.handleRightJumpUp);
-    this.touchRightJumpButton.on('pointercancel', this.handleRightJumpUp);
-    this.layoutTouchControlsOverlay();
-  }
-
-  private layoutTouchControlsOverlay(): void {
-    if (!this.input?.isTouchControlsActive()) {
-      return;
-    }
-    const minSide = Math.min(this.width, this.height);
-    const edgePad = Math.max(16, Math.round(minSide * 0.035));
-    this.touchRightButtonRadius = Math.max(34, Math.min(46, Math.round(minSide * 0.082)));
-    const buttonGap = Math.max(18, Math.round(minSide * 0.03));
-    const rightCenterX = this.width - edgePad - this.touchRightButtonRadius;
-    const bottomButtonY = this.height - edgePad - this.touchRightButtonRadius;
-    const topButtonY = bottomButtonY - this.touchRightButtonRadius * 2 - buttonGap;
-    this.touchRightTongueX = rightCenterX;
-    this.touchRightTongueY = topButtonY;
-    this.touchRightJumpX = rightCenterX;
-    this.touchRightJumpY = bottomButtonY;
-    this.touchRightTongueButton.hitArea = new Circle(
-      this.touchRightTongueX,
-      this.touchRightTongueY,
-      this.touchRightButtonRadius + 10,
-    );
-    this.touchRightJumpButton.hitArea = new Circle(
-      this.touchRightJumpX,
-      this.touchRightJumpY,
-      this.touchRightButtonRadius + 10,
-    );
-    this.touchRightTongueLabel?.position.set(this.touchRightTongueX, this.touchRightTongueY);
-    this.touchRightJumpLabel?.position.set(this.touchRightJumpX, this.touchRightJumpY);
-    this.redrawRightTouchButtons();
   }
 
   private readonly handleTouchPointerDown = (event: FederatedPointerEvent): void => {
@@ -2091,38 +1985,6 @@ export class PlayScene implements Scene {
       this.touchControlPointerId = null;
       this.input?.setTouchFollowAxis(0);
     }
-  };
-
-  private readonly handleRightTongueDown = (event: FederatedPointerEvent): void => {
-    if (!this.input?.isTouchControlsActive()) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    this.touchRightTonguePressed = true;
-    this.redrawRightTouchButtons();
-    this.input.queueGrapple();
-  };
-
-  private readonly handleRightTongueUp = (): void => {
-    this.touchRightTonguePressed = false;
-    this.redrawRightTouchButtons();
-  };
-
-  private readonly handleRightJumpDown = (event: FederatedPointerEvent): void => {
-    if (!this.input?.isTouchControlsActive()) {
-      return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    this.touchRightJumpPressed = true;
-    this.redrawRightTouchButtons();
-    this.input.queueJump();
-  };
-
-  private readonly handleRightJumpUp = (): void => {
-    this.touchRightJumpPressed = false;
-    this.redrawRightTouchButtons();
   };
 
   private applyTouchHoldState(): void {
@@ -2248,49 +2110,6 @@ export class PlayScene implements Scene {
         color: 0xffffff,
         alpha: alpha * 0.35,
       });
-    }
-  }
-
-  private redrawRightTouchButtons(): void {
-    if (!this.input?.isTouchControlsActive()) {
-      return;
-    }
-    const drawButton = (
-      gfx: Graphics,
-      x: number,
-      y: number,
-      radius: number,
-      pressed: boolean,
-    ): void => {
-      gfx.clear();
-      const gold = 0xffea80;
-      const boost = pressed ? 1.35 : 1;
-      gfx.circle(x, y, radius + 18).fill({ color: gold, alpha: 0.09 * boost });
-      gfx.circle(x, y, radius + 10).fill({ color: 0x1b1324, alpha: pressed ? 0.72 : 0.62 });
-      gfx.circle(x, y, radius + 4).stroke({ color: 0x000000, alpha: 0.42, width: 3 });
-      gfx.circle(x, y, radius).stroke({ color: gold, alpha: pressed ? 0.98 : 0.9, width: 2.8 });
-      gfx.circle(x, y, radius - 8).stroke({ color: gold, alpha: pressed ? 0.58 : 0.44, width: 1.6 });
-      gfx.alpha = 1;
-    };
-    drawButton(
-      this.touchRightTongueButton,
-      this.touchRightTongueX,
-      this.touchRightTongueY,
-      this.touchRightButtonRadius,
-      this.touchRightTonguePressed,
-    );
-    drawButton(
-      this.touchRightJumpButton,
-      this.touchRightJumpX,
-      this.touchRightJumpY,
-      this.touchRightButtonRadius,
-      this.touchRightJumpPressed,
-    );
-    if (this.touchRightTongueLabel) {
-      this.touchRightTongueLabel.alpha = this.touchRightTonguePressed ? 0.96 : 0.82;
-    }
-    if (this.touchRightJumpLabel) {
-      this.touchRightJumpLabel.alpha = this.touchRightJumpPressed ? 0.96 : 0.82;
     }
   }
 
