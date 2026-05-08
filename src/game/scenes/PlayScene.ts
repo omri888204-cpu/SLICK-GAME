@@ -918,7 +918,11 @@ export class PlayScene implements Scene {
    * Steps that scroll below visible area move to the top with a new stairId so climbing is endless.
    */
   private recycleStairsOffscreen(): void {
-    const cutoff = this.cameraY + this.worldHeightFromScreen() + STAIRS.recycleBelowScreenPx;
+    const feetY = this.player.body.y + this.player.body.height;
+    const cameraCutoff = this.cameraY + this.worldHeightFromScreen() + STAIRS.recycleBelowScreenPx;
+    const keepBelowPlayer =
+      feetY + STAIRS.safetyStairBufferDrops * STAIRS.fallDeathStairRiseReferencePx;
+    const cutoff = Math.max(cameraCutoff, keepBelowPlayer);
     const staying = this.platforms.filter((p) => p.y <= cutoff);
     if (staying.length === 0 || staying.length === this.platforms.length) {
       return;
@@ -1370,12 +1374,19 @@ export class PlayScene implements Scene {
 
   private checkFallGameOver(): void {
     const feetY = this.player.body.y + this.player.body.height;
-    const deathLine =
-      this.cameraY +
-      this.worldHeightFromScreen() +
-      STAIRS.fallDeathBelowViewportPx +
-      STAIRS.fallDeathForgivingStairDrops * STAIRS.fallDeathStairRiseReferencePx;
-    if (feetY > deathLine) {
+    const need = STAIRS.safetyStairBufferDrops;
+    const nextLower = this.platforms
+      .filter((p) => p.y > feetY + 1)
+      .sort((a, b) => a.y - b.y);
+    let deathFeetY: number;
+    if (nextLower.length >= need) {
+      const nth = nextLower[need - 1];
+      deathFeetY = nth.y + STAIRS.fallPastLastSafetyStairPx;
+    } else {
+      deathFeetY =
+        this.cameraY + this.worldHeightFromScreen() + STAIRS.fallDeathBelowViewportPx;
+    }
+    if (feetY > deathFeetY) {
       this.resetRun();
     }
   }

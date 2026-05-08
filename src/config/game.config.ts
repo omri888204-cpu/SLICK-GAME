@@ -183,14 +183,21 @@ export const STAIRS = {
   platformHeight: 28,
   /** When a platform’s top is this far below the camera, recycle it to the top. */
   recycleBelowScreenPx: 220,
-  /** Player feet past bottom of view + this → game over / reset. */
+  /** Fallback: player feet past bottom of view + this → reset (only if fewer than `safetyStairBufferDrops` steps below). */
   fallDeathBelowViewportPx: 140,
   /**
-   * Extra room below the camera before reset: “forgiving stair drops” (world y increases downward).
-   * Uses `fallDeathStairRiseReferencePx` ≈ average vertical gap between step tops in play.
+   * Nominal vertical gap between step tops (aligns with `STAIR_GAP_*` average in PlayScene).
+   * Used to keep a stair “safety column” below the player during recycle.
    */
-  fallDeathForgivingStairDrops: 3,
   fallDeathStairRiseReferencePx: 300,
+  /**
+   * Always keep at least this many step surfaces **below** the player’s feet before recycling platforms away.
+   */
+  safetyStairBufferDrops: 4,
+  /**
+   * Game over when feet fall more than this far **past** the top of the Nth next-lower stair (`safetyStairBufferDrops`).
+   */
+  fallPastLastSafetyStairPx: 175,
   /**
    * From this HUD altitude (meters), switch to slime platform art and apply `slimePlatformArtScale`.
    */
