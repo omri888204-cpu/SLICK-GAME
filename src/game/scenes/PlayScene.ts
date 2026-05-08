@@ -234,10 +234,10 @@ const CHECKER_BACKGROUND_COLOR_SPREAD = 10;
 /** Pixels at image edges this dark (and connected) are cleared — removes black letterbox around Photoroom exports. */
 const DARK_BG_MAX_CHANNEL = 42;
 
-const COLLECTIBLE_HUD_W = 156;
-const COLLECTIBLE_HUD_H = 64;
-/** Horizontal gap between `Lv#` and the Gold/Diamond strip (scoreboard local px). */
+/** Horizontal gap between `Lv#` and Gold/Diamond lines (scoreboard local px). */
 const COLLECT_AFTER_LEVEL_GAP = 8;
+/** Vertical half-gap between Gold and Diamond lines (stack centered on scoreboard bar midline). */
+const COLLECTIBLE_LINES_HALF_GAP_PX = 13;
 /** Touch-only boost tongue button — sits under Gold/Diamonds (right-aligned). */
 const TONGUE_BOOST_BTN_W = 118;
 const TONGUE_BOOST_BTN_H = 38;
@@ -282,6 +282,9 @@ const GRAPPLE_VERTICAL_BOOST_VY = -640;
 const GRAPPLE_PULL_HORIZONTAL_LERP_PER_SEC = 17;
 /** Gap between TONGUE and 360 boost HUD buttons (screen px). */
 const BOOST_ACTION_BTN_GAP_PX = 8;
+/** Shift TONGUE/360 cluster slightly toward upper-right (screen px after HUD layout). */
+const BOOST_BTN_CLUSTER_OFFSET_X = 14;
+const BOOST_BTN_CLUSTER_OFFSET_Y = 6;
 const GRAPPLE_STOP_ABOVE_PLATFORM_PX = 20;
 const LEVEL_MAX = 100;
 const LEVEL_SCORE_STEP = 1000;
@@ -334,7 +337,6 @@ export class PlayScene implements Scene {
   private player = new Player();
   private scoreboard?: HyperScoreboard;
   private collectibleHudRoot = new Container();
-  private collectibleHudBg = new Graphics();
   private touchControlsLayer = new Container();
   private touchFeedbackLayer = new Graphics();
   private touchPointers = new Map<number, TouchPointerTrack>();
@@ -2031,11 +2033,9 @@ export class PlayScene implements Scene {
         stroke: { color: '#1a1020', width: 3 },
       }),
     });
-    this.collectibleHudRoot.addChild(
-      this.collectibleHudBg,
-      this.collectibleHudGoldText,
-      this.collectibleHudDiamondText,
-    );
+    this.collectibleHudGoldText.anchor.set(0, 0.5);
+    this.collectibleHudDiamondText.anchor.set(0, 0.5);
+    this.collectibleHudRoot.addChild(this.collectibleHudGoldText, this.collectibleHudDiamondText);
     this.collectibleHudRoot.zIndex = 12;
     this.scoreboard?.addChild(this.collectibleHudRoot);
   }
@@ -2148,14 +2148,16 @@ export class PlayScene implements Scene {
     const b = this.collectibleHudRoot.getBounds();
     const cornerGlobal = new Point(b.right, b.bottom + pad);
     const lp = this.uiLayer.toLocal(cornerGlobal);
-    const tongueRightX = lp.x;
+    const bx = lp.x + BOOST_BTN_CLUSTER_OFFSET_X;
+    const by = lp.y + BOOST_BTN_CLUSTER_OFFSET_Y;
+    const tongueRightX = bx;
     const tongueLeftX = tongueRightX - TONGUE_BOOST_BTN_W;
     const action360RightX = tongueLeftX - BOOST_ACTION_BTN_GAP_PX;
     this.action360ButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
-    this.action360ButtonRoot.position.set(action360RightX, lp.y);
+    this.action360ButtonRoot.position.set(action360RightX, by);
     this.action360ButtonGfx.hitArea = new Rectangle(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H);
     this.tongueBoostButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
-    this.tongueBoostButtonRoot.position.set(tongueRightX, lp.y);
+    this.tongueBoostButtonRoot.position.set(tongueRightX, by);
     this.tongueBoostButtonGfx.hitArea = new Rectangle(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H);
   }
 
@@ -2406,30 +2408,23 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Places Gold/Diamond strip next to `Lv#` and aligns TONGUE below (no gfx redraw). Call each frame after `scoreboard.update`. */
+  /** Places Gold/Diamond lines next to `Lv#` (no panel) and aligns boost buttons below. Call each frame after `scoreboard.update`. */
   private syncCollectibleHudPosition(): void {
     const sb = this.scoreboard;
     if (!sb) {
       return;
     }
     const midY = sb.getPanelHeight() * 0.5;
-    this.collectibleHudRoot.pivot.set(COLLECTIBLE_HUD_W, 0);
-    this.collectibleHudRoot.position.set(
-      sb.getLevelLabelRightLocal() + COLLECT_AFTER_LEVEL_GAP + COLLECTIBLE_HUD_W,
-      midY - COLLECTIBLE_HUD_H * 0.5,
-    );
+    this.collectibleHudRoot.pivot.set(0, 0.5);
+    this.collectibleHudRoot.position.set(sb.getLevelLabelRightLocal() + COLLECT_AFTER_LEVEL_GAP, midY);
     this.layoutBoostHudButtons();
   }
 
   private layoutCollectibleHud(): void {
     this.syncCollectibleHudPosition();
-    this.collectibleHudBg.clear();
-    this.collectibleHudBg
-      .roundRect(0, 0, COLLECTIBLE_HUD_W, COLLECTIBLE_HUD_H, 10)
-      .fill({ color: 0x120818, alpha: 0.74 })
-      .stroke({ width: 1, color: 0x4a3a62, alpha: 0.55 });
-    this.collectibleHudGoldText?.position.set(12, 10);
-    this.collectibleHudDiamondText?.position.set(12, 36);
+    const g = COLLECTIBLE_LINES_HALF_GAP_PX;
+    this.collectibleHudGoldText?.position.set(0, -g);
+    this.collectibleHudDiamondText?.position.set(0, g);
   }
 
   private refreshCollectibleHudText(): void {
