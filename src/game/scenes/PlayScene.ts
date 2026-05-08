@@ -279,8 +279,8 @@ const ACTION360_ROTATE_SEC = 2.6;
 const ACTION360_ROTATIONS = 2;
 const ACTION360_TARGET_STAIRS_UP = 3;
 const TOUCH_SWIPE_UP_MIN_PX = 18;
-const TOUCH_SWIPE_UP_MAX_SIDEWAYS_PX = 22;
-const TOUCH_SWIPE_ABOVE_PLAYER_PX = 16;
+const TOUCH_SWIPE_JUMP_MIN_DISTANCE_PX = 20;
+const TOUCH_SWIPE_UPWARD_RATIO_MIN = 0.4;
 const TOUCH_FOLLOW_DISTANCE_PX = 44;
 const TOUCH_LOCK_RADIUS_PX = 120;
 const TOUCH_ACTION_RETRIGGER_MS = 110;
@@ -2152,29 +2152,24 @@ export class PlayScene implements Scene {
     }
     // Re-arm upward swipe while finger stays down: moving down refreshes baseline.
     p.swipeBaselineY = Math.max(p.swipeBaselineY, p.lastY);
-    if (Math.abs(p.lastX - p.swipeBaselineX) > TOUCH_SWIPE_UP_MAX_SIDEWAYS_PX) {
+    if (p.lastY > p.swipeBaselineY) {
       p.swipeBaselineX = p.lastX;
       p.swipeBaselineY = p.lastY;
     }
-    const dy = p.swipeBaselineY - p.lastY;
-    const dx = Math.abs(p.lastX - p.swipeBaselineX);
-    const zoom = this.getCameraZoom();
-    const padX = 0;
-    const padY = 0;
-    const playerCx = this.player.body.x + this.player.body.width * 0.5;
-    const playerCy = this.player.body.y + this.player.body.height * 0.5;
-    const playerScreenX = (playerCx - this.cameraX) * zoom + padX;
-    const playerScreenY = (playerCy - this.cameraY) * zoom + padY;
-    const touchAbovePlayer = p.lastY <= playerScreenY - TOUCH_SWIPE_ABOVE_PLAYER_PX;
-    const touchNearPlayerX = Math.abs(p.lastX - playerScreenX) <= TOUCH_LOCK_RADIUS_PX * 0.95;
+    const vecX = p.lastX - p.swipeBaselineX;
+    const vecY = p.lastY - p.swipeBaselineY;
+    const swipeDist = Math.hypot(vecX, vecY);
+    const upwardRatio = swipeDist > 1e-5 ? (-vecY / swipeDist) : 0;
     void finalize;
     if (
-      dy >= TOUCH_SWIPE_UP_MIN_PX &&
-      dx <= TOUCH_SWIPE_UP_MAX_SIDEWAYS_PX &&
-      touchAbovePlayer &&
-      touchNearPlayerX
+      swipeDist >= TOUCH_SWIPE_JUMP_MIN_DISTANCE_PX &&
+      upwardRatio >= TOUCH_SWIPE_UPWARD_RATIO_MIN &&
+      -vecY >= TOUCH_SWIPE_UP_MIN_PX
     ) {
       const now = performance.now();
+      const zoom = this.getCameraZoom();
+      const playerCx = this.player.body.x + this.player.body.width * 0.5;
+      const playerScreenX = (playerCx - this.cameraX) * zoom;
       const swipeOnLeft = p.lastX < playerScreenX;
       if (!swipeOnLeft && now - this.touchLastJumpMs >= TOUCH_ACTION_RETRIGGER_MS) {
         this.touchLastJumpMs = now;
