@@ -1972,6 +1972,9 @@ export class PlayScene implements Scene {
     this.touchRightJumpLabel.anchor.set(0.5);
     this.touchRightTongueLabel.eventMode = 'none';
     this.touchRightJumpLabel.eventMode = 'none';
+    this.touchRightTongueButton.visible = false;
+    this.touchRightTongueButton.eventMode = 'none';
+    this.touchRightTongueLabel.visible = false;
     this.touchFeedbackLayer.eventMode = 'none';
     this.touchControlsLayer.addChild(
       this.touchFeedbackLayer,
@@ -2086,9 +2089,7 @@ export class PlayScene implements Scene {
     }
     event.preventDefault();
     event.stopPropagation();
-    this.touchRightTonguePressed = true;
-    this.redrawRightTouchButtons();
-    this.input.queueGrapple();
+    // Mobile touch mode: tongue is disabled.
   };
 
   private readonly handleRightTongueUp = (): void => {
@@ -2175,12 +2176,7 @@ export class PlayScene implements Scene {
     ) {
       const now = performance.now();
       const swipeOnLeft = p.lastX < playerScreenX;
-      if (swipeOnLeft) {
-        if (now - this.touchLastGrappleMs >= TOUCH_ACTION_RETRIGGER_MS) {
-          this.touchLastGrappleMs = now;
-          this.input?.queueGrapple();
-        }
-      } else if (now - this.touchLastJumpMs >= TOUCH_ACTION_RETRIGGER_MS) {
+      if (!swipeOnLeft && now - this.touchLastJumpMs >= TOUCH_ACTION_RETRIGGER_MS) {
         this.touchLastJumpMs = now;
         this.input?.queueJump();
       }
