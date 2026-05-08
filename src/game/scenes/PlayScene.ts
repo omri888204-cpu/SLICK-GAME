@@ -20,6 +20,7 @@ import {
   RENDER,
   SCORE_UI,
   STAIRS,
+  WALK,
 } from '../../config/game.config';
 import { HyperScoreboard } from '../ui/HyperScoreboard';
 import { Player } from '../entities/Player';
@@ -280,11 +281,16 @@ const ACTION360_TARGET_STAIRS_UP = 3;
 const TOUCH_SWIPE_UP_MIN_PX = 18;
 const TOUCH_SWIPE_JUMP_MIN_DISTANCE_PX = 20;
 const TOUCH_SWIPE_UPWARD_RATIO_MIN = 0.4;
-const TOUCH_FOLLOW_DISTANCE_PX = 44;
+const TOUCH_FOLLOW_DISTANCE_PX = 70;
 const TOUCH_LOCK_RADIUS_PX = 120;
 const TOUCH_ACTION_RETRIGGER_MS = 110;
 /** After a jump, auto tongue only once we're clearly falling (world y-down vy). */
 const AUTO_TONGUE_AFTER_JUMP_MIN_FALL_VY = 110;
+/**
+ * Master switch for tongue grapple (keyboard, touch swipe, auto-assist after jump, 360 rope, DB load).
+ * Set `true` when bringing the feature back.
+ */
+const TONGUE_GRAPPLE_ENABLED = false;
 
 export class PlayScene implements Scene {
   readonly name = 'play';
@@ -456,7 +462,6 @@ export class PlayScene implements Scene {
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
     this.runTime += dt;
-    this.input?.smoothTouchJoystickAxis(dt);
     this.expireComboIfNeeded();
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
     this.updateFlashSkillBoost(dt);
@@ -467,6 +472,7 @@ export class PlayScene implements Scene {
     this.updateLevelUpParticles(dt);
     this.update360Action(dt);
     this.updateTouchFollowAxis();
+    this.input?.smoothTouchJoystickAxis(dt);
 
     if (!this.action360State && this.grapple?.phase === 'extend') {
       this.grapple.extendT += dt;
@@ -560,8 +566,17 @@ export class PlayScene implements Scene {
     const axisScale = pulling ? 0 : 1;
     const jumpArcAssistActive = this.jumpArcAssistTime > 0 && !this.player.body.grounded;
     const effectiveAxis = jumpArcAssistActive ? 0 : axis;
+    const touchAirControl =
+      this.input?.isTouchControlsActive() && !this.player.body.grounded
+        ? WALK.touchAirControlScale
+        : 1;
 
-    this.physics.applyHorizontalInput(this.player.body, effectiveAxis * axisScale, dt);
+    this.physics.applyHorizontalInput(
+      this.player.body,
+      effectiveAxis * axisScale,
+      dt,
+      touchAirControl,
+    );
     if (jumpArcAssistActive) {
       this.jumpArcAssistTime = Math.max(0, this.jumpArcAssistTime - dt);
       const body = this.player.body;
@@ -573,8 +588,9 @@ export class PlayScene implements Scene {
         this.jumpArcStartCenterX +
         (this.jumpArcTargetCenterX - this.jumpArcStartCenterX) * curveT;
       const toDesired = desiredCenterX - bodyCenterX;
-      const targetVx = Math.max(-300, Math.min(220, toDesired * 4.8));
-      const steer = Math.min(1, dt * 6);
+      const touchArc = this.input?.isTouchControlsActive() ?? false;
+      const targetVx = Math.max(-300, Math.min(220, toDesired * (touchArc ? 5.35 : 4.8)));
+      const steer = Math.min(1, dt * (touchArc ? 7.8 : 6));
       body.vx += (targetVx - body.vx) * steer;
       // Keep momentum bending inward while arc assist is active.
       if (this.jumpArcTargetCenterX < bodyCenterX) {
@@ -709,7 +725,7 @@ export class PlayScene implements Scene {
       return;
     }
     const wantGrapple = this.input?.consumeGrapple() ?? false;
-    if (wantGrapple) {
+    if (wantGrapple && TONGUE_GRAPPLE_ENABLED) {
       this.triggerGrappleAction();
     }
 
@@ -746,6 +762,9 @@ export class PlayScene implements Scene {
   }
 
   private beginGrappleFromHit(hit: { x: number; y: number; platform: Platform }): void {
+    if (!TONGUE_GRAPPLE_ENABLED) {
+      return;
+    }
     this.autoTongueAfterJumpArmed = false;
     this.grapple = {
       phase: 'extend',
@@ -764,7 +783,7 @@ export class PlayScene implements Scene {
   }
 
   private triggerGrappleAction(): void {
-    if (this.grappleCooldown > 0 || this.grapple) {
+    if (!TONGUE_GRAPPLE_ENABLED || this.grappleCooldown > 0 || this.grapple) {
       return;
     }
     const hit = this.computeGrappleTargetHit();
@@ -775,7 +794,12 @@ export class PlayScene implements Scene {
   }
 
   private maybeAutoTongueAfterFailedJump(): void {
-    if (!this.autoTongueAfterJumpArmed || this.grapple || this.action360State) {
+    if (
+      !TONGUE_GRAPPLE_ENABLED ||
+      !this.autoTongueAfterJumpArmed ||
+      this.grapple ||
+      this.action360State
+    ) {
       return;
     }
     const body = this.player.body;
@@ -800,6 +824,9 @@ export class PlayScene implements Scene {
   }
 
   private updateGrappleCooldownFeedback(): void {
+    if (!TONGUE_GRAPPLE_ENABLED) {
+      return;
+    }
     if (this.grappleCooldown > 0) {
       if (!this.grappleReloadingLogged) {
         this.grappleReloadingLogged = true;
@@ -818,9 +845,11 @@ export class PlayScene implements Scene {
     if (!this.player.body.grounded || !!this.grapple) {
       return;
     }
-    this.autoTongueJumpFromStairId =
-      this.currentGroundPlatform?.stairId ?? this.lastScoredStairId;
-    this.autoTongueAfterJumpArmed = true;
+    if (TONGUE_GRAPPLE_ENABLED) {
+      this.autoTongueJumpFromStairId =
+        this.currentGroundPlatform?.stairId ?? this.lastScoredStairId;
+      this.autoTongueAfterJumpArmed = true;
+    }
     this.physics.jump(this.player.body);
     if (this.isFlashSkillBoostActive()) {
       const maxBoostJumpHeight = STAIRS.stepPx * FLASH_BOOST_STAIR_COUNT;
@@ -835,7 +864,7 @@ export class PlayScene implements Scene {
       const inwardAssistVx = -(170 + rightBias * 250);
       // Keep existing stronger inward motion, otherwise bend trajectory toward screen center.
       body.vx = Math.min(body.vx, inwardAssistVx);
-      this.jumpArcAssistDuration = 0.28;
+      this.jumpArcAssistDuration = this.input?.isTouchControlsActive() ? 0.4 : 0.28;
       this.jumpArcAssistTime = this.jumpArcAssistDuration;
       this.jumpArcStartCenterX = bodyCenterX;
       this.jumpArcTargetCenterX = centerX;
@@ -1093,7 +1122,7 @@ export class PlayScene implements Scene {
   }
 
   private perform360Action(): void {
-    if (this.action360State) {
+    if (!TONGUE_GRAPPLE_ENABLED || this.action360State) {
       return;
     }
     const body = this.player.body;
@@ -1633,6 +1662,9 @@ export class PlayScene implements Scene {
     this.tongueDbReady = false;
     this.tongueArmature?.dispose(true);
     this.tongueArmature = null;
+    if (!TONGUE_GRAPPLE_ENABLED) {
+      return;
+    }
     try {
       const [skeRes, texJsonRes] = await Promise.all([
         fetch(TONGUE_DB_SKE),
@@ -2093,7 +2125,10 @@ export class PlayScene implements Scene {
           this.input?.queueJump();
         }
       } else if (swipeOnLeft) {
-        if (now - this.touchLastGrappleMs >= TOUCH_ACTION_RETRIGGER_MS) {
+        if (
+          TONGUE_GRAPPLE_ENABLED &&
+          now - this.touchLastGrappleMs >= TOUCH_ACTION_RETRIGGER_MS
+        ) {
           this.touchLastGrappleMs = now;
           this.input?.queueGrapple();
         }

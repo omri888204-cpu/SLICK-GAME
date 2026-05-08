@@ -1,4 +1,6 @@
 import type { Application } from 'pixi.js';
+import { WALK } from '../../config/game.config';
+
 export class InputManager {
   private keys = new Set<string>();
   private jumpQueued = false;
@@ -6,7 +8,8 @@ export class InputManager {
   private readonly touchControlsEnabled = InputManager.detectTouchControls();
   private touchHoldLeft = false;
   private touchHoldRight = false;
-  private touchAnalogAxis = 0;
+  private touchAnalogAxisTarget = 0;
+  private touchAnalogAxisSmoothed = 0;
 
   constructor(private readonly app: Application) {}
 
@@ -24,13 +27,14 @@ export class InputManager {
     this.keys.clear();
     this.touchHoldLeft = false;
     this.touchHoldRight = false;
-    this.touchAnalogAxis = 0;
+    this.touchAnalogAxisTarget = 0;
+    this.touchAnalogAxisSmoothed = 0;
   }
 
   getHorizontalAxis(): number {
     if (this.touchControlsEnabled) {
-      if (Math.abs(this.touchAnalogAxis) > 0.001) {
-        return Math.max(-1, Math.min(1, this.touchAnalogAxis));
+      if (Math.abs(this.touchAnalogAxisSmoothed) > 0.001) {
+        return Math.max(-1, Math.min(1, this.touchAnalogAxisSmoothed));
       }
       if (this.touchHoldLeft && !this.touchHoldRight) {
         return -1;
@@ -85,11 +89,12 @@ export class InputManager {
   clearTouchHolds(): void {
     this.touchHoldLeft = false;
     this.touchHoldRight = false;
-    this.touchAnalogAxis = 0;
+    this.touchAnalogAxisTarget = 0;
+    this.touchAnalogAxisSmoothed = 0;
   }
 
   setTouchFollowAxis(axis: number): void {
-    this.touchAnalogAxis = Math.max(-1, Math.min(1, axis));
+    this.touchAnalogAxisTarget = Math.max(-1, Math.min(1, axis));
   }
 
   // Deprecated joystick entry-point; now routes to analog touch-follow axis.
@@ -97,9 +102,16 @@ export class InputManager {
     this.setTouchFollowAxis(axis);
   }
 
-  /** Kept for compatibility after joystick removal. */
+  /** Ease touch-follow toward the finger (reduces jitter; feels more like analog swing). */
   smoothTouchJoystickAxis(dt: number): void {
-    void dt;
+    if (!this.touchControlsEnabled) {
+      return;
+    }
+    const k = 1 - Math.exp(-WALK.touchAxisLerpPerSec * dt);
+    this.touchAnalogAxisSmoothed += (this.touchAnalogAxisTarget - this.touchAnalogAxisSmoothed) * k;
+    if (Math.abs(this.touchAnalogAxisSmoothed) < 0.008 && Math.abs(this.touchAnalogAxisTarget) < 0.008) {
+      this.touchAnalogAxisSmoothed = 0;
+    }
   }
 
   queueJump(): void {

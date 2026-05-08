@@ -114,13 +114,14 @@ export class Physics {
     };
   }
 
-  applyHorizontalInput(body: PlayerBody, axis: number, dt: number): void {
+  applyHorizontalInput(body: PlayerBody, axis: number, dt: number, airControlScale = 1): void {
     const targetVx = axis * WALK.speedPxPerSecond;
     let rate: number;
+    const airMul = body.grounded ? 1 : airControlScale;
     if (axis === 0) {
-      rate = body.grounded ? WALK.stopDeceleration : WALK.airAcceleration;
+      rate = body.grounded ? WALK.stopDeceleration : WALK.airAcceleration * airMul;
     } else {
-      rate = body.grounded ? WALK.acceleration : WALK.airAcceleration;
+      rate = body.grounded ? WALK.acceleration : WALK.airAcceleration * airMul;
     }
 
     body.vx = this.moveToward(body.vx, targetVx, rate * dt);

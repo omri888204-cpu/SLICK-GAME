@@ -39,6 +39,13 @@ export const WALK = {
    * Keyboard arrow keys unchanged (they bypass this by not using smoothed joystick).
    */
   touchJoystickWalkScale: 0.646,
+  /**
+   * Air control multiplier while touch mode is active (Spider-Man style mid-air steering).
+   * 1 = same as keyboard; >1 = tighter, more responsive arcs.
+   */
+  touchAirControlScale: 1.58,
+  /** `setTouchFollowAxis` target blends toward smoothed axis per second (higher = snappier). */
+  touchAxisLerpPerSec: 20,
   acceleration: 5880,
   airAcceleration: 3360,
   stopDeceleration: 2200,
@@ -74,7 +81,8 @@ export const ALIVE = {
 export const PHYSICS = {
   gravity: 2100,
   maxSpeed: 868,
-  baseJump: 1064,
+  /** +10% vs legacy base for slightly more forgiving default jumps. */
+  baseJump: 1170,
   speedJumpBonus: 0.75,
   /** Horizontal bounce when hitting left/right world bounds (custom physics, not Phaser). */
   worldWallRestitution: 0,
