@@ -252,6 +252,14 @@ const WORLD_BOUNDS_W = 1400;
 const WORLD_BOUNDS_H = 1001000;
 const PLATFORM_SPAWN_MIN_X = 100;
 const PLATFORM_SPAWN_MAX_X = 1400 - 100;
+/** When true, stairs spawn in a band around the player (world X) so they stay on-screen on mobile. */
+const MOBILE_NARROW_UI_MAX_W = 520;
+/**
+ * Horizontal spawn band = this fraction of visible world width, centered on the player.
+ * (e.g. 0.75 → new stairs stay within ~75% of viewport width around the chameleon.)
+ */
+const MOBILE_PLATFORM_SPAWN_VIEWPORT_FRAC = 0.72;
+const MOBILE_PLATFORM_SPAWN_MIN_HALF_BAND_PX = 200;
 const STAIR_GAP_MIN_PX = 250;
 const STAIR_GAP_MAX_PX = 350;
 const BACKGROUND_HORIZONTAL_PAD_PX = 1200;
@@ -955,9 +963,44 @@ export class PlayScene implements Scene {
     return STAIR_GAP_MIN_PX + unit * (STAIR_GAP_MAX_PX - STAIR_GAP_MIN_PX);
   }
 
+  /**
+   * World-space range for platform **center** X. On narrow screens, keep stairs near the player
+   * so they don’t spawn at the far edges of the 1400px world (invisible / awkward on mobile).
+   */
+  private getPlatformSpawnCenterRange(platformWidth: number): { minCenterX: number; maxCenterX: number } {
+    const halfW = platformWidth * 0.5;
+    const minEdge = WORLD_BOUNDS_X + PLATFORM_EDGE_PADDING_PX + halfW;
+    const maxEdge = this.worldWidth - PLATFORM_EDGE_PADDING_PX - halfW;
+    if (maxEdge <= minEdge) {
+      const c = this.worldWidth * 0.5;
+      return { minCenterX: c, maxCenterX: c };
+    }
+
+    const useCenterBand = this.width <= MOBILE_NARROW_UI_MAX_W;
+    if (!useCenterBand) {
+      return { minCenterX: PLATFORM_SPAWN_MIN_X, maxCenterX: PLATFORM_SPAWN_MAX_X };
+    }
+
+    const cx = this.player.body.x + this.player.body.width * 0.5;
+    const halfBand = Math.max(
+      MOBILE_PLATFORM_SPAWN_MIN_HALF_BAND_PX,
+      this.worldWidthFromScreen() * 0.5 * MOBILE_PLATFORM_SPAWN_VIEWPORT_FRAC,
+    );
+    let minC = cx - halfBand;
+    let maxC = cx + halfBand;
+
+    minC = Math.max(minEdge, minC);
+    maxC = Math.min(maxEdge, maxC);
+    if (maxC <= minC) {
+      const mid = Math.max(minEdge, Math.min(cx, maxEdge));
+      return { minCenterX: mid, maxCenterX: mid };
+    }
+
+    return { minCenterX: minC, maxCenterX: maxC };
+  }
+
   private computePlatformSpawnX(stairId: number, platformWidth: number): number {
-    const minCenterX = PLATFORM_SPAWN_MIN_X;
-    const maxCenterX = PLATFORM_SPAWN_MAX_X;
+    const { minCenterX, maxCenterX } = this.getPlatformSpawnCenterRange(platformWidth);
     const minX = Math.max(WORLD_BOUNDS_X + PLATFORM_EDGE_PADDING_PX, minCenterX - platformWidth * 0.5);
     const maxX = Math.min(
       this.worldWidth - platformWidth - PLATFORM_EDGE_PADDING_PX,
