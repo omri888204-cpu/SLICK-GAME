@@ -102,12 +102,15 @@ export class InputManager {
     this.setTouchFollowAxis(axis);
   }
 
-  /** Ease touch-follow toward the finger (reduces jitter; feels more like analog swing). */
-  smoothTouchJoystickAxis(dt: number): void {
+  /**
+   * Ease touch-follow toward the finger: tight on ground (horseshoe carve), softer in air (flow).
+   */
+  smoothTouchJoystickAxis(dt: number, playerGrounded: boolean): void {
     if (!this.touchControlsEnabled) {
       return;
     }
-    const k = 1 - Math.exp(-WALK.touchAxisLerpPerSec * dt);
+    const lerpPerSec = playerGrounded ? WALK.touchAxisLerpPerSecGround : WALK.touchAxisLerpPerSecAir;
+    const k = 1 - Math.exp(-lerpPerSec * dt);
     this.touchAnalogAxisSmoothed += (this.touchAnalogAxisTarget - this.touchAnalogAxisSmoothed) * k;
     if (Math.abs(this.touchAnalogAxisSmoothed) < 0.008 && Math.abs(this.touchAnalogAxisTarget) < 0.008) {
       this.touchAnalogAxisSmoothed = 0;

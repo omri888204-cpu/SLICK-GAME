@@ -44,8 +44,21 @@ export const WALK = {
    * 1 = same as keyboard; >1 = tighter, more responsive arcs.
    */
   touchAirControlScale: 1.58,
-  /** `setTouchFollowAxis` target blends toward smoothed axis per second (higher = snappier). */
-  touchAxisLerpPerSec: 20,
+  /**
+   * Touch follow smoothing: snappier on ground so horseshoe / figure-eight carving builds |vx|
+   * before jump (jump height scales with |vx| via `PHYSICS.speedJumpBonus`).
+   */
+  touchAxisLerpPerSecGround: 38,
+  /** Softer smoothing in the air for fluid swing after leaving the platform. */
+  touchAxisLerpPerSecAir: 18,
+  /**
+   * Ground acceleration multiplier (touch only). Rewards carving left–right–left before jump.
+   */
+  touchGroundCarveAccelScale: 1.28,
+  /**
+   * Extra ground accel (touch only) when steering opposes current `vx` — crisp reversals for horseshoe flow.
+   */
+  touchReverseCarveBoost: 1.16,
   acceleration: 5880,
   airAcceleration: 3360,
   stopDeceleration: 2200,

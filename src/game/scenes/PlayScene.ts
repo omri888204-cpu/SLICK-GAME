@@ -472,7 +472,7 @@ export class PlayScene implements Scene {
     this.updateLevelUpParticles(dt);
     this.update360Action(dt);
     this.updateTouchFollowAxis();
-    this.input?.smoothTouchJoystickAxis(dt);
+    this.input?.smoothTouchJoystickAxis(dt, this.player.body.grounded);
 
     if (!this.action360State && this.grapple?.phase === 'extend') {
       this.grapple.extendT += dt;
@@ -570,12 +570,22 @@ export class PlayScene implements Scene {
       this.input?.isTouchControlsActive() && !this.player.body.grounded
         ? WALK.touchAirControlScale
         : 1;
+    const ax = effectiveAxis * axisScale;
+    let touchGroundMul = 1;
+    if (this.input?.isTouchControlsActive() && this.player.body.grounded && ax !== 0) {
+      touchGroundMul = WALK.touchGroundCarveAccelScale;
+      const vx = this.player.body.vx;
+      if (Math.sign(ax) !== Math.sign(vx) && Math.abs(vx) > 42) {
+        touchGroundMul *= WALK.touchReverseCarveBoost;
+      }
+    }
 
     this.physics.applyHorizontalInput(
       this.player.body,
-      effectiveAxis * axisScale,
+      ax,
       dt,
       touchAirControl,
+      touchGroundMul,
     );
     if (jumpArcAssistActive) {
       this.jumpArcAssistTime = Math.max(0, this.jumpArcAssistTime - dt);
