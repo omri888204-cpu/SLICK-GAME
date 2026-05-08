@@ -237,6 +237,7 @@ const COLLECTIBLE_HUD_H = 64;
 const PLATFORM_SCALE = 2.1;
 const PLATFORM_EDGE_PADDING_PX = 8;
 const CAMERA_ZOOM = 0.5;
+const MOBILE_CAMERA_ZOOM = 0.42;
 const BACKGROUND_PARALLAX_X = 0.2;
 const BACKGROUND_PARALLAX_Y = 0.14;
 const CAMERA_DEADZONE_PX = 100;
@@ -2115,9 +2116,10 @@ export class PlayScene implements Scene {
       this.input.setTouchFollowAxis(0);
       return;
     }
-    const padX = (this.width - this.width * CAMERA_ZOOM) * 0.5;
+    const zoom = this.getCameraZoom();
+    const padX = 0;
     const playerCx = this.player.body.x + this.player.body.width * 0.5;
-    const playerScreenX = (playerCx - this.cameraX) * CAMERA_ZOOM + padX;
+    const playerScreenX = (playerCx - this.cameraX) * zoom + padX;
     const fingerDeltaX = touch.lastX - playerScreenX;
     let axis = fingerDeltaX / TOUCH_FOLLOW_DISTANCE_PX;
     if (Math.abs(fingerDeltaX) < 5) {
@@ -2139,12 +2141,13 @@ export class PlayScene implements Scene {
     }
     const dy = p.swipeBaselineY - p.lastY;
     const dx = Math.abs(p.lastX - p.swipeBaselineX);
-    const padX = (this.width - this.width * CAMERA_ZOOM) * 0.5;
-    const padY = (this.height - this.height * CAMERA_ZOOM) * 0.5;
+    const zoom = this.getCameraZoom();
+    const padX = 0;
+    const padY = 0;
     const playerCx = this.player.body.x + this.player.body.width * 0.5;
     const playerCy = this.player.body.y + this.player.body.height * 0.5;
-    const playerScreenX = (playerCx - this.cameraX) * CAMERA_ZOOM + padX;
-    const playerScreenY = (playerCy - this.cameraY) * CAMERA_ZOOM + padY;
+    const playerScreenX = (playerCx - this.cameraX) * zoom + padX;
+    const playerScreenY = (playerCy - this.cameraY) * zoom + padY;
     const touchAbovePlayer = p.lastY <= playerScreenY - TOUCH_SWIPE_ABOVE_PLAYER_PX;
     const touchNearPlayerX = Math.abs(p.lastX - playerScreenX) <= TOUCH_LOCK_RADIUS_PX * 0.95;
     void finalize;
@@ -2162,12 +2165,13 @@ export class PlayScene implements Scene {
   }
 
   private isTouchNearChameleon(screenX: number, screenY: number): boolean {
-    const padX = (this.width - this.width * CAMERA_ZOOM) * 0.5;
-    const padY = (this.height - this.height * CAMERA_ZOOM) * 0.5;
+    const zoom = this.getCameraZoom();
+    const padX = 0;
+    const padY = 0;
     const playerCx = this.player.body.x + this.player.body.width * 0.5;
     const playerCy = this.player.body.y + this.player.body.height * 0.5;
-    const px = (playerCx - this.cameraX) * CAMERA_ZOOM + padX;
-    const py = (playerCy - this.cameraY) * CAMERA_ZOOM + padY;
+    const px = (playerCx - this.cameraX) * zoom + padX;
+    const py = (playerCy - this.cameraY) * zoom + padY;
     return Math.hypot(screenX - px, screenY - py) <= TOUCH_LOCK_RADIUS_PX;
   }
 
@@ -2947,19 +2951,21 @@ export class PlayScene implements Scene {
   }
 
   private applyCameraTransform(): void {
-    this.gameShake.scale.set(CAMERA_ZOOM);
-    const padX = (this.width - this.width * CAMERA_ZOOM) * 0.5;
-    const padY = (this.height - this.height * CAMERA_ZOOM) * 0.5;
-    this.gameShake.position.set(padX + this.shakeOffsetX, padY + this.shakeOffsetY);
+    this.gameShake.scale.set(this.getCameraZoom());
+    this.gameShake.position.set(this.shakeOffsetX, this.shakeOffsetY);
     this.uiLayer.scale.set(1);
     this.uiLayer.position.set(0, 0);
   }
 
   private worldWidthFromScreen(): number {
-    return this.width / CAMERA_ZOOM;
+    return this.width / this.getCameraZoom();
   }
 
   private worldHeightFromScreen(): number {
-    return this.height / CAMERA_ZOOM;
+    return this.height / this.getCameraZoom();
+  }
+
+  private getCameraZoom(): number {
+    return this.width <= 430 ? MOBILE_CAMERA_ZOOM : CAMERA_ZOOM;
   }
 }
