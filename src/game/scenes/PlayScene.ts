@@ -4,7 +4,6 @@ import {
   Container,
   FederatedPointerEvent,
   Graphics,
-  Point,
   Rectangle,
   Sprite,
   Text,
@@ -282,9 +281,10 @@ const GRAPPLE_VERTICAL_BOOST_VY = -640;
 const GRAPPLE_PULL_HORIZONTAL_LERP_PER_SEC = 17;
 /** Gap between TONGUE and 360 boost HUD buttons (screen px). */
 const BOOST_ACTION_BTN_GAP_PX = 8;
-/** Shift TONGUE/360 cluster slightly toward upper-right (screen px after HUD layout). */
-const BOOST_BTN_CLUSTER_OFFSET_X = 14;
-const BOOST_BTN_CLUSTER_OFFSET_Y = 6;
+/** Top-right HUD slot for boost buttons (screen px, `PlayScene` / `uiLayer` space). */
+const BOOST_BTN_SCREEN_MARGIN_RIGHT_PX = 14;
+/** Just below the title bar / scoreboard band — keeps cluster “top” but not flush to the notch. */
+const BOOST_BTN_SCREEN_MARGIN_TOP_PX = 56;
 const GRAPPLE_STOP_ABOVE_PLATFORM_PX = 20;
 const LEVEL_MAX = 100;
 const LEVEL_SCORE_STEP = 1000;
@@ -2142,15 +2142,10 @@ export class PlayScene implements Scene {
     this.redrawAction360Button(false);
   };
 
-  /** Positions TONGUE (right) and 360 (just to its left) below the collectible HUD. */
+  /** Positions TONGUE (right) and 360 (just to its left) along the top-right of the screen. */
   private layoutBoostHudButtons(): void {
-    const pad = 10;
-    const b = this.collectibleHudRoot.getBounds();
-    const cornerGlobal = new Point(b.right, b.bottom + pad);
-    const lp = this.uiLayer.toLocal(cornerGlobal);
-    const bx = lp.x + BOOST_BTN_CLUSTER_OFFSET_X;
-    const by = lp.y + BOOST_BTN_CLUSTER_OFFSET_Y;
-    const tongueRightX = bx;
+    const tongueRightX = this.width - BOOST_BTN_SCREEN_MARGIN_RIGHT_PX;
+    const by = BOOST_BTN_SCREEN_MARGIN_TOP_PX;
     const tongueLeftX = tongueRightX - TONGUE_BOOST_BTN_W;
     const action360RightX = tongueLeftX - BOOST_ACTION_BTN_GAP_PX;
     this.action360ButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
@@ -2408,7 +2403,7 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Places Gold/Diamond lines next to `Lv#` (no panel) and aligns boost buttons below. Call each frame after `scoreboard.update`. */
+  /** Places Gold/Diamond lines next to `Lv#` (no panel); boost buttons use fixed top-right layout. Call each frame after `scoreboard.update`. */
   private syncCollectibleHudPosition(): void {
     const sb = this.scoreboard;
     if (!sb) {
