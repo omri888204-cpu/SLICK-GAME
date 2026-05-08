@@ -192,8 +192,9 @@ export const STAIRS = {
   fallDeathStairRiseReferencePx: 300,
   /**
    * Always keep at least this many step surfaces **below** the player’s feet before recycling platforms away.
+   * Matches camera framing: ~3 stairs visible under the player before the abyss.
    */
-  safetyStairBufferDrops: 4,
+  safetyStairBufferDrops: 3,
   /**
    * Game over when feet fall more than this far **past** the top of the Nth next-lower stair (`safetyStairBufferDrops`).
    */
