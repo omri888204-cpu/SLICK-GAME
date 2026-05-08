@@ -245,6 +245,7 @@ const CAMERA_FOLLOW_LERP_X = 0.1;
 const CAMERA_FOLLOW_LERP_Y = 0.1;
 const CAMERA_PLAYER_SCREEN_Y_RATIO = 0.62;
 const CAMERA_UPWARD_FOLLOW_BOOST = 1.45;
+const CAMERA_STAIRS_BELOW_PLAYER = 1;
 const WORLD_BOUNDS_X = 0;
 const WORLD_BOUNDS_Y = -1000000;
 const WORLD_BOUNDS_W = 1400;
@@ -1372,8 +1373,9 @@ export class PlayScene implements Scene {
       targetCamY = playerCy - (viewportH - deadY);
     }
 
-    // Keep the player slightly lower on screen so climbed stairs leave view sooner.
-    const desiredCamY = playerCy - viewportH * CAMERA_PLAYER_SCREEN_Y_RATIO;
+    // Lock follow so one stair line stays below the player.
+    const desiredPlayerScreenY = viewportH - STAIRS.stepPx * CAMERA_STAIRS_BELOW_PLAYER;
+    const desiredCamY = playerCy - desiredPlayerScreenY;
     targetCamY = Math.min(targetCamY, desiredCamY);
 
     this.cameraX += (targetCamX - this.cameraX) * CAMERA_FOLLOW_LERP_X;
@@ -1398,7 +1400,10 @@ export class PlayScene implements Scene {
     this.cameraX = playerCx - viewportW * 0.5;
     const maxCamX = Math.max(0, this.worldWidth - viewportW);
     this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
-    this.cameraY = Math.min(0, this.player.body.y - viewportH * 0.45);
+    const playerCy = this.player.body.y + this.player.body.height * 0.5;
+    const desiredPlayerScreenY = viewportH - STAIRS.stepPx * CAMERA_STAIRS_BELOW_PLAYER;
+    this.cameraY = playerCy - desiredPlayerScreenY;
+    this.cameraY = Math.min(0, this.cameraY);
     this.cameraY = Math.max(this.worldMinY, this.cameraY);
     this.world.position.set(-this.cameraX, -this.cameraY);
     this.background.tilePosition.set(
