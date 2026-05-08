@@ -4,6 +4,7 @@ import {
   Container,
   FederatedPointerEvent,
   Graphics,
+  Rectangle,
   Sprite,
   Text,
   TextStyle,
@@ -234,6 +235,11 @@ const DARK_BG_MAX_CHANNEL = 42;
 
 const COLLECTIBLE_HUD_W = 156;
 const COLLECTIBLE_HUD_H = 64;
+/** Touch-only boost tongue button — sits under Gold/Diamonds (right-aligned). */
+const TONGUE_BOOST_BTN_W = 118;
+const TONGUE_BOOST_BTN_H = 38;
+/** After pressing TONGUE during boost, combo chain uses this longer gap window (seconds). */
+const TONGUE_BOOST_COMBO_CLIMB_SEC = 8;
 const PLATFORM_SCALE = 2.1;
 const PLATFORM_EDGE_PADDING_PX = 8;
 const CAMERA_ZOOM = 0.5;
@@ -294,12 +300,6 @@ const TOUCH_LOCK_RADIUS_PX = 120;
 const TOUCH_ACTION_RETRIGGER_MS = 110;
 /** After a jump, auto tongue only once we're clearly falling (world y-down vy). */
 const AUTO_TONGUE_AFTER_JUMP_MIN_FALL_VY = 110;
-/**
- * Master switch for tongue grapple (keyboard, touch swipe, auto-assist after jump, 360 rope, DB load).
- * Set `true` when bringing the feature back.
- */
-const TONGUE_GRAPPLE_ENABLED = false;
-
 export class PlayScene implements Scene {
   readonly name = 'play';
 
@@ -338,6 +338,12 @@ export class PlayScene implements Scene {
   private touchLastGrappleMs = 0;
   private collectibleHudGoldText?: Text;
   private collectibleHudDiamondText?: Text;
+  private tongueBoostButtonRoot = new Container();
+  private tongueBoostButtonGfx = new Graphics();
+  private tongueBoostLabel?: Text;
+  private tongueBoostButtonPressed = false;
+  /** While `runTime < this`, climbing combo expires using `TONGUE_BOOST_COMBO_CLIMB_SEC` instead of `COMBO.chainWindowSec`. */
+  private tongueBoostComboExtendUntil = -Infinity;
   private collectibles: Collectible[] = [];
   private goldCount = 0;
   private diamondCount = 0;
@@ -455,6 +461,7 @@ export class PlayScene implements Scene {
     this.input = new InputManager(app);
     this.input.attach();
     this.setupTouchControlsOverlay(app);
+    this.setupTongueBoostButton(app);
 
     await this.tryLoadTongueArmature();
     this.startBackgroundMusic();
@@ -473,6 +480,7 @@ export class PlayScene implements Scene {
     this.expireComboIfNeeded();
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
     this.updateFlashSkillBoost(dt);
+    this.syncTongueBoostButtonVisibility();
     this.updateTouchRipples(dt);
     this.updateGrappleCooldownFeedback();
     this.updateLevelProgress();
@@ -743,7 +751,7 @@ export class PlayScene implements Scene {
       return;
     }
     const wantGrapple = this.input?.consumeGrapple() ?? false;
-    if (wantGrapple && TONGUE_GRAPPLE_ENABLED) {
+    if (wantGrapple && this.canUseTongueGrapple()) {
       this.triggerGrappleAction();
     }
 
@@ -780,7 +788,7 @@ export class PlayScene implements Scene {
   }
 
   private beginGrappleFromHit(hit: { x: number; y: number; platform: Platform }): void {
-    if (!TONGUE_GRAPPLE_ENABLED) {
+    if (!this.canUseTongueGrapple()) {
       return;
     }
     this.autoTongueAfterJumpArmed = false;
@@ -801,7 +809,7 @@ export class PlayScene implements Scene {
   }
 
   private triggerGrappleAction(): void {
-    if (!TONGUE_GRAPPLE_ENABLED || this.grappleCooldown > 0 || this.grapple) {
+    if (!this.canUseTongueGrapple() || this.grappleCooldown > 0 || this.grapple) {
       return;
     }
     const hit = this.computeGrappleTargetHit();
@@ -813,7 +821,7 @@ export class PlayScene implements Scene {
 
   private maybeAutoTongueAfterFailedJump(): void {
     if (
-      !TONGUE_GRAPPLE_ENABLED ||
+      !this.canUseTongueGrapple() ||
       !this.autoTongueAfterJumpArmed ||
       this.grapple ||
       this.action360State
@@ -842,7 +850,7 @@ export class PlayScene implements Scene {
   }
 
   private updateGrappleCooldownFeedback(): void {
-    if (!TONGUE_GRAPPLE_ENABLED) {
+    if (!this.canUseTongueGrapple()) {
       return;
     }
     if (this.grappleCooldown > 0) {
@@ -863,7 +871,7 @@ export class PlayScene implements Scene {
     if (!this.player.body.grounded || !!this.grapple) {
       return;
     }
-    if (TONGUE_GRAPPLE_ENABLED) {
+    if (this.canUseTongueGrapple()) {
       this.autoTongueJumpFromStairId =
         this.currentGroundPlatform?.stairId ?? this.lastScoredStairId;
       this.autoTongueAfterJumpArmed = true;
@@ -1111,6 +1119,7 @@ export class PlayScene implements Scene {
     this.jumpArcAssistDuration = 0;
     this.autoTongueAfterJumpArmed = false;
     this.autoTongueJumpFromStairId = -1;
+    this.tongueBoostComboExtendUntil = -Infinity;
     this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
     if (this.levelUpFloatText) {
       this.levelUpFloatText.visible = false;
@@ -1179,7 +1188,7 @@ export class PlayScene implements Scene {
   }
 
   private perform360Action(): void {
-    if (!TONGUE_GRAPPLE_ENABLED || this.action360State) {
+    if (!this.canUseTongueGrapple() || this.action360State) {
       return;
     }
     const body = this.player.body;
@@ -1560,10 +1569,14 @@ export class PlayScene implements Scene {
   }
 
   private expireComboIfNeeded(): void {
-    if (
-      this.comboChain > 0 &&
-      this.runTime - this.lastChainTime > COMBO.chainWindowSec
-    ) {
+    if (this.comboChain <= 0) {
+      return;
+    }
+    const chainWindowSec =
+      this.runTime < this.tongueBoostComboExtendUntil
+        ? TONGUE_BOOST_COMBO_CLIMB_SEC
+        : COMBO.chainWindowSec;
+    if (this.runTime - this.lastChainTime > chainWindowSec) {
       this.comboChain = 0;
     }
   }
@@ -1730,9 +1743,6 @@ export class PlayScene implements Scene {
     this.tongueDbReady = false;
     this.tongueArmature?.dispose(true);
     this.tongueArmature = null;
-    if (!TONGUE_GRAPPLE_ENABLED) {
-      return;
-    }
     try {
       const [skeRes, texJsonRes] = await Promise.all([
         fetch(TONGUE_DB_SKE),
@@ -2054,6 +2064,109 @@ export class PlayScene implements Scene {
     this.uiLayer.addChild(this.collectibleHudRoot);
   }
 
+  /** Tongue grapple is only available during Flash skill boost (beast combo activation window). */
+  private canUseTongueGrapple(): boolean {
+    return this.isFlashSkillBoostActive();
+  }
+
+  private setupTongueBoostButton(app: Application): void {
+    void app;
+    this.tongueBoostButtonRoot.zIndex = 1002;
+    this.tongueBoostButtonGfx.eventMode = 'static';
+    this.tongueBoostButtonGfx.cursor = 'pointer';
+    this.tongueBoostLabel = new Text({
+      text: 'TONGUE',
+      style: new TextStyle({
+        fontFamily: 'Arial Black, Heebo, sans-serif',
+        fontSize: 12,
+        fontWeight: '800',
+        fill: '#ffea80',
+        stroke: { color: '#261c06', width: 2 },
+        letterSpacing: 0.6,
+      }),
+    });
+    this.tongueBoostLabel.anchor.set(0.5);
+    this.tongueBoostLabel.position.set(TONGUE_BOOST_BTN_W * 0.5, TONGUE_BOOST_BTN_H * 0.5);
+    this.tongueBoostLabel.eventMode = 'none';
+    this.tongueBoostButtonRoot.addChild(this.tongueBoostButtonGfx, this.tongueBoostLabel);
+    this.tongueBoostButtonGfx.on('pointerdown', this.handleTongueBoostButtonDown);
+    this.tongueBoostButtonGfx.on('pointerup', this.handleTongueBoostButtonUp);
+    this.tongueBoostButtonGfx.on('pointerupoutside', this.handleTongueBoostButtonUp);
+    this.tongueBoostButtonGfx.on('pointercancel', this.handleTongueBoostButtonUp);
+    this.uiLayer.addChild(this.tongueBoostButtonRoot);
+    this.redrawTongueBoostButton(false);
+    this.syncTongueBoostButtonVisibility();
+  }
+
+  private layoutTongueBoostButton(): void {
+    const margin = this.width < 440 ? 16 : 12;
+    const topOffset = this.width < 440 ? 86 : 74;
+    const hudTop = Math.max(margin, margin + topOffset);
+    const rightX = Math.max(COLLECTIBLE_HUD_W + margin, this.width - margin);
+    this.tongueBoostButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
+    this.tongueBoostButtonRoot.position.set(rightX, hudTop + COLLECTIBLE_HUD_H + 10);
+    this.tongueBoostButtonGfx.hitArea = new Rectangle(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H);
+  }
+
+  private redrawTongueBoostButton(pressed: boolean): void {
+    const gfx = this.tongueBoostButtonGfx;
+    gfx.clear();
+    const gold = 0xffea80;
+    const boost = pressed ? 1.25 : 1;
+    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).fill({
+      color: 0x1b1324,
+      alpha: pressed ? 0.82 : 0.72,
+    });
+    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).stroke({
+      color: gold,
+      alpha: pressed ? 0.98 : 0.85,
+      width: pressed ? 2.4 : 2,
+    });
+    gfx.roundRect(2, 2, TONGUE_BOOST_BTN_W - 4, TONGUE_BOOST_BTN_H - 4, 8).stroke({
+      color: gold,
+      alpha: 0.22 * boost,
+      width: 1,
+    });
+    if (this.tongueBoostLabel) {
+      this.tongueBoostLabel.alpha = pressed ? 1 : 0.92;
+    }
+  }
+
+  private syncTongueBoostButtonVisibility(): void {
+    const show = this.isFlashSkillBoostActive();
+    this.tongueBoostButtonRoot.visible = show;
+    if (!show) {
+      this.tongueBoostButtonPressed = false;
+      this.redrawTongueBoostButton(false);
+    }
+  }
+
+  private applyTongueBoostButtonAction(): void {
+    if (!this.isFlashSkillBoostActive()) {
+      return;
+    }
+    this.tongueBoostComboExtendUntil = this.runTime + TONGUE_BOOST_COMBO_CLIMB_SEC;
+    this.feedComboFromLand();
+    const mult = this.getComboMultiplier();
+    this.maybeSpawnComboPopup(mult);
+    this.triggerGrappleAction();
+  }
+
+  private readonly handleTongueBoostButtonDown = (event: FederatedPointerEvent): void => {
+    if (!this.isFlashSkillBoostActive()) {
+      return;
+    }
+    event.stopPropagation();
+    this.tongueBoostButtonPressed = true;
+    this.redrawTongueBoostButton(true);
+    this.applyTongueBoostButtonAction();
+  };
+
+  private readonly handleTongueBoostButtonUp = (): void => {
+    this.tongueBoostButtonPressed = false;
+    this.redrawTongueBoostButton(false);
+  };
+
   private setupTouchControlsOverlay(app: Application): void {
     if (!this.input?.isTouchControlsActive()) {
       return;
@@ -2194,7 +2307,7 @@ export class PlayScene implements Scene {
         }
       } else if (swipeOnLeft) {
         if (
-          TONGUE_GRAPPLE_ENABLED &&
+          this.canUseTongueGrapple() &&
           now - this.touchLastGrappleMs >= TOUCH_ACTION_RETRIGGER_MS
         ) {
           this.touchLastGrappleMs = now;
@@ -2271,6 +2384,7 @@ export class PlayScene implements Scene {
       .stroke({ width: 1, color: 0x4a3a62, alpha: 0.55 });
     this.collectibleHudGoldText?.position.set(12, 10);
     this.collectibleHudDiamondText?.position.set(12, 36);
+    this.layoutTongueBoostButton();
   }
 
   private refreshCollectibleHudText(): void {
