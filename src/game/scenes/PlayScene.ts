@@ -1370,7 +1370,11 @@ export class PlayScene implements Scene {
 
   private checkFallGameOver(): void {
     const feetY = this.player.body.y + this.player.body.height;
-    const deathLine = this.cameraY + this.worldHeightFromScreen() + STAIRS.fallDeathBelowViewportPx;
+    const deathLine =
+      this.cameraY +
+      this.worldHeightFromScreen() +
+      STAIRS.fallDeathBelowViewportPx +
+      STAIRS.fallDeathForgivingStairDrops * STAIRS.fallDeathStairRiseReferencePx;
     if (feetY > deathLine) {
       this.resetRun();
     }

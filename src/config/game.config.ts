@@ -94,8 +94,10 @@ export const ALIVE = {
 export const PHYSICS = {
   gravity: 2100,
   maxSpeed: 868,
-  /** +10% vs legacy base for slightly more forgiving default jumps. */
-  baseJump: 1170,
+  /**
+   * Standing jump apex ≈ `baseJump² / (2·gravity)`; tuned to clear typical stair gaps (~250–350px).
+   */
+  baseJump: 1310,
   speedJumpBonus: 0.75,
   /** Horizontal bounce when hitting left/right world bounds (custom physics, not Phaser). */
   worldWallRestitution: 0,
@@ -183,6 +185,12 @@ export const STAIRS = {
   recycleBelowScreenPx: 220,
   /** Player feet past bottom of view + this → game over / reset. */
   fallDeathBelowViewportPx: 140,
+  /**
+   * Extra room below the camera before reset: “forgiving stair drops” (world y increases downward).
+   * Uses `fallDeathStairRiseReferencePx` ≈ average vertical gap between step tops in play.
+   */
+  fallDeathForgivingStairDrops: 3,
+  fallDeathStairRiseReferencePx: 300,
   /**
    * From this HUD altitude (meters), switch to slime platform art and apply `slimePlatformArtScale`.
    */
