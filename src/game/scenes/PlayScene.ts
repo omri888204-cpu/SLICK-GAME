@@ -283,6 +283,8 @@ const TOUCH_SWIPE_UPWARD_RATIO_MIN = 0.4;
 const TOUCH_FOLLOW_DISTANCE_PX = 44;
 const TOUCH_LOCK_RADIUS_PX = 120;
 const TOUCH_ACTION_RETRIGGER_MS = 110;
+/** After a jump, auto tongue only once we're clearly falling (world y-down vy). */
+const AUTO_TONGUE_AFTER_JUMP_MIN_FALL_VY = 110;
 
 export class PlayScene implements Scene {
   readonly name = 'play';
@@ -386,6 +388,9 @@ export class PlayScene implements Scene {
   private jumpArcAssistDuration = 0;
   private jumpArcStartCenterX = 0;
   private jumpArcTargetCenterX = 0;
+  /** When true, a failed jump may auto-fire the tongue toward the next overhead stair. */
+  private autoTongueAfterJumpArmed = false;
+  private autoTongueJumpFromStairId = -1;
   async init(app: Application): Promise<void> {
     this.app = app;
     this.width = app.screen.width;
@@ -592,6 +597,7 @@ export class PlayScene implements Scene {
       gravityScale,
     );
     if (result.landedPlatform) {
+      this.autoTongueAfterJumpArmed = false;
       this.currentGroundPlatform = result.landedPlatform;
       this.player.onLand(result.impactVy);
       if (!wasGrounded) {
@@ -613,6 +619,7 @@ export class PlayScene implements Scene {
       this.landOn(p);
     } else if (!this.player.body.grounded) {
       this.currentGroundPlatform = null;
+      this.maybeAutoTongueAfterFailedJump();
     }
 
     this.updateCamera(dt);
@@ -713,10 +720,9 @@ export class PlayScene implements Scene {
     }
   }
 
-  private triggerGrappleAction(): void {
-    if (this.grappleCooldown > 0 || this.grapple) {
-      return;
-    }
+  private computeGrappleTargetHit():
+    | { x: number; y: number; platform: Platform }
+    | undefined {
     const flashBoost = this.isFlashSkillBoostActive();
     const body = this.player.body;
     const shootX = body.x + body.width * 0.5;
@@ -728,7 +734,7 @@ export class PlayScene implements Scene {
     const verticalRayHalfWidth = flashBoost
       ? baseRayHalfWidth * FLASH_TONGUE_RAY_WIDTH_MULTIPLIER
       : baseRayHalfWidth;
-    const hit = Physics.castGrappleTarget(
+    return Physics.castGrappleTarget(
       this.platforms,
       shootX,
       shootY,
@@ -737,9 +743,10 @@ export class PlayScene implements Scene {
       verticalRayHalfWidth,
       flashBoost,
     );
-    if (!hit) {
-      return;
-    }
+  }
+
+  private beginGrappleFromHit(hit: { x: number; y: number; platform: Platform }): void {
+    this.autoTongueAfterJumpArmed = false;
     this.grapple = {
       phase: 'extend',
       targetX: hit.x,
@@ -749,11 +756,37 @@ export class PlayScene implements Scene {
       pullStartX: this.player.body.x + this.player.body.width * 0.5,
       pullStartY: this.player.body.y + this.player.body.height * 0.5,
     };
-    const cooldownSpeedup = flashBoost ? FLASH_TONGUE_COOLDOWN_SPEEDUP : 1;
+    const cooldownSpeedup = this.isFlashSkillBoostActive() ? FLASH_TONGUE_COOLDOWN_SPEEDUP : 1;
     this.grappleCooldown = GRAPPLE.cooldownSec / cooldownSpeedup;
     this.grappleReloadingLogged = false;
     this.player.onGrappleLaunch();
     this.sfx.play('tongue_shoot', 0.88);
+  }
+
+  private triggerGrappleAction(): void {
+    if (this.grappleCooldown > 0 || this.grapple) {
+      return;
+    }
+    const hit = this.computeGrappleTargetHit();
+    if (!hit) {
+      return;
+    }
+    this.beginGrappleFromHit(hit);
+  }
+
+  private maybeAutoTongueAfterFailedJump(): void {
+    if (!this.autoTongueAfterJumpArmed || this.grapple || this.action360State) {
+      return;
+    }
+    const body = this.player.body;
+    if (body.grounded || body.vy <= AUTO_TONGUE_AFTER_JUMP_MIN_FALL_VY) {
+      return;
+    }
+    const hit = this.computeGrappleTargetHit();
+    if (!hit || hit.platform.stairId <= this.autoTongueJumpFromStairId) {
+      return;
+    }
+    this.beginGrappleFromHit(hit);
   }
 
   private applyPostGrappleReleaseDamping(dt: number): void {
@@ -785,6 +818,9 @@ export class PlayScene implements Scene {
     if (!this.player.body.grounded || !!this.grapple) {
       return;
     }
+    this.autoTongueJumpFromStairId =
+      this.currentGroundPlatform?.stairId ?? this.lastScoredStairId;
+    this.autoTongueAfterJumpArmed = true;
     this.physics.jump(this.player.body);
     if (this.isFlashSkillBoostActive()) {
       const maxBoostJumpHeight = STAIRS.stepPx * FLASH_BOOST_STAIR_COUNT;
@@ -987,6 +1023,8 @@ export class PlayScene implements Scene {
     this.syncTouch360Visibility();
     this.jumpArcAssistTime = 0;
     this.jumpArcAssistDuration = 0;
+    this.autoTongueAfterJumpArmed = false;
+    this.autoTongueJumpFromStairId = -1;
     this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
     if (this.levelUpFloatText) {
       this.levelUpFloatText.visible = false;
@@ -1074,6 +1112,7 @@ export class PlayScene implements Scene {
       orbitRadius: 0,
       orbitBaseAngle: 0,
     };
+    this.autoTongueAfterJumpArmed = false;
     this.grapple = {
       phase: 'extend',
       targetX: hit.x,
@@ -1310,6 +1349,8 @@ export class PlayScene implements Scene {
     this.grappleCooldown = 0;
     this.grappleReleaseDampingLeft = 0;
     this.grappleReloadingLogged = false;
+    this.autoTongueAfterJumpArmed = false;
+    this.autoTongueJumpFromStairId = -1;
     this.lastScoredStairId = this.platforms[0]?.stairId ?? 0;
     this.player.update(0, 0, false, null, false);
   }
