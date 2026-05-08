@@ -1,11 +1,8 @@
 import { Assets, Container, Graphics, Sprite, Texture } from 'pixi.js';
-import { ALIVE, GRAPPLE, WALK } from '../../config/game.config';
+import { ALIVE, GRAPPLE, RENDER, WALK } from '../../config/game.config';
 import type { ActiveGrapple, Direction } from '../types';
 import type { PlayerBody } from '../systems/Physics';
-import chameleonCleanUrl from '../../assets/sprites/chameleon_clean.png';
-import chameleonRunPair1Url from '../../assets/sprites/chameleon-run-pair-1.png';
-import chameleonRunPair2Url from '../../assets/sprites/chameleon-run-pair-2.png';
-import chameleonRunPair3Url from '../../assets/sprites/chameleon-run-pair-3.png';
+import chameleonHeroUrl from '../../assets/sprites/chameleon_hero.png';
 
 export enum PlayerState {
   Idle,
@@ -16,9 +13,10 @@ export enum PlayerState {
   SuperJump,
 }
 
-const PLAYER_JUMP_WIDTH = 150;
-
-type DirectionalTextures = Record<'jumpLeft' | 'jumpRight', Texture>;
+const PLAYER_SCALE = 0.3981312;
+const PLAYER_JUMP_WIDTH = 150 * PLAYER_SCALE;
+const PLAYER_BODY_WIDTH = 70 * PLAYER_SCALE;
+const PLAYER_BODY_HEIGHT = 96 * PLAYER_SCALE;
 
 type ChameleonTextures = {
   jumpLeft: Texture;
@@ -33,8 +31,8 @@ export class Player extends Container {
     y: 0,
     vx: 0,
     vy: 0,
-    width: 70,
-    height: 96,
+    width: PLAYER_BODY_WIDTH,
+    height: PLAYER_BODY_HEIGHT,
     grounded: false,
   };
 
@@ -49,7 +47,6 @@ export class Player extends Container {
   private silhouette?: Sprite;
   private textures?: ChameleonTextures;
   private spriteAspectScale = 1;
-  private silhouetteAspectScale = 1;
   private distanceTraveled = 0;
   private idleTime = 0;
   private walkBlend = 0;
@@ -85,23 +82,16 @@ export class Player extends Container {
   }
 
   async load(): Promise<void> {
-    const [jumpTextures, ...runParts] = await Promise.all([
-      this.createDirectionalTextures(chameleonCleanUrl),
-      this.createDirectionalTextures(chameleonRunPair1Url),
-      this.createDirectionalTextures(chameleonRunPair2Url),
-      this.createDirectionalTextures(chameleonRunPair3Url),
-    ]);
-    const runPairs = runParts as DirectionalTextures[];
-    const { jumpLeft, jumpRight } = jumpTextures;
-
+    const hero = await this.createHeroTexture(chameleonHeroUrl);
     this.textures = {
-      jumpLeft,
-      jumpRight,
-      runLeft: runPairs.map((pair) => pair.jumpLeft),
-      runRight: runPairs.map((pair) => pair.jumpRight),
+      jumpLeft: hero,
+      jumpRight: hero,
+      runLeft: [hero, hero, hero],
+      runRight: [hero, hero, hero],
     };
 
-    this.silhouette = new Sprite(jumpRight);
+    this.silhouette = new Sprite(hero);
+    this.silhouette.roundPixels = RENDER.pixelArt;
     this.silhouette.anchor.set(0.5);
     this.silhouette.tint = 0xf4ead2;
     this.silhouette.alpha = 0.26;
@@ -112,14 +102,14 @@ export class Player extends Container {
     this.avatarRig = new Container();
     this.avatarRig.sortableChildren = true;
 
-    this.bodySprite = new Sprite(jumpRight);
+    this.bodySprite = new Sprite(hero);
+    this.bodySprite.roundPixels = RENDER.pixelArt;
     this.bodySprite.anchor.set(0.5);
     this.bodySprite.width = PLAYER_JUMP_WIDTH;
     this.bodySprite.scale.y = this.bodySprite.scale.x;
     this.bodySprite.position.set(0, 0);
 
     this.spriteAspectScale = this.bodySprite.scale.y / this.bodySprite.scale.x;
-    this.silhouetteAspectScale = this.silhouette.scale.y / this.silhouette.scale.x;
 
     this.avatarRig.position.set(0, -8);
 
@@ -226,11 +216,13 @@ export class Player extends Container {
     }
 
     const texture = this.pickBodyTexture();
+    const texAspect =
+      texture.width > 1 && texture.height > 1 ? texture.height / texture.width : this.spriteAspectScale;
     const pullingGrapple =
       this.state === PlayerState.Grapple &&
       this.grappleClip !== null &&
       this.grappleClip.phase === 'pull';
-    const bodyAspect = this.spriteAspectScale;
+    const bodyAspect = texAspect;
     const walkPhase = Math.sin(this.distanceTraveled * WALK.bobFrequency);
     const stridePhase = Math.cos(this.distanceTraveled * WALK.bobFrequency);
     const idleBreath = Math.sin(this.idleTime * ALIVE.idleBreathSpeed);
@@ -281,8 +273,10 @@ export class Player extends Container {
     this.bodySprite.texture = texture;
     this.bodySprite.width = width;
     const spriteBaseScale = Math.abs(this.bodySprite.scale.x);
-    this.bodySprite.scale.x = spriteBaseScale * squash;
-    this.bodySprite.scale.y = spriteBaseScale * bodyAspect * stretch;
+    const magX = spriteBaseScale * squash;
+    const flip = this.direction < 0 ? -1 : 1;
+    this.bodySprite.scale.x = flip * magX;
+    this.bodySprite.scale.y = magX * bodyAspect * stretch;
     this.avatarRig.position.set(walkSway, -8 + groundedSink + walkBob + idleOffset * idleBlend);
     this.avatarRig.rotation =
       walkPhase * WALK.tiltAmplitude * this.walkBlend +
@@ -296,14 +290,18 @@ export class Player extends Container {
       ALIVE.tailSkew *
       (this.walkBlend + ALIVE.tailIdleInfluence) *
       this.direction;
-    this.bodySprite.tint = beastMode ? 0xffddaa : 0xffffff;
+    if (beastMode) {
+      this.bodySprite.tint = 0xffddaa;
+    } else {
+      this.bodySprite.tint = 0xffffff;
+    }
 
     this.silhouette.texture = texture;
     this.silhouette.width = width + 5;
     const silhouetteBaseScale = Math.abs(this.silhouette.scale.x);
-    this.silhouette.scale.x = silhouetteBaseScale * squash;
-    const silhouetteAspect = this.silhouetteAspectScale;
-    this.silhouette.scale.y = silhouetteBaseScale * silhouetteAspect * stretch;
+    const silMag = silhouetteBaseScale * squash;
+    this.silhouette.scale.x = flip * silMag;
+    this.silhouette.scale.y = silMag * texAspect * stretch;
     this.silhouette.position.copyFrom(this.avatarRig.position);
     this.silhouette.rotation = this.avatarRig.rotation;
     this.silhouette.skew.x = this.avatarRig.skew.x;
@@ -355,8 +353,8 @@ export class Player extends Container {
     return Math.sin((1 - remainingMs / durationMs) * Math.PI);
   }
 
-  private async createDirectionalTextures(url: string): Promise<DirectionalTextures> {
-    const sourceTexture = await Assets.load<Texture>(url);
+  private async createHeroTexture(url: string): Promise<Texture> {
+    await Assets.load(url);
     const image = new Image();
     image.src = url;
     await image.decode();
@@ -365,33 +363,140 @@ export class Player extends Container {
     canvas.width = image.naturalWidth;
     canvas.height = image.naturalHeight;
 
-    const context = canvas.getContext('2d', { willReadFrequently: true });
+    const context = canvas.getContext('2d');
     if (!context) {
-      return {
-        jumpLeft: sourceTexture,
-        jumpRight: sourceTexture,
-      };
+      return Assets.get(url) as Texture;
     }
 
     context.drawImage(image, 0, 0);
-
-    return {
-      jumpLeft: this.cropTexture(canvas, 0, canvas.width / 2),
-      jumpRight: this.cropTexture(canvas, canvas.width / 2, canvas.width / 2),
-    };
+    Player.keyBlackMatteNearEdges(context, canvas.width, canvas.height);
+    const trimmed = Player.trimTransparentCanvas(canvas);
+    return Texture.from(trimmed);
   }
 
-  private cropTexture(source: HTMLCanvasElement, x: number, width: number): Texture {
-    const crop = document.createElement('canvas');
-    crop.width = width;
-    crop.height = source.height;
-
-    const context = crop.getContext('2d');
-    if (!context) {
-      return Texture.from(source);
+  /**
+   * Keys out dark matte **only near the image bounds** so interior black outlines stay visible.
+   * Then flood from corners through very dark pixels to clear any inner “islands” of backdrop.
+   */
+  private static keyBlackMatteNearEdges(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    const img = ctx.getImageData(0, 0, w, h);
+    const d = img.data;
+    const edgePx = 14;
+    const edgeThresh = 48;
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        const distEdge = Math.min(x, y, w - 1 - x, h - 1 - y);
+        if (distEdge > edgePx) {
+          continue;
+        }
+        const i = (y * w + x) * 4;
+        if (Math.max(d[i], d[i + 1], d[i + 2]) <= edgeThresh) {
+          d[i + 3] = 0;
+        }
+      }
     }
 
-    context.drawImage(source, x, 0, width, source.height, 0, 0, width, source.height);
-    return Texture.from(crop);
+    const floodThresh = 22;
+    const visited = new Uint8Array(w * h);
+    const qx = new Int32Array(w * h);
+    const qy = new Int32Array(w * h);
+    let qt = 0;
+
+    const isDark = (x: number, y: number): boolean => {
+      const i = (y * w + x) * 4;
+      return Math.max(d[i], d[i + 1], d[i + 2]) <= floodThresh;
+    };
+
+    const push = (x: number, y: number): void => {
+      if (x < 0 || y < 0 || x >= w || y >= h) {
+        return;
+      }
+      const p = y * w + x;
+      if (visited[p] !== 0) {
+        return;
+      }
+      visited[p] = 1;
+      if (!isDark(x, y)) {
+        return;
+      }
+      qx[qt] = x;
+      qy[qt] = y;
+      qt += 1;
+    };
+
+    const cornerDepth = Math.min(80, Math.floor(Math.min(w, h) * 0.12));
+    for (let k = 0; k < cornerDepth; k += 1) {
+      push(k, k);
+      push(w - 1 - k, k);
+      push(k, h - 1 - k);
+      push(w - 1 - k, h - 1 - k);
+    }
+
+    let qh = 0;
+    while (qh < qt) {
+      const x = qx[qh];
+      const y = qy[qh];
+      qh += 1;
+      const i = (y * w + x) * 4;
+      d[i + 3] = 0;
+      push(x - 1, y);
+      push(x + 1, y);
+      push(x, y - 1);
+      push(x, y + 1);
+    }
+
+    ctx.putImageData(img, 0, 0);
+  }
+
+  /** Tight crop around non-transparent pixels so the sprite scales to the character, not the old canvas. */
+  private static trimTransparentCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
+    const w = source.width;
+    const h = source.height;
+    const ctx = source.getContext('2d');
+    if (!ctx || w < 1 || h < 1) {
+      return source;
+    }
+    const { data } = ctx.getImageData(0, 0, w, h);
+    let minX = w;
+    let minY = h;
+    let maxX = 0;
+    let maxY = 0;
+    for (let y = 0; y < h; y += 1) {
+      for (let x = 0; x < w; x += 1) {
+        if (data[(y * w + x) * 4 + 3] > 12) {
+          if (x < minX) {
+            minX = x;
+          }
+          if (y < minY) {
+            minY = y;
+          }
+          if (x > maxX) {
+            maxX = x;
+          }
+          if (y > maxY) {
+            maxY = y;
+          }
+        }
+      }
+    }
+    if (maxX < minX) {
+      return source;
+    }
+    const pad = 2;
+    minX = Math.max(0, minX - pad);
+    minY = Math.max(0, minY - pad);
+    maxX = Math.min(w - 1, maxX + pad);
+    maxY = Math.min(h - 1, maxY + pad);
+    const cw = maxX - minX + 1;
+    const ch = maxY - minY + 1;
+    const out = document.createElement('canvas');
+    out.width = cw;
+    out.height = ch;
+    const octx = out.getContext('2d');
+    if (!octx) {
+      return source;
+    }
+    octx.drawImage(source, minX, minY, cw, ch, 0, 0, cw, ch);
+    return out;
   }
 }

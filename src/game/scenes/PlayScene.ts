@@ -1,16 +1,27 @@
 import {
   Application,
   Assets,
+  Circle,
   Container,
+  FederatedPointerEvent,
   Graphics,
   Sprite,
   Text,
   TextStyle,
   Texture,
+  TilingSprite,
   type Ticker,
 } from 'pixi.js';
 import { PixiFactory, type PixiArmatureDisplay } from 'pixi-dragonbones-runtime';
-import { COMBO, COLLECTIBLES, GRAPPLE, SCORE_UI, STAIRS } from '../../config/game.config';
+import {
+  COMBO,
+  COLLECTIBLES,
+  GRAPPLE,
+  PHYSICS,
+  RENDER,
+  SCORE_UI,
+  STAIRS,
+} from '../../config/game.config';
 import { HyperScoreboard } from '../ui/HyperScoreboard';
 import { Player } from '../entities/Player';
 import { InputManager } from '../systems/InputManager';
@@ -42,6 +53,55 @@ type DiamondShineSpark = {
   vy: number;
   life: number;
   age: number;
+};
+
+type LevelUpParticle = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  age: number;
+  life: number;
+};
+
+type Action360Phase = 'attach' | 'rotate';
+
+type Action360State = {
+  phase: Action360Phase;
+  timeLeft: number;
+  hookStairId: number;
+  hookX: number;
+  hookY: number;
+  orbitRadius: number;
+  orbitBaseAngle: number;
+};
+
+type Action360Spark = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  age: number;
+  life: number;
+};
+
+type TouchPointerTrack = {
+  side: 'left' | 'right';
+  startX: number;
+  startY: number;
+  lastX: number;
+  lastY: number;
+  swipeBaselineY: number;
+  swipeBaselineX: number;
+  startMs: number;
+  swipeHandled: boolean;
+};
+
+type TouchRipple = {
+  x: number;
+  y: number;
+  age: number;
+  life: number;
 };
 
 type CollectibleKind = 'coin' | 'diamond';
@@ -172,8 +232,53 @@ const CHECKER_BACKGROUND_COLOR_SPREAD = 10;
 /** Pixels at image edges this dark (and connected) are cleared — removes black letterbox around Photoroom exports. */
 const DARK_BG_MAX_CHANNEL = 42;
 
-const COLLECTIBLE_HUD_W = 184;
-const COLLECTIBLE_HUD_H = 78;
+const COLLECTIBLE_HUD_W = 156;
+const COLLECTIBLE_HUD_H = 64;
+const PLATFORM_SCALE = 2.1;
+const PLATFORM_EDGE_PADDING_PX = 8;
+const CAMERA_ZOOM = 0.5;
+const BACKGROUND_PARALLAX_X = 0.2;
+const BACKGROUND_PARALLAX_Y = 0.14;
+const CAMERA_DEADZONE_PX = 100;
+const CAMERA_FOLLOW_LERP_X = 0.1;
+const CAMERA_FOLLOW_LERP_Y = 0.1;
+const WORLD_BOUNDS_X = 0;
+const WORLD_BOUNDS_Y = -1000000;
+const WORLD_BOUNDS_W = 1400;
+const WORLD_BOUNDS_H = 1001000;
+const PLATFORM_SPAWN_MIN_X = 100;
+const PLATFORM_SPAWN_MAX_X = 1400 - 100;
+const STAIR_GAP_MIN_PX = 250;
+const STAIR_GAP_MAX_PX = 350;
+const BACKGROUND_HORIZONTAL_PAD_PX = 1200;
+const BACKGROUND_VERTICAL_PAD_PX = 24000;
+const PLAYER_SPAWN_CLEARANCE_PX = 14;
+const GRAPPLE_VERTICAL_REACH_PLATFORMS = 2;
+const GRAPPLE_MIN_TARGET_DISTANCE_PX = 150;
+const GRAPPLE_VERTICAL_BOOST_VY = -400;
+const GRAPPLE_STOP_ABOVE_PLATFORM_PX = 20;
+const LEVEL_MAX = 100;
+const LEVEL_SCORE_STEP = 1000;
+const LEVEL_PLATFORM_SPEED_BASE = 24;
+const LEVEL_PLATFORM_SPEED_PER_LEVEL = 5;
+const LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL = 0.005;
+const LEVEL_PLATFORM_MIN_BASE_WIDTH = 72;
+const LEVEL_MILESTONE_STEP = 10;
+const FLASH_SKILL_BOOST_DURATION_SEC = 10;
+const FLASH_SKILL_BOOST_COOLDOWN_SEC = 10;
+const FLASH_REARM_STAIRS_REQUIRED = 10;
+const FLASH_TONGUE_COOLDOWN_SPEEDUP = 2;
+const FLASH_BOOST_STAIR_COUNT = 4;
+const FLASH_TONGUE_RAY_WIDTH_MULTIPLIER = 2.4;
+const ACTION360_ATTACH_SEC = 0.72;
+const ACTION360_ROTATE_SEC = 2.6;
+const ACTION360_ROTATIONS = 2;
+const ACTION360_TARGET_STAIRS_UP = 3;
+const TOUCH_SWIPE_UP_MIN_PX = 18;
+const TOUCH_SWIPE_UP_MAX_SIDEWAYS_PX = 22;
+const TOUCH_SWIPE_ABOVE_PLAYER_PX = 16;
+const TOUCH_FOLLOW_DISTANCE_PX = 44;
+const TOUCH_LOCK_RADIUS_PX = 120;
 
 export class PlayScene implements Scene {
   readonly name = 'play';
@@ -182,7 +287,11 @@ export class PlayScene implements Scene {
   private input?: InputManager;
   private physics = new Physics();
   private world = new Container();
-  private background = new Graphics();
+  private background = new TilingSprite({
+    texture: Texture.WHITE,
+    width: 1,
+    height: 1,
+  });
   private jelly = new Graphics();
   private fxLayer = new Graphics();
   private platformSpriteLayer = new Container();
@@ -190,6 +299,8 @@ export class PlayScene implements Scene {
   private rippleLayer = new Graphics();
   private collectiblesGfx = new Graphics();
   private gameShake = new Container();
+  /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
+  private uiLayer = new Container();
   private tongueRoot = new Container();
   private tongueVector = new Graphics();
   private tongueArmature: PixiArmatureDisplay | null = null;
@@ -198,6 +309,22 @@ export class PlayScene implements Scene {
   private scoreboard?: HyperScoreboard;
   private collectibleHudRoot = new Container();
   private collectibleHudBg = new Graphics();
+  private touchControlsLayer = new Container();
+  private touchFeedbackLayer = new Graphics();
+  private touchRightTongueButton = new Graphics();
+  private touchRightJumpButton = new Graphics();
+  private touchRightTongueLabel?: Text;
+  private touchRightJumpLabel?: Text;
+  private touchRightTonguePressed = false;
+  private touchRightJumpPressed = false;
+  private touchRightButtonRadius = 42;
+  private touchRightTongueX = 0;
+  private touchRightTongueY = 0;
+  private touchRightJumpX = 0;
+  private touchRightJumpY = 0;
+  private touchPointers = new Map<number, TouchPointerTrack>();
+  private touchControlPointerId: number | null = null;
+  private touchRipples: TouchRipple[] = [];
   private collectibleHudGoldText?: Text;
   private collectibleHudDiamondText?: Text;
   private collectibles: Collectible[] = [];
@@ -215,13 +342,22 @@ export class PlayScene implements Scene {
   private platformTextureStorm?: Texture;
   private platformSprites: Sprite[] = [];
   private platforms: Platform[] = [];
+  /** Stair the player is standing on (kinematic carry uses `driftVx`). */
+  private currentGroundPlatform: Platform | null = null;
   private ripples: Ripple[] = [];
   private width = 0;
   private height = 0;
+  private worldWidth = 0;
+  private worldHeight = 0;
+  private worldMinY = 0;
+  private worldMaxY = 0;
+  private cameraX = 0;
   private cameraY = 0;
   private highestY = 0;
   private grappleCooldown = 0;
   private grapple: ActiveGrapple | null = null;
+  private grappleReleaseDampingLeft = 0;
+  private grappleReloadingLogged = false;
   private score = 0;
   /** Highest stair id that has already awarded points (landing or grapple). */
   private lastScoredStairId = -1;
@@ -240,17 +376,35 @@ export class PlayScene implements Scene {
   private shakeOffsetX = 0;
   private shakeOffsetY = 0;
   private bgm?: HTMLAudioElement;
-
+  private level = 1;
+  private levelUpBannerTime = 0;
+  private levelUpParticles: LevelUpParticle[] = [];
+  private currentBackgroundColor = 0x000000;
+  private levelUpFloatText?: Text;
+  private flashSkillBoostTime = 0;
+  private flashSkillBoostCooldownTime = 0;
+  private flashSkillBoostRearmStairId = 0;
+  private wasBeastModeActiveLastFrame = false;
+  private action360State: Action360State | null = null;
+  private action360Sparks: Action360Spark[] = [];
+  private jumpArcAssistTime = 0;
+  private jumpArcAssistDuration = 0;
+  private jumpArcStartCenterX = 0;
+  private jumpArcTargetCenterX = 0;
   async init(app: Application): Promise<void> {
     this.app = app;
     this.width = app.screen.width;
     this.height = app.screen.height;
+    this.refreshWorldViewport();
 
     await Promise.all([this.loadPlatformSprite(), this.player.load(), this.sfx.load()]);
 
+    this.uiLayer.sortableChildren = true;
     app.stage.addChild(this.gameShake);
+    app.stage.addChild(this.uiLayer);
     this.gameShake.addChild(this.background);
     this.gameShake.addChild(this.world);
+    this.world.sortableChildren = true;
     this.world.addChild(
       this.jelly,
       this.platformSpriteLayer,
@@ -261,124 +415,189 @@ export class PlayScene implements Scene {
       this.fxLayer,
       this.player,
     );
+    this.levelUpFloatText = new Text({
+      text: 'LEVEL UP!',
+      style: new TextStyle({
+        fill: '#ffff66',
+        fontFamily: 'Urbanist, Heebo, Arial Black, sans-serif',
+        fontSize: 18,
+        fontWeight: '800',
+        stroke: { color: '#301050', width: 4 },
+      }),
+    });
+    this.levelUpFloatText.anchor.set(0.5);
+    this.levelUpFloatText.visible = false;
+    this.world.addChild(this.levelUpFloatText);
     this.tongueRoot.addChild(this.tongueVector);
 
     this.scoreboard = new HyperScoreboard();
     this.scoreboard.position.set(10, 6);
     this.scoreboard.onResize(this.width);
-    app.stage.addChild(this.scoreboard);
+    this.uiLayer.addChild(this.scoreboard);
 
     this.setupCollectibleHud(app);
     this.layoutCollectibleHud();
 
     this.input = new InputManager(app);
     this.input.attach();
+    this.setupTouchControlsOverlay(app);
 
     await this.tryLoadTongueArmature();
     this.startBackgroundMusic();
 
     this.resetRun();
     this.drawStaticWorld();
+    this.applyCameraTransform();
     this.drawDynamicWorld();
   }
 
   update(ticker: Ticker): void {
-    const dt = Math.min(ticker.deltaMS / 1000, 1 / 30);
+    // Use real frame delta on mobile — capping to 1/30s made slow frames *lose* time so drifting
+    // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
+    const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
     this.runTime += dt;
+    this.input?.smoothTouchJoystickAxis(dt);
     this.expireComboIfNeeded();
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
+    this.updateFlashSkillBoost(dt);
+    this.updateTouchRipples(dt);
+    this.updateGrappleCooldownFeedback();
+    this.updateLevelProgress();
+    this.updatePlatformDifficulty(dt);
+    this.updateLevelUpParticles(dt);
+    this.update360Action(dt);
+    this.updateTouchFollowAxis();
 
-    if (this.grapple?.phase === 'extend') {
+    if (!this.action360State && this.grapple?.phase === 'extend') {
       this.grapple.extendT += dt;
       if (this.grapple.extendT >= GRAPPLE.extendSec) {
         this.grapple.phase = 'pull';
+        this.grapple.pullStartX = this.player.body.x + this.player.body.width * 0.5;
+        this.grapple.pullStartY = this.player.body.y + this.player.body.height * 0.5;
+        this.player.body.vy = Math.min(this.player.body.vy, GRAPPLE_VERTICAL_BOOST_VY);
+        this.player.body.grounded = false;
         this.sfx.play('tongue_hit', 0.95);
       }
     }
 
-    if (this.grapple?.phase === 'pull') {
-      const mouth = this.getMouthWorld();
+    if (!this.action360State && this.grapple?.phase === 'pull') {
       const body = this.player.body;
-      const dx = this.grapple.targetX - mouth.x;
-      const dy = this.grapple.targetY - mouth.y;
-      const dist = Math.hypot(dx, dy);
-      const len = dist > 1e-3 ? dist : 1;
-      const ux = dx / len;
-      const uy = dy / len;
-      const towardSpeed = body.vx * ux + body.vy * uy;
-
-      const closeDetach = dist < GRAPPLE.detachDistancePx;
-      const peakDetach =
-        towardSpeed <= GRAPPLE.peakReleaseTowardSpeed &&
-        dist >= GRAPPLE.peakReleaseMinDist &&
-        dist <= GRAPPLE.peakReleaseMaxDist;
-
-      if (closeDetach || peakDetach) {
-        const peakBonus = peakDetach && !closeDetach;
-        const vyMul = peakBonus ? GRAPPLE.peakLaunchVyMul : 1;
-        const vxMul = peakBonus ? GRAPPLE.peakLaunchVxMul : 1;
-
-        if (towardSpeed > 0 && uy < 0) {
-          body.vy -= towardSpeed * GRAPPLE.slingshotUpwardBoost * -uy;
-        }
-
-        body.vy += GRAPPLE.launchVy * vyMul;
-        const sx = Math.sign(dx) === 0 ? this.player.direction : Math.sign(dx);
-        body.vx += sx * GRAPPLE.launchVxBoost * vxMul;
-        if (peakBonus) {
-          body.vx += body.vx * 0.08;
-          body.vy += body.vy * 0.06;
-        }
-
-        body.grounded = false;
-        this.player.onGrappleLaunch();
-        const hookId = this.grapple.hookStairId;
-        const grappleGain = Math.max(0, hookId - this.lastScoredStairId);
-        if (grappleGain > 0) {
-          const launchSpeed = Math.hypot(body.vx, Math.abs(body.vy));
-          this.feedComboFromGrapple(grappleGain, peakBonus, launchSpeed);
-          const mult = this.getComboMultiplier();
-          const delta = grappleGain * mult;
-          this.score += delta;
-          this.lastScoredStairId = hookId;
-          this.maybeSpawnComboPopup(mult);
-          this.scoreboard?.onPointsGained(delta);
-          this.maybeTriggerScreenShake(delta, mult);
-        }
+      const hookPlatform = this.platforms.find((platform) => platform.stairId === this.grapple?.hookStairId);
+      if (!hookPlatform) {
         this.grapple = null;
-        this.grappleCooldown = GRAPPLE.cooldownSec;
+      } else {
+        const pullTargetY = hookPlatform.y - body.height - GRAPPLE_STOP_ABOVE_PLATFORM_PX;
+        const hookCenterX = hookPlatform.x + hookPlatform.width * 0.5;
+        const targetBodyX = hookCenterX - body.width * 0.5;
+        body.x += (targetBodyX - body.x) * Math.min(1, dt * 10);
+        body.vx *= Math.max(0, 1 - 10 * dt);
+        body.vy = Math.min(body.vy, GRAPPLE_VERTICAL_BOOST_VY);
+        if (body.y <= pullTargetY) {
+          body.y = pullTargetY;
+          body.vy = 0;
+          body.vx = 0;
+          body.grounded = false;
+          const hookId = this.grapple.hookStairId;
+          const grappleGain = Math.max(0, hookId - this.lastScoredStairId);
+          if (grappleGain > 0) {
+            const launchSpeed = Math.hypot(body.vx, Math.abs(body.vy));
+            this.feedComboFromGrapple(grappleGain, false, launchSpeed);
+            const mult = this.getComboMultiplier();
+            const delta = grappleGain * mult;
+            this.score += delta * this.getScoreGainMultiplier();
+            this.lastScoredStairId = hookId;
+            this.maybeSpawnComboPopup(mult);
+            this.scoreboard?.onPointsGained(delta);
+            this.maybeTriggerScreenShake(delta, mult);
+          }
+          this.grapple = null;
+          this.grappleReleaseDampingLeft = GRAPPLE.releaseDampingDurationSec;
+        }
       }
+    }
+
+    if (
+      !this.action360State &&
+      this.currentGroundPlatform &&
+      this.player.body.grounded &&
+      !this.grapple &&
+      RENDER.platformSurfaceFriction === 0
+    ) {
+      this.player.body.x += this.currentGroundPlatform.driftVx * dt;
+    }
+
+    if (this.action360State) {
+      this.currentGroundPlatform = null;
+      this.updateCamera(dt);
+      this.recycleStairsOffscreen();
+      this.syncPlatformSpritesFromPlatforms();
+      this.checkFallGameOver();
+      this.updateRipples(dt);
+      this.updateBeastParticles(dt);
+      this.updateComboPopups(dt);
+      this.updateDiamondShineSparks(dt);
+      this.updateAction360Sparks(dt);
+      this.updateCollectibles(dt);
+      this.updateCollectibleHudSmooth(dt);
+      const mult = this.getComboMultiplier();
+      this.player.update(
+        dt,
+        0,
+        this.highestY < -650,
+        this.grapple,
+        mult >= COMBO.beastModeMinMultiplier,
+      );
+      this.physics.applyWorldBounds(this.player.body, this.worldWidth);
+      this.drawDynamicWorld();
+      this.updateScreenShake(dt);
+      const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
+      this.scoreboard?.update(dt, this.score, mult, heightMeters, this.runTime, this.level);
+      return;
     }
 
     const axis = this.input?.getHorizontalAxis() ?? 0;
     const pulling = this.grapple?.phase === 'pull';
-    const axisScale = pulling ? GRAPPLE.horizontalInputScaleWhilePulling : 1;
+    const axisScale = pulling ? 0 : 1;
+    const jumpArcAssistActive = this.jumpArcAssistTime > 0 && !this.player.body.grounded;
+    const effectiveAxis = jumpArcAssistActive ? 0 : axis;
 
-    this.physics.applyHorizontalInput(this.player.body, axis * axisScale, dt);
-    this.handleActions();
-
-    const gravityScale = pulling ? GRAPPLE.gravityMultiplierWhilePulling : 1;
-    if (pulling && this.grapple) {
-      const mouth = this.getMouthWorld();
-      this.physics.applyGrappleAcceleration(
-        this.player.body,
-        this.grapple.targetX,
-        this.grapple.targetY,
-        mouth.x,
-        mouth.y,
-        dt,
-      );
+    this.physics.applyHorizontalInput(this.player.body, effectiveAxis * axisScale, dt);
+    if (jumpArcAssistActive) {
+      this.jumpArcAssistTime = Math.max(0, this.jumpArcAssistTime - dt);
+      const body = this.player.body;
+      const bodyCenterX = body.x + body.width * 0.5;
+      const elapsed = Math.max(0, this.jumpArcAssistDuration - this.jumpArcAssistTime);
+      const t = this.jumpArcAssistDuration > 0 ? Math.min(1, elapsed / this.jumpArcAssistDuration) : 1;
+      const curveT = 1 - Math.pow(1 - t, 2);
+      const desiredCenterX =
+        this.jumpArcStartCenterX +
+        (this.jumpArcTargetCenterX - this.jumpArcStartCenterX) * curveT;
+      const toDesired = desiredCenterX - bodyCenterX;
+      const targetVx = Math.max(-300, Math.min(220, toDesired * 4.8));
+      const steer = Math.min(1, dt * 6);
+      body.vx += (targetVx - body.vx) * steer;
+      // Keep momentum bending inward while arc assist is active.
+      if (this.jumpArcTargetCenterX < bodyCenterX) {
+        body.vx = Math.min(body.vx, -70);
+      }
+    } else if (this.player.body.grounded) {
+      this.jumpArcAssistTime = 0;
+      this.jumpArcAssistDuration = 0;
     }
+    this.handleActions();
+    this.applyPostGrappleReleaseDamping(dt);
 
+    const gravityScale = pulling ? 0 : this.getGravityScaleForLevel();
     const wasGrounded = this.player.body.grounded;
     const result = this.physics.update(
       this.player.body,
       this.platforms,
-      this.width,
+      this.worldWidth,
       dt,
       gravityScale,
     );
     if (result.landedPlatform) {
+      this.currentGroundPlatform = result.landedPlatform;
       this.player.onLand(result.impactVy);
       if (!wasGrounded) {
         const landVol = Math.min(1, result.impactVy / 520);
@@ -390,13 +609,15 @@ export class PlayScene implements Scene {
         this.feedComboFromLand();
         const mult = this.getComboMultiplier();
         const delta = landGain * mult;
-        this.score += delta;
+        this.score += delta * this.getScoreGainMultiplier();
         this.lastScoredStairId = p.stairId;
         this.maybeSpawnComboPopup(mult);
         this.scoreboard?.onPointsGained(delta);
         this.maybeTriggerScreenShake(delta, mult);
       }
       this.landOn(p);
+    } else if (!this.player.body.grounded) {
+      this.currentGroundPlatform = null;
     }
 
     this.updateCamera(dt);
@@ -407,42 +628,81 @@ export class PlayScene implements Scene {
     this.updateBeastParticles(dt);
     this.updateComboPopups(dt);
     this.updateDiamondShineSparks(dt);
+    this.updateAction360Sparks(dt);
     this.updateCollectibles(dt);
     this.updateCollectibleHudSmooth(dt);
     const mult = this.getComboMultiplier();
+    const boostVisualActive = this.isFlashSkillBoostActive();
     this.player.update(
       dt,
       axis,
       this.highestY < -650,
       this.grapple,
-      mult >= COMBO.beastModeMinMultiplier,
+      boostVisualActive,
     );
     this.drawDynamicWorld();
     this.updateScreenShake(dt);
     const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
-    this.scoreboard?.update(dt, this.score, mult, heightMeters, this.runTime);
+    this.scoreboard?.update(dt, this.score, mult, heightMeters, this.runTime, this.level);
   }
 
   resize(width: number, height: number): void {
+    const prevW = this.width;
+    const prevH = this.height;
+    const dw = Math.abs(width - prevW);
+    const dh = Math.abs(height - prevH);
     this.width = width;
     this.height = height;
-    this.resetRun();
-    this.drawStaticWorld();
-    this.drawDynamicWorld();
+    this.refreshWorldViewport();
 
     if (this.scoreboard) {
       this.scoreboard.onResize(width);
       this.scoreboard.position.set(10, 6);
     }
     this.layoutCollectibleHud();
+    this.input?.onResize();
+    this.layoutTouchControlsOverlay();
+
+    // Mobile browser chrome toggles height in small steps; resetting the whole run felt like “stuck” stairs.
+    const minorViewportJitter =
+      prevW > 0 && this.platforms.length > 0 && dw <= 36 && dh <= 96;
+    if (minorViewportJitter) {
+      this.drawStaticWorld();
+      this.clampEntitiesToWorldBounds();
+      this.syncPlatformSpritesFromPlatforms();
+      this.drawDynamicWorld();
+      return;
+    }
+
+    this.resetRun();
+    this.drawStaticWorld();
+    this.drawDynamicWorld();
   }
 
   destroy(): void {
+    if (this.input?.isTouchControlsActive()) {
+      this.app?.stage.off('pointerdown', this.handleTouchPointerDown);
+      this.app?.stage.off('pointermove', this.handleTouchPointerMove);
+      this.app?.stage.off('pointerup', this.handleTouchPointerUpOrCancel);
+      this.app?.stage.off('pointerupoutside', this.handleTouchPointerUpOrCancel);
+      this.app?.stage.off('pointercancel', this.handleTouchPointerUpOrCancel);
+      this.touchRightTongueButton.off('pointerdown', this.handleRightTongueDown);
+      this.touchRightTongueButton.off('pointerup', this.handleRightTongueUp);
+      this.touchRightTongueButton.off('pointerupoutside', this.handleRightTongueUp);
+      this.touchRightTongueButton.off('pointercancel', this.handleRightTongueUp);
+      this.touchRightJumpButton.off('pointerdown', this.handleRightJumpDown);
+      this.touchRightJumpButton.off('pointerup', this.handleRightJumpUp);
+      this.touchRightJumpButton.off('pointerupoutside', this.handleRightJumpUp);
+      this.touchRightJumpButton.off('pointercancel', this.handleRightJumpUp);
+      this.touchPointers.clear();
+      this.touchControlPointerId = null;
+      this.input?.clearTouchHolds();
+    }
     this.input?.destroy();
+    this.player.rotation = 0;
     this.clearPlatformSprites();
     this.clearFloatingComboUi();
-    this.scoreboard?.destroy();
-    this.collectibleHudRoot.destroy({ children: true });
+    this.uiLayer.destroy({ children: true });
     this.sfx.dispose();
     this.stopBackgroundMusic();
     this.tongueArmature?.dispose(true);
@@ -452,46 +712,141 @@ export class PlayScene implements Scene {
   }
 
   private handleActions(): void {
+    if (this.action360State) {
+      return;
+    }
     const wantGrapple = this.input?.consumeGrapple() ?? false;
-    if (wantGrapple && this.grappleCooldown <= 0 && !this.grapple) {
-      const mouth = this.getMouthWorld();
-      const hit = Physics.castGrappleTarget(this.platforms, mouth.x, mouth.y);
-      if (hit) {
-        this.grapple = {
-          phase: 'extend',
-          targetX: hit.x,
-          targetY: hit.y,
-          extendT: 0,
-          hookStairId: hit.platform.stairId,
-        };
-        this.sfx.play('tongue_shoot', 0.88);
-      }
+    if (wantGrapple) {
+      this.triggerGrappleAction();
     }
 
     const jumpPressed = this.input?.consumeJump() ?? false;
 
-    if (jumpPressed && this.player.body.grounded && !this.grapple) {
-      this.physics.jump(this.player.body);
-      this.player.onJump();
+    if (jumpPressed) {
+      this.triggerJumpAction();
     }
+  }
+
+  private triggerGrappleAction(): void {
+    if (this.grappleCooldown > 0 || this.grapple) {
+      return;
+    }
+    const flashBoost = this.isFlashSkillBoostActive();
+    const body = this.player.body;
+    const shootX = body.x + body.width * 0.5;
+    const shootY = body.y + body.height * 0.5;
+    const baseReach = Math.max(350, STAIRS.stepPx * GRAPPLE_VERTICAL_REACH_PLATFORMS + 100);
+    const boostedReach = STAIRS.stepPx * FLASH_BOOST_STAIR_COUNT + 70;
+    const maxReach = flashBoost ? boostedReach : baseReach;
+    const baseRayHalfWidth = Math.max(8, body.width * 0.8);
+    const verticalRayHalfWidth = flashBoost
+      ? baseRayHalfWidth * FLASH_TONGUE_RAY_WIDTH_MULTIPLIER
+      : baseRayHalfWidth;
+    const hit = Physics.castGrappleTarget(
+      this.platforms,
+      shootX,
+      shootY,
+      GRAPPLE_MIN_TARGET_DISTANCE_PX,
+      maxReach,
+      verticalRayHalfWidth,
+      flashBoost,
+    );
+    if (!hit) {
+      return;
+    }
+    this.grapple = {
+      phase: 'extend',
+      targetX: hit.x,
+      targetY: hit.y,
+      extendT: 0,
+      hookStairId: hit.platform.stairId,
+      pullStartX: this.player.body.x + this.player.body.width * 0.5,
+      pullStartY: this.player.body.y + this.player.body.height * 0.5,
+    };
+    const cooldownSpeedup = flashBoost ? FLASH_TONGUE_COOLDOWN_SPEEDUP : 1;
+    this.grappleCooldown = GRAPPLE.cooldownSec / cooldownSpeedup;
+    this.grappleReloadingLogged = false;
+    this.player.onGrappleLaunch();
+    this.sfx.play('tongue_shoot', 0.88);
+  }
+
+  private applyPostGrappleReleaseDamping(dt: number): void {
+    if (this.grapple !== null || this.grappleReleaseDampingLeft <= 0) {
+      return;
+    }
+    this.grappleReleaseDampingLeft = Math.max(0, this.grappleReleaseDampingLeft - dt);
+    const damp = Math.max(0, 1 - GRAPPLE.releaseDampingPerSec * dt);
+    this.player.body.vx *= damp;
+    this.player.body.vy *= damp;
+  }
+
+  private updateGrappleCooldownFeedback(): void {
+    if (this.grappleCooldown > 0) {
+      if (!this.grappleReloadingLogged) {
+        this.grappleReloadingLogged = true;
+        console.log('Tongue reloading...');
+      }
+      return;
+    }
+
+    if (this.grappleReloadingLogged) {
+      this.grappleReloadingLogged = false;
+      console.log('Tongue ready!');
+    }
+  }
+
+  private triggerJumpAction(fromRightSwipe = false): void {
+    if (!this.player.body.grounded || !!this.grapple) {
+      return;
+    }
+    this.physics.jump(this.player.body);
+    if (this.isFlashSkillBoostActive()) {
+      const maxBoostJumpHeight = STAIRS.stepPx * FLASH_BOOST_STAIR_COUNT;
+      const maxBoostJumpVy = -Math.sqrt(2 * PHYSICS.gravity * maxBoostJumpHeight);
+      this.player.body.vy = maxBoostJumpVy;
+    }
+    if (fromRightSwipe) {
+      const body = this.player.body;
+      const centerX = this.worldWidth * 0.5;
+      const bodyCenterX = body.x + body.width * 0.5;
+      const rightBias = Math.max(0, (bodyCenterX - centerX) / Math.max(1, this.worldWidth * 0.5));
+      const inwardAssistVx = -(170 + rightBias * 250);
+      // Keep existing stronger inward motion, otherwise bend trajectory toward screen center.
+      body.vx = Math.min(body.vx, inwardAssistVx);
+      this.jumpArcAssistDuration = 0.28;
+      this.jumpArcAssistTime = this.jumpArcAssistDuration;
+      this.jumpArcStartCenterX = bodyCenterX;
+      this.jumpArcTargetCenterX = centerX;
+    }
+    this.player.onJump();
   }
 
   private createPlatforms(): void {
     this.platforms = [];
     this.clearPlatformSprites();
-    const baseY = this.height - 96;
+    const baseY = this.worldMaxY - 96;
+    let y = baseY;
 
     for (let index = 0; index < STAIRS.poolCount; index += 1) {
-      const width = 150 + ((index * 37) % 80);
-      const x = 48 + ((index * 113) % Math.max(160, this.width - width - 96));
-      const y = baseY - index * STAIRS.stepPx;
-      this.platforms.push({
+      const baseWidth = 150 + ((index * 37) % 80);
+      const width = baseWidth * PLATFORM_SCALE;
+      const x = this.computePlatformSpawnX(index, width);
+      const platform: Platform = {
         x,
         y,
         width,
         height: STAIRS.platformHeight,
+        baseWidth,
+        driftDir: Math.random() < 0.5 ? -1 : 1,
+        driftVx: 0,
         stairId: index,
-      });
+      };
+      this.updatePlatformBodyFromScale(platform);
+      if (index === 0) {
+        platform.x = this.worldWidth * 0.5 - platform.width * 0.5;
+      }
+      this.platforms.push(platform);
+      y -= this.computeStairGapPx(index);
     }
 
     this.nextStairId = STAIRS.poolCount - 1;
@@ -502,23 +857,75 @@ export class PlayScene implements Scene {
    * Steps that scroll below visible area move to the top with a new stairId so climbing is endless.
    */
   private recycleStairsOffscreen(): void {
-    const cutoff = this.cameraY + this.height + STAIRS.recycleBelowScreenPx;
+    const cutoff = this.cameraY + this.worldHeightFromScreen() + STAIRS.recycleBelowScreenPx;
     const staying = this.platforms.filter((p) => p.y <= cutoff);
     if (staying.length === 0 || staying.length === this.platforms.length) {
       return;
     }
 
     const toRecycle = this.platforms.filter((p) => p.y > cutoff).sort((a, b) => b.y - a.y);
-    let spawnY = Math.min(...staying.map((p) => p.y)) - STAIRS.stepPx;
+    let spawnY = Math.min(
+      Math.min(...staying.map((p) => p.y)) - STAIRS.stepPx,
+      this.cameraY - 2000,
+    );
 
+    const recycleSpeed = LEVEL_PLATFORM_SPEED_BASE + this.level * LEVEL_PLATFORM_SPEED_PER_LEVEL;
     for (const p of toRecycle) {
       this.nextStairId += 1;
       p.stairId = this.nextStairId;
       p.y = spawnY;
-      p.width = 150 + ((this.nextStairId * 37) % 80);
-      p.x = 48 + ((this.nextStairId * 113) % Math.max(160, this.width - p.width - 96));
-      spawnY -= STAIRS.stepPx;
+      p.baseWidth = 150 + ((this.nextStairId * 37) % 80);
+      p.width = p.baseWidth * PLATFORM_SCALE;
+      p.driftDir = Math.random() < 0.5 ? -1 : 1;
+      p.driftVx = p.driftDir * recycleSpeed;
+      this.updatePlatformBodyFromScale(p);
+      p.x = this.computePlatformSpawnX(this.nextStairId, p.width);
+      spawnY -= this.computeStairGapPx(this.nextStairId);
     }
+  }
+
+  private computeStairGapPx(stairId: number): number {
+    const raw = Math.sin((stairId + 17) * 19.357) * 43758.5453;
+    const unit = raw - Math.floor(raw);
+    return STAIR_GAP_MIN_PX + unit * (STAIR_GAP_MAX_PX - STAIR_GAP_MIN_PX);
+  }
+
+  private computePlatformSpawnX(stairId: number, platformWidth: number): number {
+    const minCenterX = PLATFORM_SPAWN_MIN_X;
+    const maxCenterX = PLATFORM_SPAWN_MAX_X;
+    const minX = Math.max(WORLD_BOUNDS_X + PLATFORM_EDGE_PADDING_PX, minCenterX - platformWidth * 0.5);
+    const maxX = Math.min(
+      this.worldWidth - platformWidth - PLATFORM_EDGE_PADDING_PX,
+      maxCenterX - platformWidth * 0.5,
+    );
+    if (maxX <= minX) {
+      return minX;
+    }
+    const raw = Math.sin((stairId + 1) * 12.9898) * 43758.5453;
+    const unit = raw - Math.floor(raw);
+    return minX + unit * (maxX - minX);
+  }
+
+  private updatePlatformBodyFromScale(platform: Platform): void {
+    // Custom physics uses this body directly; keep collider scale in exact sync with art scale.
+    platform.height = STAIRS.platformHeight * PLATFORM_SCALE;
+  }
+
+  /** After a small viewport change (mobile URL bar), keep platforms and player inside the new width. */
+  private clampEntitiesToWorldBounds(): void {
+    const margin = PLATFORM_EDGE_PADDING_PX;
+    const maxPx = Math.max(margin + 1, this.worldWidth - margin);
+    for (const p of this.platforms) {
+      if (p.x < margin) {
+        p.x = margin;
+      }
+      if (p.x + p.width > maxPx) {
+        p.x = Math.max(margin, maxPx - p.width);
+      }
+      this.updatePlatformBodyFromScale(p);
+    }
+    const body = this.player.body;
+    body.x = Math.max(0, Math.min(body.x, this.worldWidth - body.width));
   }
 
   private syncPlatformSpritesFromPlatforms(): void {
@@ -555,6 +962,7 @@ export class PlayScene implements Scene {
         sprite.texture = tex;
       }
 
+      sprite.roundPixels = RENDER.pixelArt;
       sprite.width = platform.width * artMul;
       sprite.scale.y = Math.abs(sprite.scale.x);
       sprite.position.set(platform.x + platform.width / 2, platform.y + platform.height / 2 + 6);
@@ -562,9 +970,11 @@ export class PlayScene implements Scene {
   }
 
   private resetRun(): void {
+    this.currentGroundPlatform = null;
     this.clearFloatingComboUi();
     this.score = 0;
     this.lastScoredStairId = -1;
+    this.cameraX = 0;
     this.cameraY = 0;
     this.highestY = 0;
     this.goldCount = 0;
@@ -578,6 +988,23 @@ export class PlayScene implements Scene {
     this.shakeOffsetX = 0;
     this.shakeOffsetY = 0;
     this.diamondShineSparks = [];
+    this.level = 1;
+    this.levelUpBannerTime = 0;
+    this.levelUpParticles = [];
+    this.action360State = null;
+    this.action360Sparks = [];
+    this.player.rotation = 0;
+    this.flashSkillBoostTime = 0;
+    this.flashSkillBoostCooldownTime = 0;
+    this.flashSkillBoostRearmStairId = 0;
+    this.wasBeastModeActiveLastFrame = false;
+    this.syncTouch360Visibility();
+    this.jumpArcAssistTime = 0;
+    this.jumpArcAssistDuration = 0;
+    this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
+    if (this.levelUpFloatText) {
+      this.levelUpFloatText.visible = false;
+    }
     this.createPlatforms();
     this.spawnCollectibleField();
     this.resetPlayer();
@@ -587,26 +1014,316 @@ export class PlayScene implements Scene {
     this.collectibleHudBump = 0;
     this.collectibleHudRoot.scale.set(1);
     this.refreshCollectibleHudText();
+    this.scoreboard?.setLevel(this.level);
+  }
+
+  private updateFlashSkillBoost(dt: number): void {
+    const wasBoostActive = this.flashSkillBoostTime > 0;
+    this.flashSkillBoostCooldownTime = Math.max(0, this.flashSkillBoostCooldownTime - dt);
+    const beastModeActiveNow = this.getComboMultiplier() >= COMBO.beastModeMinMultiplier;
+    if (
+      beastModeActiveNow &&
+      !this.wasBeastModeActiveLastFrame &&
+      this.flashSkillBoostCooldownTime <= 0 &&
+      this.canRearmBoost()
+    ) {
+      this.flashSkillBoostTime = FLASH_SKILL_BOOST_DURATION_SEC;
+      this.flashSkillBoostCooldownTime = FLASH_SKILL_BOOST_COOLDOWN_SEC;
+    } else if (this.flashSkillBoostTime > 0) {
+      this.flashSkillBoostTime = Math.max(0, this.flashSkillBoostTime - dt);
+    }
+    this.wasBeastModeActiveLastFrame = beastModeActiveNow;
+    if (wasBoostActive && this.flashSkillBoostTime <= 0) {
+      this.resetBoostAbilitiesToNormal();
+      this.comboChain = 0;
+      this.lastChainTime = -1e9;
+      this.flashSkillBoostRearmStairId = this.lastScoredStairId + FLASH_REARM_STAIRS_REQUIRED;
+    }
+    this.syncTouch360Visibility();
+  }
+
+  private isFlashSkillBoostActive(): boolean {
+    return this.flashSkillBoostTime > 0;
+  }
+
+  private canRearmBoost(): boolean {
+    return this.lastScoredStairId >= this.flashSkillBoostRearmStairId;
+  }
+
+  private resetBoostAbilitiesToNormal(): void {
+    if (this.action360State) {
+      this.stop360Action(true);
+      return;
+    }
+    if (this.player.body.vy < 0) {
+      const normalJumpVy =
+        -(PHYSICS.baseJump + Math.abs(this.player.body.vx) * PHYSICS.speedJumpBonus);
+      // If boost expired mid-air, clamp remaining upward speed back to normal jump ceiling.
+      this.player.body.vy = Math.max(this.player.body.vy, normalJumpVy);
+    }
+  }
+
+  private getScoreGainMultiplier(): number {
+    return this.action360State?.phase === 'rotate' ? 3 : 1;
+  }
+
+  private perform360Action(): void {
+    if (this.action360State) {
+      return;
+    }
+    const body = this.player.body;
+    const shootX = body.x + body.width * 0.5;
+    const shootY = body.y + body.height * 0.5;
+    const hit = this.find360AttachTarget(shootX, shootY, body.width);
+    if (!hit) {
+      return;
+    }
+    this.action360State = {
+      phase: 'attach',
+      timeLeft: ACTION360_ATTACH_SEC,
+      hookStairId: hit.platform.stairId,
+      hookX: hit.x,
+      hookY: hit.y,
+      orbitRadius: 0,
+      orbitBaseAngle: 0,
+    };
+    this.grapple = {
+      phase: 'extend',
+      targetX: hit.x,
+      targetY: hit.y,
+      extendT: 0,
+      hookStairId: hit.platform.stairId,
+      pullStartX: shootX,
+      pullStartY: shootY,
+    };
+    body.vx = 0;
+    body.vy = 0;
+    body.grounded = false;
+    this.touchPointers.clear();
+    this.input?.clearTouchHolds();
+  }
+
+  private find360AttachTarget(
+    shootX: number,
+    shootY: number,
+    bodyWidth: number,
+  ): { x: number; y: number; platform: Platform } | undefined {
+    const baseStairId =
+      this.currentGroundPlatform?.stairId ??
+      this.platforms
+        .filter((p) => p.y >= this.player.body.y - 8)
+        .reduce((best, p) => (best ? (p.y < best.y ? p : best) : p), undefined as Platform | undefined)
+        ?.stairId ??
+      this.lastScoredStairId;
+    const targetStairId = baseStairId + ACTION360_TARGET_STAIRS_UP;
+    const exactThirdUp = this.platforms.find(
+      (p) => p.stairId === targetStairId && p.y + p.height < shootY,
+    );
+    if (exactThirdUp) {
+      return {
+        x: exactThirdUp.x + exactThirdUp.width * 0.5,
+        y: exactThirdUp.y + exactThirdUp.height - 3,
+        platform: exactThirdUp,
+      };
+    }
+
+    const reach = STAIRS.stepPx * 5.2;
+    const direct = Physics.castGrappleTarget(
+      this.platforms,
+      shootX,
+      shootY,
+      18,
+      reach,
+      Math.max(18, bodyWidth * 2.6),
+      true,
+    );
+    if (direct) {
+      return direct;
+    }
+
+    let best:
+      | {
+          score: number;
+          x: number;
+          y: number;
+          platform: Platform;
+        }
+      | undefined;
+    for (const p of this.platforms) {
+      const bottom = p.y + p.height;
+      if (bottom >= shootY) {
+        continue;
+      }
+      const dy = shootY - bottom;
+      if (dy > reach || dy < 18) {
+        continue;
+      }
+      const px = p.x + p.width * 0.5;
+      const dx = Math.abs(px - shootX);
+      const score = dy * 1.35 + dx * 0.35;
+      if (!best || score < best.score) {
+        best = {
+          score,
+          x: px,
+          y: bottom - 3,
+          platform: p,
+        };
+      }
+    }
+    return best
+      ? { x: best.x, y: best.y, platform: best.platform }
+      : undefined;
+  }
+
+  private update360Action(dt: number): void {
+    const state = this.action360State;
+    if (!state) {
+      this.player.rotation = 0;
+      return;
+    }
+    const body = this.player.body;
+    const attachPlatform = this.platforms.find((p) => p.stairId === state.hookStairId);
+    if (!attachPlatform) {
+      this.stop360Action(false);
+      return;
+    }
+    if (state.phase === 'attach') {
+      state.timeLeft = Math.max(0, state.timeLeft - dt);
+      const attachProgress = 1 - state.timeLeft / ACTION360_ATTACH_SEC;
+      if (this.grapple) {
+        this.grapple.phase = 'extend';
+        this.grapple.extendT = Math.min(GRAPPLE.extendSec, attachProgress * GRAPPLE.extendSec);
+      }
+      body.vx = 0;
+      body.vy = 0;
+      body.grounded = this.player.body.grounded;
+      if (state.timeLeft <= 0) {
+        const centerX = body.x + body.width * 0.5;
+        const centerY = body.y + body.height * 0.5;
+        if (this.grapple) {
+          this.grapple.phase = 'pull';
+          this.grapple.extendT = GRAPPLE.extendSec;
+          this.grapple.pullStartX = centerX;
+          this.grapple.pullStartY = centerY;
+        }
+        state.phase = 'rotate';
+        state.timeLeft = ACTION360_ROTATE_SEC;
+        const ox = centerX - state.hookX;
+        const oy = centerY - state.hookY;
+        const baseRadius = Math.hypot(ox, oy) * 1.62;
+        const minOrbitRadius = Math.max(150, this.height * 0.24);
+        const maxOrbitRadius = Math.max(minOrbitRadius + 20, this.height * 0.42);
+        state.orbitRadius = Math.max(minOrbitRadius, Math.min(maxOrbitRadius, baseRadius));
+        state.orbitBaseAngle = Math.atan2(oy, ox);
+      }
+      this.player.rotation = 0;
+      return;
+    }
+
+    state.timeLeft = Math.max(0, state.timeLeft - dt);
+    const t = 1 - state.timeLeft / ACTION360_ROTATE_SEC;
+    const angle = state.orbitBaseAngle + t * Math.PI * 2 * ACTION360_ROTATIONS;
+    const cx = state.hookX + Math.cos(angle) * state.orbitRadius;
+    const cy = state.hookY + Math.sin(angle) * state.orbitRadius;
+    body.x = cx - body.width * 0.5;
+    body.y = cy - body.height * 0.5;
+    body.vx = 0;
+    body.vy = 0;
+    body.grounded = false;
+    this.player.rotation = angle + Math.PI * 0.5;
+    this.spawnAction360Sparks(state.hookX, state.hookY);
+
+    if (state.timeLeft <= 0) {
+      this.stop360Action(true);
+    }
+  }
+
+  private stop360Action(landOnPlatform: boolean): void {
+    const state = this.action360State;
+    this.action360State = null;
+    this.player.rotation = 0;
+    this.action360Sparks = [];
+    if (landOnPlatform && state) {
+      const platform = this.platforms.find((p) => p.stairId === state.hookStairId);
+      if (platform) {
+        this.player.body.x = platform.x + platform.width * 0.5 - this.player.body.width * 0.5;
+        this.physics.snapToPlatform(this.player.body, platform);
+        this.currentGroundPlatform = platform;
+      }
+    }
+    this.grapple = null;
+    this.flashSkillBoostTime = 0;
+    this.wasBeastModeActiveLastFrame = false;
+    this.syncTouch360Visibility();
+  }
+
+  private spawnAction360Sparks(x: number, y: number): void {
+    for (let i = 0; i < 3; i += 1) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 70 + Math.random() * 130;
+      this.action360Sparks.push({
+        x: x + (Math.random() - 0.5) * 18,
+        y: y + (Math.random() - 0.5) * 18,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        age: 0,
+        life: 0.28 + Math.random() * 0.2,
+      });
+    }
+  }
+
+  private updateAction360Sparks(dt: number): void {
+    this.action360Sparks = this.action360Sparks
+      .map((s) => ({
+        ...s,
+        age: s.age + dt,
+        x: s.x + s.vx * dt,
+        y: s.y + s.vy * dt,
+        vx: s.vx * (1 - dt * 2.6),
+        vy: s.vy * (1 - dt * 2.6),
+      }))
+      .filter((s) => s.age < s.life);
+    if (this.action360Sparks.length > 180) {
+      this.action360Sparks.splice(0, this.action360Sparks.length - 180);
+    }
+  }
+
+  private drawAction360Sparks(): void {
+    for (const s of this.action360Sparks) {
+      const u = s.age / s.life;
+      const alpha = (1 - u) * 0.95;
+      const r = 2 + 4 * (1 - u);
+      this.fxLayer.circle(s.x, s.y, r + 2).fill({ color: 0xffaa33, alpha: alpha * 0.25 });
+      this.fxLayer.circle(s.x, s.y, r).fill({ color: 0xffe066, alpha });
+      this.fxLayer.circle(s.x - 0.9, s.y - 0.9, r * 0.38).fill({ color: 0xffffff, alpha: alpha * 0.8 });
+    }
+  }
+
+  private syncTouch360Visibility(): void {
+    // Full-screen touch mode: 360 on-screen button is hidden/disabled.
   }
 
   private checkFallGameOver(): void {
     const feetY = this.player.body.y + this.player.body.height;
-    const deathLine = this.cameraY + this.height + STAIRS.fallDeathBelowViewportPx;
+    const deathLine = this.cameraY + this.worldHeightFromScreen() + STAIRS.fallDeathBelowViewportPx;
     if (feetY > deathLine) {
       this.resetRun();
     }
   }
 
   private resetPlayer(): void {
-    const start = this.platforms[0];
-    this.player.body.x = Math.round(start.x + start.width / 2 - this.player.body.width / 2);
-    this.player.body.y = Math.round(start.y - this.player.body.height);
+    const spawnX = this.worldWidth * 0.5 - this.player.body.width * 0.5;
+    const spawnY = this.worldMaxY - 100 - this.player.body.height;
+    this.player.body.x = Math.round(spawnX);
+    this.player.body.y = Math.round(spawnY);
     this.player.body.vx = 0;
     this.player.body.vy = 0;
     this.player.body.grounded = true;
     this.grapple = null;
     this.grappleCooldown = 0;
-    this.lastScoredStairId = start.stairId;
+    this.grappleReleaseDampingLeft = 0;
+    this.grappleReloadingLogged = false;
+    this.lastScoredStairId = this.platforms[0]?.stairId ?? 0;
     this.player.update(0, 0, false, null, false);
   }
 
@@ -618,12 +1335,49 @@ export class PlayScene implements Scene {
     });
   }
 
-  private updateCamera(dt: number): void {
+  private updateCamera(_dt: number): void {
     this.highestY = Math.min(this.highestY, this.player.body.y);
-    const targetY = Math.min(0, this.player.body.y - this.height * 0.45);
-    this.cameraY += (targetY - this.cameraY) * Math.min(1, dt * 5);
-    this.world.position.y = -this.cameraY;
+
+    const viewportW = this.worldWidthFromScreen();
+    const viewportH = this.worldHeightFromScreen();
+    const halfW = Math.max(0, viewportW * 0.5);
+    const halfH = Math.max(0, viewportH * 0.5);
+    const deadX = Math.min(CAMERA_DEADZONE_PX, Math.max(20, halfW - 12));
+    const deadY = Math.min(CAMERA_DEADZONE_PX, Math.max(20, halfH - 12));
+
+    const playerCx = this.player.body.x + this.player.body.width * 0.5;
+    const playerCy = this.player.body.y + this.player.body.height * 0.5;
+    const left = this.cameraX + deadX;
+    const right = this.cameraX + viewportW - deadX;
+    const top = this.cameraY + deadY;
+    const bottom = this.cameraY + viewportH - deadY;
+
+    let targetCamX = this.cameraX;
+    let targetCamY = this.cameraY;
+    if (playerCx < left) {
+      targetCamX = playerCx - deadX;
+    } else if (playerCx > right) {
+      targetCamX = playerCx - (viewportW - deadX);
+    }
+    if (playerCy < top) {
+      targetCamY = playerCy - deadY;
+    } else if (playerCy > bottom) {
+      targetCamY = playerCy - (viewportH - deadY);
+    }
+
+    this.cameraX += (targetCamX - this.cameraX) * CAMERA_FOLLOW_LERP_X;
+    this.cameraY += (targetCamY - this.cameraY) * CAMERA_FOLLOW_LERP_Y;
+    const maxCamX = Math.max(0, this.worldWidth - viewportW);
+    this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
+    this.cameraY = Math.min(0, this.cameraY);
+
+    this.world.position.set(-this.cameraX, -this.cameraY);
+    this.background.tilePosition.set(
+      -this.cameraX * BACKGROUND_PARALLAX_X,
+      -this.cameraY * BACKGROUND_PARALLAX_Y,
+    );
   }
+
 
   private updateScreenShake(dt: number): void {
     if (this.shakeTime > 0) {
@@ -636,8 +1390,7 @@ export class PlayScene implements Scene {
       this.shakeOffsetX = 0;
       this.shakeOffsetY = 0;
     }
-
-    this.gameShake.position.set(this.shakeOffsetX, this.shakeOffsetY);
+    this.applyCameraTransform();
   }
 
   private maybeTriggerScreenShake(pointsDelta: number, mult: number): void {
@@ -764,7 +1517,7 @@ export class PlayScene implements Scene {
   }
 
   private updateBeastParticles(dt: number): void {
-    const beast = this.getComboMultiplier() >= COMBO.beastModeMinMultiplier;
+    const beast = this.isFlashSkillBoostActive();
     const spd = Math.hypot(this.player.body.vx, this.player.body.vy);
 
     if (beast && spd >= COMBO.beastParticleMinSpeed) {
@@ -859,7 +1612,7 @@ export class PlayScene implements Scene {
   private syncTongueArmatureToGrapple(
     mouth: { x: number; y: number },
     tip: { x: number; y: number },
-    beastMode: boolean,
+    _beastMode: boolean,
   ): void {
     const arm = this.tongueArmature;
     if (!arm || !this.tongueDbReady) {
@@ -877,7 +1630,7 @@ export class PlayScene implements Scene {
     arm.rotation = Math.atan2(dy, dx) - Math.PI / 2;
     const stretch = (len / TONGUE_DB_REST_LENGTH_PX) * TONGUE_DB_BASE_SCALE;
     arm.scale.set(stretch);
-    arm.tint = beastMode ? COMBO.beastTongueFill : 0xffffff;
+    arm.tint = 0xffffff;
   }
 
   private spawnDiamondCollectShine(x: number, y: number): void {
@@ -923,9 +1676,121 @@ export class PlayScene implements Scene {
     }
   }
 
+  private updateLevelProgress(): void {
+    const nextLevel = Math.max(1, Math.min(LEVEL_MAX, 1 + Math.floor(this.score / LEVEL_SCORE_STEP)));
+    if (nextLevel <= this.level) {
+      return;
+    }
+    const previousMilestone = Math.floor(this.level / LEVEL_MILESTONE_STEP);
+    this.level = nextLevel;
+    this.levelUpBannerTime = 1;
+    this.spawnLevelUpParticles();
+    this.scoreboard?.setLevel(this.level);
+    this.scoreboard?.triggerLevelUp();
+    const nextMilestone = Math.floor(this.level / LEVEL_MILESTONE_STEP);
+    if (nextMilestone > previousMilestone) {
+      this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
+      this.drawStaticWorld();
+    }
+  }
+
+  private updatePlatformDifficulty(dt: number): void {
+    const widthRatio = Math.max(0.5, 1 - this.level * LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL);
+    const edgePad = PLATFORM_EDGE_PADDING_PX;
+    for (const p of this.platforms) {
+      const targetBaseWidth = Math.max(
+        LEVEL_PLATFORM_MIN_BASE_WIDTH,
+        p.baseWidth * widthRatio,
+      );
+      p.width = targetBaseWidth * PLATFORM_SCALE;
+      p.driftVx = 0;
+      if (p.x < edgePad) {
+        p.x = edgePad;
+      } else if (p.x + p.width > this.worldWidth - edgePad) {
+        p.x = this.worldWidth - edgePad - p.width;
+      }
+      this.updatePlatformBodyFromScale(p);
+    }
+  }
+
+  private getGravityScaleForLevel(): number {
+    const gravityTier = Math.floor(this.level / 10);
+    return 1 + gravityTier * 0.02;
+  }
+
+  private spawnLevelUpParticles(): void {
+    const cx = this.player.body.x + this.player.body.width * 0.5;
+    const cy = this.player.body.y + this.player.body.height * 0.5;
+    for (let i = 0; i < 22; i += 1) {
+      const a = (i / 22) * Math.PI * 2;
+      const speed = 110 + Math.random() * 170;
+      this.levelUpParticles.push({
+        x: cx,
+        y: cy,
+        vx: Math.cos(a) * speed,
+        vy: Math.sin(a) * speed - 60,
+        age: 0,
+        life: 0.5 + Math.random() * 0.3,
+      });
+    }
+  }
+
+  private updateLevelUpParticles(dt: number): void {
+    if (this.levelUpBannerTime > 0) {
+      this.levelUpBannerTime = Math.max(0, this.levelUpBannerTime - dt);
+    }
+    this.levelUpParticles = this.levelUpParticles
+      .map((p) => ({
+        ...p,
+        age: p.age + dt,
+        x: p.x + p.vx * dt,
+        y: p.y + p.vy * dt,
+        vy: p.vy + 420 * dt,
+      }))
+      .filter((p) => p.age < p.life);
+    if (!this.levelUpFloatText) {
+      return;
+    }
+    if (this.levelUpBannerTime <= 0) {
+      this.levelUpFloatText.visible = false;
+      return;
+    }
+    const u = 1 - this.levelUpBannerTime;
+    this.levelUpFloatText.visible = true;
+    this.levelUpFloatText.position.set(
+      this.player.body.x + this.player.body.width * 0.5,
+      this.player.body.y - 26 - u * 24,
+    );
+    this.levelUpFloatText.alpha = (1 - u) * 0.95;
+    this.levelUpFloatText.scale.set(0.92 + 0.22 * Math.sin(Math.min(1, u) * Math.PI));
+  }
+
+  private drawLevelUpParticles(): void {
+    for (const p of this.levelUpParticles) {
+      const u = p.age / p.life;
+      const alpha = (1 - u) * 0.9;
+      const r = 2 + 3 * (1 - u);
+      this.fxLayer.circle(p.x, p.y, r).fill({ color: 0xffe066, alpha });
+      this.fxLayer.circle(p.x - 1.2, p.y - 1.2, r * 0.45).fill({ color: 0xffffff, alpha: alpha * 0.7 });
+    }
+  }
+
+  private getBackgroundColorForLevel(level: number): number {
+    const palette = [
+      0x06060f, 0x101226, 0x1a1130, 0x1c142f, 0x10232f, 0x19301d, 0x2e2b14, 0x2f1f12, 0x2c1527, 0x10103a,
+    ];
+    const idx = Math.max(0, Math.floor((level - 1) / LEVEL_MILESTONE_STEP)) % palette.length;
+    return palette[idx];
+  }
+
   private drawStaticWorld(): void {
-    this.background.clear();
-    this.background.rect(0, 0, this.width, this.height).fill({ color: 0x000000 });
+    this.background.tint = this.currentBackgroundColor;
+    this.background.position.set(
+      WORLD_BOUNDS_X - BACKGROUND_HORIZONTAL_PAD_PX,
+      this.worldMinY - BACKGROUND_VERTICAL_PAD_PX,
+    );
+    this.background.width = this.worldWidth + BACKGROUND_HORIZONTAL_PAD_PX * 2;
+    this.background.height = this.worldHeight + BACKGROUND_VERTICAL_PAD_PX * 2;
   }
 
   private drawDynamicWorld(): void {
@@ -969,6 +1834,8 @@ export class PlayScene implements Scene {
 
     this.drawCollectibles();
     this.drawDiamondShineSparks();
+    this.drawAction360Sparks();
+    this.drawLevelUpParticles();
 
     for (const p of this.beastParticles) {
       const u = p.age / COMBO.beastParticleLifeSec;
@@ -983,8 +1850,9 @@ export class PlayScene implements Scene {
     const b = this.player.body;
     const cx = b.x + b.width * 0.5;
     const cy = b.y + b.height * 0.5;
+    const grappleVerticalX = this.grapple ? cx : cx + this.player.direction * GRAPPLE.mouthOffsetX;
     return {
-      x: cx + this.player.direction * GRAPPLE.mouthOffsetX,
+      x: grappleVerticalX,
       y: cy + GRAPPLE.mouthOffsetY,
     };
   }
@@ -1010,7 +1878,7 @@ export class PlayScene implements Scene {
       text: 'Gold     0',
       style: new TextStyle({
         fontFamily: 'system-ui, Segoe UI, sans-serif',
-        fontSize: 15,
+        fontSize: 13,
         fill: '#ffd24a',
         stroke: { color: '#1a1020', width: 3 },
       }),
@@ -1019,7 +1887,7 @@ export class PlayScene implements Scene {
       text: 'Diamonds 0',
       style: new TextStyle({
         fontFamily: 'system-ui, Segoe UI, sans-serif',
-        fontSize: 15,
+        fontSize: 13,
         fill: '#9df6ff',
         stroke: { color: '#1a1020', width: 3 },
       }),
@@ -1029,20 +1897,350 @@ export class PlayScene implements Scene {
       this.collectibleHudGoldText,
       this.collectibleHudDiamondText,
     );
-    app.stage.addChild(this.collectibleHudRoot);
+    this.uiLayer.addChild(this.collectibleHudRoot);
+  }
+
+  private setupTouchControlsOverlay(app: Application): void {
+    if (!this.input?.isTouchControlsActive()) {
+      return;
+    }
+    // Temple Run style: full-screen touch lanes + swipe actions.
+    // Joystick/button UI is intentionally disabled for now (kept in git history for future restore).
+    this.touchControlsLayer.eventMode = 'passive';
+    this.touchControlsLayer.zIndex = 999;
+    this.touchRightTongueButton.eventMode = 'static';
+    this.touchRightJumpButton.eventMode = 'static';
+    this.touchRightTongueButton.cursor = 'pointer';
+    this.touchRightJumpButton.cursor = 'pointer';
+    this.touchRightTongueLabel = new Text({
+      text: 'TONGUE',
+      style: new TextStyle({
+        fontFamily: 'Arial Black, Heebo, sans-serif',
+        fontSize: 11,
+        fontWeight: '800',
+        fill: '#ffea80',
+        stroke: { color: '#261c06', width: 2 },
+        letterSpacing: 0.8,
+      }),
+    });
+    this.touchRightJumpLabel = new Text({
+      text: 'JUMP',
+      style: new TextStyle({
+        fontFamily: 'Arial Black, Heebo, sans-serif',
+        fontSize: 11,
+        fontWeight: '800',
+        fill: '#ffea80',
+        stroke: { color: '#261c06', width: 2 },
+        letterSpacing: 0.8,
+      }),
+    });
+    this.touchRightTongueLabel.anchor.set(0.5);
+    this.touchRightJumpLabel.anchor.set(0.5);
+    this.touchRightTongueLabel.eventMode = 'none';
+    this.touchRightJumpLabel.eventMode = 'none';
+    this.touchFeedbackLayer.eventMode = 'none';
+    this.touchControlsLayer.addChild(
+      this.touchFeedbackLayer,
+      this.touchRightTongueButton,
+      this.touchRightJumpButton,
+      this.touchRightTongueLabel,
+      this.touchRightJumpLabel,
+    );
+    this.uiLayer.addChild(this.touchControlsLayer);
+    app.stage.on('pointerdown', this.handleTouchPointerDown);
+    app.stage.on('pointermove', this.handleTouchPointerMove);
+    app.stage.on('pointerup', this.handleTouchPointerUpOrCancel);
+    app.stage.on('pointerupoutside', this.handleTouchPointerUpOrCancel);
+    app.stage.on('pointercancel', this.handleTouchPointerUpOrCancel);
+    this.touchRightTongueButton.on('pointerdown', this.handleRightTongueDown);
+    this.touchRightTongueButton.on('pointerup', this.handleRightTongueUp);
+    this.touchRightTongueButton.on('pointerupoutside', this.handleRightTongueUp);
+    this.touchRightTongueButton.on('pointercancel', this.handleRightTongueUp);
+    this.touchRightJumpButton.on('pointerdown', this.handleRightJumpDown);
+    this.touchRightJumpButton.on('pointerup', this.handleRightJumpUp);
+    this.touchRightJumpButton.on('pointerupoutside', this.handleRightJumpUp);
+    this.touchRightJumpButton.on('pointercancel', this.handleRightJumpUp);
+    this.layoutTouchControlsOverlay();
+  }
+
+  private layoutTouchControlsOverlay(): void {
+    if (!this.input?.isTouchControlsActive()) {
+      return;
+    }
+    const minSide = Math.min(this.width, this.height);
+    const edgePad = Math.max(16, Math.round(minSide * 0.035));
+    this.touchRightButtonRadius = Math.max(34, Math.min(46, Math.round(minSide * 0.082)));
+    const buttonGap = Math.max(18, Math.round(minSide * 0.03));
+    const rightCenterX = this.width - edgePad - this.touchRightButtonRadius;
+    const bottomButtonY = this.height - edgePad - this.touchRightButtonRadius;
+    const topButtonY = bottomButtonY - this.touchRightButtonRadius * 2 - buttonGap;
+    this.touchRightTongueX = rightCenterX;
+    this.touchRightTongueY = topButtonY;
+    this.touchRightJumpX = rightCenterX;
+    this.touchRightJumpY = bottomButtonY;
+    this.touchRightTongueButton.hitArea = new Circle(
+      this.touchRightTongueX,
+      this.touchRightTongueY,
+      this.touchRightButtonRadius + 10,
+    );
+    this.touchRightJumpButton.hitArea = new Circle(
+      this.touchRightJumpX,
+      this.touchRightJumpY,
+      this.touchRightButtonRadius + 10,
+    );
+    this.touchRightTongueLabel?.position.set(this.touchRightTongueX, this.touchRightTongueY);
+    this.touchRightJumpLabel?.position.set(this.touchRightJumpX, this.touchRightJumpY);
+    this.redrawRightTouchButtons();
+  }
+
+  private readonly handleTouchPointerDown = (event: FederatedPointerEvent): void => {
+    if (!this.input?.isTouchControlsActive()) {
+      return;
+    }
+    event.preventDefault();
+    const pointerId = event.pointerId;
+    if (this.touchPointers.has(pointerId)) {
+      return;
+    }
+    const side = event.global.x < this.width * 0.5 ? 'left' : 'right';
+    this.touchPointers.set(pointerId, {
+      side,
+      startX: event.global.x,
+      startY: event.global.y,
+      lastX: event.global.x,
+      lastY: event.global.y,
+      swipeBaselineY: event.global.y,
+      swipeBaselineX: event.global.x,
+      startMs: performance.now(),
+      swipeHandled: false,
+    });
+    if (this.touchControlPointerId === null && this.isTouchNearChameleon(event.global.x, event.global.y)) {
+      this.touchControlPointerId = pointerId;
+    }
+    this.spawnTouchRipple(event.global.x, event.global.y, 0.26);
+  };
+
+  private readonly handleTouchPointerMove = (event: FederatedPointerEvent): void => {
+    if (!this.input?.isTouchControlsActive()) {
+      return;
+    }
+    const p = this.touchPointers.get(event.pointerId);
+    if (!p) {
+      return;
+    }
+    p.lastX = event.global.x;
+    p.lastY = event.global.y;
+    p.side = p.lastX < this.width * 0.5 ? 'left' : 'right';
+    this.tryHandleSwipeUp(event.pointerId, false);
+  };
+
+  private readonly handleTouchPointerUpOrCancel = (event: FederatedPointerEvent): void => {
+    if (!this.input?.isTouchControlsActive()) {
+      return;
+    }
+    this.tryHandleSwipeUp(event.pointerId, true);
+    this.touchPointers.delete(event.pointerId);
+    if (this.touchControlPointerId === event.pointerId) {
+      this.touchControlPointerId = null;
+      this.input?.setTouchFollowAxis(0);
+    }
+  };
+
+  private readonly handleRightTongueDown = (event: FederatedPointerEvent): void => {
+    if (!this.input?.isTouchControlsActive()) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    this.touchRightTonguePressed = true;
+    this.redrawRightTouchButtons();
+    this.input.queueGrapple();
+  };
+
+  private readonly handleRightTongueUp = (): void => {
+    this.touchRightTonguePressed = false;
+    this.redrawRightTouchButtons();
+  };
+
+  private readonly handleRightJumpDown = (event: FederatedPointerEvent): void => {
+    if (!this.input?.isTouchControlsActive()) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    this.touchRightJumpPressed = true;
+    this.redrawRightTouchButtons();
+    this.input.queueJump();
+  };
+
+  private readonly handleRightJumpUp = (): void => {
+    this.touchRightJumpPressed = false;
+    this.redrawRightTouchButtons();
+  };
+
+  private applyTouchHoldState(): void {
+    // Drag-locked mode: movement is driven by relative drag axis.
+    this.input?.setTouchHoldLeft(false);
+    this.input?.setTouchHoldRight(false);
+  }
+
+  private updateTouchFollowAxis(): void {
+    if (!this.input?.isTouchControlsActive()) {
+      return;
+    }
+    if (this.touchControlPointerId === null) {
+      this.input.setTouchFollowAxis(0);
+      return;
+    }
+    const touch = this.touchPointers.get(this.touchControlPointerId);
+    if (!touch) {
+      this.touchControlPointerId = null;
+      this.input.setTouchFollowAxis(0);
+      return;
+    }
+    const padX = (this.width - this.width * CAMERA_ZOOM) * 0.5;
+    const playerCx = this.player.body.x + this.player.body.width * 0.5;
+    const playerScreenX = (playerCx - this.cameraX) * CAMERA_ZOOM + padX;
+    const fingerDeltaX = touch.lastX - playerScreenX;
+    let axis = fingerDeltaX / TOUCH_FOLLOW_DISTANCE_PX;
+    if (Math.abs(fingerDeltaX) < 5) {
+      axis = 0;
+    }
+    this.input.setTouchFollowAxis(Math.max(-1, Math.min(1, axis)));
+  }
+
+  private tryHandleSwipeUp(pointerId: number, finalize: boolean): void {
+    const p = this.touchPointers.get(pointerId);
+    if (!p) {
+      return;
+    }
+    // Re-arm upward swipe while finger stays down: moving down refreshes baseline.
+    p.swipeBaselineY = Math.max(p.swipeBaselineY, p.lastY);
+    if (Math.abs(p.lastX - p.swipeBaselineX) > TOUCH_SWIPE_UP_MAX_SIDEWAYS_PX) {
+      p.swipeBaselineX = p.lastX;
+      p.swipeBaselineY = p.lastY;
+    }
+    const dy = p.swipeBaselineY - p.lastY;
+    const dx = Math.abs(p.lastX - p.swipeBaselineX);
+    const padX = (this.width - this.width * CAMERA_ZOOM) * 0.5;
+    const padY = (this.height - this.height * CAMERA_ZOOM) * 0.5;
+    const playerCx = this.player.body.x + this.player.body.width * 0.5;
+    const playerCy = this.player.body.y + this.player.body.height * 0.5;
+    const playerScreenX = (playerCx - this.cameraX) * CAMERA_ZOOM + padX;
+    const playerScreenY = (playerCy - this.cameraY) * CAMERA_ZOOM + padY;
+    const touchAbovePlayer = p.lastY <= playerScreenY - TOUCH_SWIPE_ABOVE_PLAYER_PX;
+    const touchNearPlayerX = Math.abs(p.lastX - playerScreenX) <= TOUCH_LOCK_RADIUS_PX * 0.95;
+    void finalize;
+    if (
+      dy >= TOUCH_SWIPE_UP_MIN_PX &&
+      dx <= TOUCH_SWIPE_UP_MAX_SIDEWAYS_PX &&
+      touchAbovePlayer &&
+      touchNearPlayerX
+    ) {
+      this.input?.queueJump();
+      p.swipeBaselineX = p.lastX;
+      p.swipeBaselineY = p.lastY;
+      this.spawnTouchRipple(p.lastX, p.lastY, 0.34);
+    }
+  }
+
+  private isTouchNearChameleon(screenX: number, screenY: number): boolean {
+    const padX = (this.width - this.width * CAMERA_ZOOM) * 0.5;
+    const padY = (this.height - this.height * CAMERA_ZOOM) * 0.5;
+    const playerCx = this.player.body.x + this.player.body.width * 0.5;
+    const playerCy = this.player.body.y + this.player.body.height * 0.5;
+    const px = (playerCx - this.cameraX) * CAMERA_ZOOM + padX;
+    const py = (playerCy - this.cameraY) * CAMERA_ZOOM + padY;
+    return Math.hypot(screenX - px, screenY - py) <= TOUCH_LOCK_RADIUS_PX;
+  }
+
+  private spawnTouchRipple(x: number, y: number, life: number): void {
+    this.touchRipples.push({ x, y, age: 0, life });
+    if (this.touchRipples.length > 40) {
+      this.touchRipples.splice(0, this.touchRipples.length - 40);
+    }
+  }
+
+  private updateTouchRipples(dt: number): void {
+    if (!this.input?.isTouchControlsActive()) {
+      return;
+    }
+    this.touchRipples = this.touchRipples
+      .map((r) => ({ ...r, age: r.age + dt }))
+      .filter((r) => r.age < r.life);
+    this.touchFeedbackLayer.clear();
+    for (const r of this.touchRipples) {
+      const u = r.age / r.life;
+      const alpha = (1 - u) * 0.28;
+      const radius = 10 + 48 * u;
+      this.touchFeedbackLayer.circle(r.x, r.y, radius).stroke({
+        color: 0xffffff,
+        width: 2.2 - u,
+        alpha,
+      });
+      this.touchFeedbackLayer.circle(r.x, r.y, 4 + 10 * (1 - u)).fill({
+        color: 0xffffff,
+        alpha: alpha * 0.35,
+      });
+    }
+  }
+
+  private redrawRightTouchButtons(): void {
+    if (!this.input?.isTouchControlsActive()) {
+      return;
+    }
+    const drawButton = (
+      gfx: Graphics,
+      x: number,
+      y: number,
+      radius: number,
+      pressed: boolean,
+    ): void => {
+      gfx.clear();
+      const gold = 0xffea80;
+      const boost = pressed ? 1.35 : 1;
+      gfx.circle(x, y, radius + 16).fill({ color: gold, alpha: 0.035 * boost });
+      gfx.circle(x, y, radius + 10).fill({ color: gold, alpha: 0.08 * boost });
+      gfx.circle(x, y, radius).stroke({ color: gold, alpha: pressed ? 0.95 : 0.74, width: 1.4 });
+      gfx.circle(x, y, radius - 9).stroke({ color: gold, alpha: pressed ? 0.46 : 0.24, width: 1 });
+      gfx.alpha = pressed ? 0.98 : 0.9;
+    };
+    drawButton(
+      this.touchRightTongueButton,
+      this.touchRightTongueX,
+      this.touchRightTongueY,
+      this.touchRightButtonRadius,
+      this.touchRightTonguePressed,
+    );
+    drawButton(
+      this.touchRightJumpButton,
+      this.touchRightJumpX,
+      this.touchRightJumpY,
+      this.touchRightButtonRadius,
+      this.touchRightJumpPressed,
+    );
+    if (this.touchRightTongueLabel) {
+      this.touchRightTongueLabel.alpha = this.touchRightTonguePressed ? 0.96 : 0.82;
+    }
+    if (this.touchRightJumpLabel) {
+      this.touchRightJumpLabel.alpha = this.touchRightJumpPressed ? 0.96 : 0.82;
+    }
   }
 
   private layoutCollectibleHud(): void {
-    const margin = 12;
+    const margin = this.width < 440 ? 16 : 12;
+    const topOffset = this.width < 440 ? 86 : 74;
     this.collectibleHudRoot.pivot.set(COLLECTIBLE_HUD_W, 0);
-    this.collectibleHudRoot.position.set(this.width - margin, margin);
+    const x = Math.max(COLLECTIBLE_HUD_W + margin, this.width - margin);
+    const y = Math.max(margin, margin + topOffset);
+    this.collectibleHudRoot.position.set(x, y);
     this.collectibleHudBg.clear();
     this.collectibleHudBg
       .roundRect(0, 0, COLLECTIBLE_HUD_W, COLLECTIBLE_HUD_H, 10)
       .fill({ color: 0x120818, alpha: 0.74 })
       .stroke({ width: 1, color: 0x4a3a62, alpha: 0.55 });
-    this.collectibleHudGoldText?.position.set(14, 12);
-    this.collectibleHudDiamondText?.position.set(14, 44);
+    this.collectibleHudGoldText?.position.set(12, 10);
+    this.collectibleHudDiamondText?.position.set(12, 36);
   }
 
   private refreshCollectibleHudText(): void {
@@ -1224,7 +2422,7 @@ export class PlayScene implements Scene {
       return;
     }
     const add = c.kind === 'coin' ? COLLECTIBLES.coinPoints : COLLECTIBLES.diamondPoints;
-    this.score += add;
+    this.score += add * this.getScoreGainMultiplier();
     this.scoreboard?.onPointsGained(add);
     if (c.kind === 'coin') {
       this.goldCount += 1;
@@ -1379,10 +2577,6 @@ export class PlayScene implements Scene {
     tip: { x: number; y: number },
     beastMode: boolean,
   ): void {
-    const outlineColor = beastMode ? COMBO.beastTongueOutline : GRAPPLE.tongueOutline;
-    const fillColor = beastMode ? COMBO.beastTongueFill : GRAPPLE.tongueColor;
-    const outlineW = beastMode ? GRAPPLE.tongueOutlineWidth + 3 : GRAPPLE.tongueOutlineWidth;
-    const coreW = beastMode ? GRAPPLE.tongueWidth + 2 : GRAPPLE.tongueWidth;
     const dx = tip.x - mouth.x;
     const dy = tip.y - mouth.y;
     const len = Math.hypot(dx, dy);
@@ -1390,33 +2584,115 @@ export class PlayScene implements Scene {
       return;
     }
 
-    const nx = (-dy / len) * 16;
-    const ny = (dx / len) * 16;
-    const mx = (mouth.x + tip.x) * 0.5 + nx;
-    const my = (mouth.y + tip.y) * 0.5 + ny;
+    const progress = Player.computeGrappleAnimProgress(this.grapple, GRAPPLE.extendSec);
+    const wave = Math.sin(this.runTime * 18) * 0.45 + Math.cos(this.runTime * 11) * 0.2;
+    const points = this.buildPaintedTongueSpine(mouth, tip, wave);
+    const left: Array<{ x: number; y: number }> = [];
+    const right: Array<{ x: number; y: number }> = [];
+    const maxIndex = Math.max(1, points.length - 1);
+
+    for (let i = 0; i < points.length; i += 1) {
+      const p = points[i];
+      const next = i < maxIndex ? points[i + 1] : points[i - 1];
+      const tx = next.x - p.x;
+      const ty = next.y - p.y;
+      const tLen = Math.hypot(tx, ty) || 1;
+      const nx = -ty / tLen;
+      const ny = tx / tLen;
+      const u = i / maxIndex;
+      const tipBlob = Math.pow(Math.min(1, u * 1.2), 2) * 16;
+      const body = Math.sin(u * Math.PI) * 12;
+      const rootTaper = Math.max(0.16, u);
+      const w = (tipBlob + body + 4) * rootTaper * (0.85 + progress * 0.15);
+      left.push({ x: p.x + nx * w, y: p.y + ny * w });
+      right.push({ x: p.x - nx * w, y: p.y - ny * w });
+    }
+
+    const baseFill = 0xe85a76;
+    const shadowFill = 0x621426;
+    const rimColor = 0xa02240;
+    const highlight = 0xffd8e4;
 
     this.tongueVector
-      .moveTo(mouth.x, mouth.y)
-      .lineTo(mx, my)
-      .lineTo(tip.x, tip.y)
-      .stroke({
-        width: outlineW,
-        color: outlineColor,
-        cap: 'round',
-        join: 'round',
-        alpha: 0.88,
-      });
+      .moveTo(left[0].x + 3, left[0].y + 4)
+      .poly([...left.slice(1), ...right.slice().reverse()].map((p) => [p.x + 3, p.y + 4]).flat())
+      .fill({ color: shadowFill, alpha: 0.28 });
+
     this.tongueVector
-      .moveTo(mouth.x, mouth.y)
-      .lineTo(mx, my)
-      .lineTo(tip.x, tip.y)
+      .moveTo(left[0].x, left[0].y)
+      .poly([...left.slice(1), ...right.slice().reverse()].map((p) => [p.x, p.y]).flat())
+      .fill({ color: baseFill, alpha: 0.96 })
+      .stroke({ width: 1.8, color: rimColor, alpha: 0.9 });
+
+    this.tongueVector
+      .moveTo(points[0].x, points[0].y)
+      .poly(points.slice(1).map((p) => [p.x, p.y]).flat())
       .stroke({
-        width: coreW,
-        color: fillColor,
+        width: 2.2,
+        color: shadowFill,
+        alpha: 0.35,
         cap: 'round',
         join: 'round',
-        alpha: 0.96,
       });
+
+    // glossy highlight strip slightly offset on one side.
+    const hlPath: number[] = [];
+    for (let i = 0; i < points.length; i += 1) {
+      const p = points[i];
+      const next = i < maxIndex ? points[i + 1] : points[i - 1];
+      const tx = next.x - p.x;
+      const ty = next.y - p.y;
+      const tLen = Math.hypot(tx, ty) || 1;
+      const nx = -ty / tLen;
+      const ny = tx / tLen;
+      const u = i / maxIndex;
+      const body = Math.sin(u * Math.PI) * 7;
+      const off = 4 + body * 0.24;
+      hlPath.push(p.x + nx * off, p.y + ny * off);
+    }
+    this.tongueVector
+      .moveTo(hlPath[0], hlPath[1])
+      .poly(hlPath.slice(2))
+      .stroke({ width: 2.6, color: highlight, alpha: 0.45, cap: 'round', join: 'round' });
+
+    const tipRadius = 11 + progress * 5;
+    this.tongueVector
+      .circle(tip.x, tip.y, tipRadius)
+      .fill({ color: baseFill, alpha: 0.95 })
+      .stroke({ width: 1.6, color: rimColor, alpha: 0.85 });
+    this.tongueVector.circle(tip.x - tipRadius * 0.28, tip.y - tipRadius * 0.24, tipRadius * 0.32).fill({
+      color: highlight,
+      alpha: 0.68,
+    });
+  }
+
+  private buildPaintedTongueSpine(
+    mouth: { x: number; y: number },
+    tip: { x: number; y: number },
+    wave: number,
+  ): Array<{ x: number; y: number }> {
+    const steps = 44;
+    const dx = tip.x - mouth.x;
+    const dy = tip.y - mouth.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const px = -uy;
+    const py = ux;
+    const c1x = mouth.x + ux * len * 0.35 + px * len * 0.12 * Math.cos(wave);
+    const c1y = mouth.y + uy * len * 0.35 + py * len * 0.12 * Math.cos(wave);
+    const c2x = mouth.x + ux * len * 0.7 - px * len * 0.1 * Math.sin(wave * 0.9);
+    const c2y = mouth.y + uy * len * 0.7 - py * len * 0.1 * Math.sin(wave * 0.9);
+    const points: Array<{ x: number; y: number }> = [];
+    for (let i = 0; i <= steps; i += 1) {
+      const t = i / steps;
+      const m = 1 - t;
+      points.push({
+        x: m * m * m * mouth.x + 3 * m * m * t * c1x + 3 * m * t * t * c2x + t * t * t * tip.x,
+        y: m * m * m * mouth.y + 3 * m * m * t * c1y + 3 * m * t * t * c2y + t * t * t * tip.y,
+      });
+    }
+    return points;
   }
 
   private drawCrystalPlatform(platform: Platform): void {
@@ -1454,6 +2730,7 @@ export class PlayScene implements Scene {
     for (const platform of this.platforms) {
       const sprite = new Sprite(this.platformTexture);
       sprite.anchor.set(0.5);
+      sprite.roundPixels = RENDER.pixelArt;
       sprite.width = platform.width;
       sprite.scale.y = Math.abs(sprite.scale.x);
       sprite.position.set(platform.x + platform.width / 2, platform.y + platform.height / 2 + 6);
@@ -1643,5 +2920,29 @@ export class PlayScene implements Scene {
       brightness < 220 &&
       colorSpread <= CHECKER_BACKGROUND_COLOR_SPREAD
     );
+  }
+
+  private refreshWorldViewport(): void {
+    this.worldWidth = WORLD_BOUNDS_W;
+    this.worldHeight = WORLD_BOUNDS_H;
+    this.worldMinY = WORLD_BOUNDS_Y;
+    this.worldMaxY = WORLD_BOUNDS_Y + WORLD_BOUNDS_H;
+  }
+
+  private applyCameraTransform(): void {
+    this.gameShake.scale.set(CAMERA_ZOOM);
+    const padX = (this.width - this.width * CAMERA_ZOOM) * 0.5;
+    const padY = (this.height - this.height * CAMERA_ZOOM) * 0.5;
+    this.gameShake.position.set(padX + this.shakeOffsetX, padY + this.shakeOffsetY);
+    this.uiLayer.scale.set(1);
+    this.uiLayer.position.set(0, 0);
+  }
+
+  private worldWidthFromScreen(): number {
+    return this.width / CAMERA_ZOOM;
+  }
+
+  private worldHeightFromScreen(): number {
+    return this.height / CAMERA_ZOOM;
   }
 }

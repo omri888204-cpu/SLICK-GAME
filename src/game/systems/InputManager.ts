@@ -1,9 +1,12 @@
 import type { Application } from 'pixi.js';
-
 export class InputManager {
   private keys = new Set<string>();
   private jumpQueued = false;
   private grappleQueued = false;
+  private readonly touchControlsEnabled = InputManager.detectTouchControls();
+  private touchHoldLeft = false;
+  private touchHoldRight = false;
+  private touchAnalogAxis = 0;
 
   constructor(private readonly app: Application) {}
 
@@ -19,9 +22,24 @@ export class InputManager {
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
     this.keys.clear();
+    this.touchHoldLeft = false;
+    this.touchHoldRight = false;
+    this.touchAnalogAxis = 0;
   }
 
   getHorizontalAxis(): number {
+    if (this.touchControlsEnabled) {
+      if (Math.abs(this.touchAnalogAxis) > 0.001) {
+        return Math.max(-1, Math.min(1, this.touchAnalogAxis));
+      }
+      if (this.touchHoldLeft && !this.touchHoldRight) {
+        return -1;
+      }
+      if (this.touchHoldRight && !this.touchHoldLeft) {
+        return 1;
+      }
+    }
+
     const left = this.keys.has('ArrowLeft') || this.keys.has('KeyA');
     const right = this.keys.has('ArrowRight') || this.keys.has('KeyD');
 
@@ -46,6 +64,79 @@ export class InputManager {
     const queued = this.grappleQueued;
     this.grappleQueued = false;
     return queued;
+  }
+
+  isTouchControlsActive(): boolean {
+    return this.touchControlsEnabled;
+  }
+
+  onResize(): void {
+    this.app.stage.hitArea = this.app.screen;
+  }
+
+  setTouchHoldLeft(active: boolean): void {
+    this.touchHoldLeft = active;
+  }
+
+  setTouchHoldRight(active: boolean): void {
+    this.touchHoldRight = active;
+  }
+
+  clearTouchHolds(): void {
+    this.touchHoldLeft = false;
+    this.touchHoldRight = false;
+    this.touchAnalogAxis = 0;
+  }
+
+  setTouchFollowAxis(axis: number): void {
+    this.touchAnalogAxis = Math.max(-1, Math.min(1, axis));
+  }
+
+  // Deprecated joystick entry-point; now routes to analog touch-follow axis.
+  setTouchHorizontalAxis(axis: number): void {
+    this.setTouchFollowAxis(axis);
+  }
+
+  /** Kept for compatibility after joystick removal. */
+  smoothTouchJoystickAxis(dt: number): void {
+    void dt;
+  }
+
+  queueJump(): void {
+    this.jumpQueued = true;
+  }
+
+  queueGrapple(): void {
+    this.grappleQueued = true;
+  }
+
+  private static detectTouchControls(): boolean {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+      return false;
+    }
+
+    const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false;
+    const hasTouchPoints = navigator.maxTouchPoints > 0;
+    const hasTouchEvents = 'ontouchstart' in window;
+    const uaDataMobile =
+      'userAgentData' in navigator &&
+      typeof (navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData?.mobile ===
+        'boolean'
+        ? !!(navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData?.mobile
+        : false;
+    const mobileUa = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    const compactViewport =
+      Math.min(window.innerWidth || 0, window.innerHeight || 0) > 0 &&
+      Math.min(window.innerWidth || 0, window.innerHeight || 0) <= 900;
+
+    return (
+      coarsePointer ||
+      hasTouchPoints ||
+      hasTouchEvents ||
+      uaDataMobile ||
+      mobileUa ||
+      compactViewport
+    );
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {

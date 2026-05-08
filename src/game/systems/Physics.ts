@@ -14,24 +14,27 @@ export type PlayerBody = {
 export type PhysicsResult = {
   landedPlatform?: Platform;
   impactVy: number;
-  wrappedX: boolean;
 };
 
 export class Physics {
   /**
-   * First platform underside above `mouthY` within horizontal band and max range (world coords, y down).
+   * First platform underside directly above within [min..max] ray distance (world coords, y down).
    */
   static castGrappleTarget(
     platforms: Platform[],
     mouthX: number,
     mouthY: number,
+    minRangePx: number,
+    maxRangePx: number,
+    rayHalfWidth: number,
+    preferFarthest = false,
   ): { x: number; y: number; platform: Platform } | undefined {
-    let bestBottom = -Infinity;
+    let bestBottom = preferFarthest ? Infinity : -Infinity;
     let hit: { x: number; y: number; platform: Platform } | undefined;
 
     for (const platform of platforms) {
       const bottom = platform.y + platform.height;
-      const half = GRAPPLE.rayHalfWidth;
+      const half = rayHalfWidth;
       const overlapsX =
         mouthX + half > platform.x && mouthX - half < platform.x + platform.width;
       if (!overlapsX) {
@@ -42,14 +45,16 @@ export class Physics {
         continue;
       }
 
-      if (mouthY - bottom > GRAPPLE.maxRangePx) {
+      const distanceToBottom = mouthY - bottom;
+      if (distanceToBottom > maxRangePx || distanceToBottom < minRangePx) {
         continue;
       }
 
-      if (bottom > bestBottom) {
+      const betterCandidate = preferFarthest ? bottom < bestBottom : bottom > bestBottom;
+      if (betterCandidate) {
         bestBottom = bottom;
         hit = {
-          x: Math.max(platform.x + 4, Math.min(mouthX, platform.x + platform.width - 4)),
+          x: mouthX,
           y: bottom - 3,
           platform,
         };
@@ -61,39 +66,29 @@ export class Physics {
 
   applyGrappleAcceleration(
     body: PlayerBody,
-    anchorX: number,
+    _anchorX: number,
     anchorY: number,
-    mouthX: number,
+    _mouthX: number,
     mouthY: number,
     dt: number,
   ): void {
-    let dx = anchorX - mouthX;
-    let dy = anchorY - mouthY;
-    const len = Math.hypot(dx, dy);
-    if (len < 8) {
+    if (anchorY >= mouthY - 2) {
       return;
     }
 
-    dx /= len;
-    dy /= len;
+    body.vy -= GRAPPLE.pullAcceleration * dt;
+    body.vy = Math.max(-GRAPPLE.maxPullSpeed, body.vy);
+    body.vx = this.moveToward(body.vx, 0, WALK.stopDeceleration * dt);
 
-    body.vx += dx * GRAPPLE.pullAcceleration * dt;
-    body.vy += dy * GRAPPLE.pullAcceleration * dt;
-
-    const towardSpeed = body.vx * dx + body.vy * dy;
-    if (towardSpeed > GRAPPLE.maxPullSpeed) {
-      const excess = towardSpeed - GRAPPLE.maxPullSpeed;
-      body.vx -= dx * excess;
-      body.vy -= dy * excess;
-    }
-
-    const tx = -dy;
-    const ty = dx;
-    const swing = PHYSICS.gravity * GRAPPLE.swingTangentialScale * dt;
-    body.vx += tx * swing;
-    body.vy += ty * swing;
+    const pullDamp = Math.max(0, 1 - GRAPPLE.pullVelocityDampingPerSec * dt);
+    body.vx *= pullDamp;
+    body.vy *= pullDamp;
   }
 
+  /**
+   * Platforms are kinematic (no `setFriction` — not a physics engine). Horizontal drift is applied in
+   * `PlayScene` via `Platform.driftVx`; when grounded, the scene carries the player with the stair.
+   */
   update(
     body: PlayerBody,
     platforms: Platform[],
@@ -109,23 +104,24 @@ export class Physics {
     body.y += body.vy * dt;
     body.grounded = false;
 
-    const wrappedX = this.wrapHorizontal(body, width);
+    this.resolveWorldBounds(body, width);
     const impactVy = body.vy;
     const landedPlatform = this.resolvePlatformLanding(body, platforms, previousBottom, previousY);
 
-    return { landedPlatform, impactVy: landedPlatform ? impactVy : 0, wrappedX };
+    return {
+      landedPlatform,
+      impactVy: landedPlatform ? impactVy : 0,
+    };
   }
 
   applyHorizontalInput(body: PlayerBody, axis: number, dt: number): void {
     const targetVx = axis * WALK.speedPxPerSecond;
-    const rate =
-      axis === 0
-        ? body.grounded
-          ? WALK.stopDeceleration
-          : WALK.airAcceleration
-        : body.grounded
-          ? WALK.acceleration
-          : WALK.airAcceleration;
+    let rate: number;
+    if (axis === 0) {
+      rate = body.grounded ? WALK.stopDeceleration : WALK.airAcceleration;
+    } else {
+      rate = body.grounded ? WALK.acceleration : WALK.airAcceleration;
+    }
 
     body.vx = this.moveToward(body.vx, targetVx, rate * dt);
     body.vx = Math.max(-PHYSICS.maxSpeed, Math.min(PHYSICS.maxSpeed, body.vx));
@@ -140,6 +136,31 @@ export class Physics {
     body.y = platform.y - body.height;
     body.vy = 0;
     body.grounded = true;
+  }
+
+  /**
+   * Same role as Phaser `setCollideWorldBounds(true)`: keep the AABB inside the canvas width.
+   * Call after any code path that moves the player without `update()` (e.g. 360 skill).
+   */
+  applyWorldBounds(body: PlayerBody, width: number): void {
+    this.resolveWorldBounds(body, width);
+  }
+
+  private resolveWorldBounds(body: PlayerBody, width: number): void {
+    const maxX = Math.max(0, width - body.width);
+    const rest = PHYSICS.worldWallRestitution;
+
+    if (body.x < 0) {
+      body.x = 0;
+      if (body.vx < 0) {
+        body.vx = -body.vx * rest;
+      }
+    } else if (body.x > maxX) {
+      body.x = maxX;
+      if (body.vx > 0) {
+        body.vx = -body.vx * rest;
+      }
+    }
   }
 
   private resolvePlatformLanding(
@@ -166,20 +187,6 @@ export class Physics {
     }
 
     return undefined;
-  }
-
-  private wrapHorizontal(body: PlayerBody, width: number): boolean {
-    if (body.x + body.width < 0) {
-      body.x = width;
-      return true;
-    }
-
-    if (body.x > width) {
-      body.x = -body.width;
-      return true;
-    }
-
-    return false;
   }
 
   private getBottom(body: PlayerBody): number {

@@ -66,6 +66,8 @@ export class HyperScoreboard extends Container {
   private readonly scoreValue: Text;
   private readonly multLabel: Text;
   private readonly heightLabel: Text;
+  private readonly levelLabel: Text;
+  private readonly levelUpLabel: Text;
   private readonly titleLabel: Text;
   private readonly hintLabel: Text;
   private readonly glowFilter: GlowFilter;
@@ -73,11 +75,17 @@ export class HyperScoreboard extends Container {
   private punchAge = 0;
   private punchTwist = 0;
   private depthKick = 0;
+  private level = 1;
+  private levelUpAge = 0;
+  private levelPulseAge = 0;
   private burstParticles: HudBurstParticle[] = [];
   private screenW = 800;
   private panelW = 600;
   /** Horizontal bar height (compact vector HUD). */
   private panelH = 56;
+  private readonly touchDevice =
+    (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches) ||
+    (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0);
 
   constructor() {
     super();
@@ -99,6 +107,7 @@ export class HyperScoreboard extends Container {
     };
 
     this.titleLabel = new Text({ text: 'SLICK', style: titleStyle });
+    this.titleLabel.anchor.set(1, 0);
     this.titleLabel.position.set(12, 11);
 
     this.scoreShadow = new Text({
@@ -166,6 +175,29 @@ export class HyperScoreboard extends Container {
     };
     this.heightLabel = new Text({ text: '0 m', style: altStyle });
     this.heightLabel.anchor.set(0, 0.5);
+    this.levelLabel = new Text({
+      text: 'Lv1',
+      style: {
+        fill: '#ffff00',
+        fontFamily: 'Urbanist, Heebo, Arial Black, sans-serif',
+        fontWeight: '800',
+        fontSize: 18,
+        letterSpacing: 0.4,
+        stroke: { color: '#301050', width: 4 },
+      },
+    });
+    this.levelLabel.anchor.set(0, 0.5);
+    this.levelUpLabel = new Text({
+      text: 'LEVEL UP!',
+      style: {
+        fill: '#ffe066',
+        fontFamily: 'Arial Black, Impact, sans-serif',
+        fontSize: 14,
+        stroke: { color: '#1a1028', width: 4 },
+      },
+    });
+    this.levelUpLabel.anchor.set(0.5);
+    this.levelUpLabel.visible = false;
 
     this.hintLabel = new Text({
       text: 'A/D  ·  SPACE  ·  E',
@@ -191,6 +223,8 @@ export class HyperScoreboard extends Container {
       this.readoutRoot,
       this.multLabel,
       this.heightLabel,
+      this.levelLabel,
+      this.levelUpLabel,
       this.hintLabel,
     );
     this.particleLayer.zIndex = 8;
@@ -198,6 +232,8 @@ export class HyperScoreboard extends Container {
     this.readoutRoot.zIndex = 6;
     this.multLabel.zIndex = 5;
     this.heightLabel.zIndex = 5;
+    this.levelLabel.zIndex = 5;
+    this.levelUpLabel.zIndex = 9;
     this.hintLabel.zIndex = 5;
     this.panel.zIndex = 2;
     this.sortableChildren = true;
@@ -208,8 +244,12 @@ export class HyperScoreboard extends Container {
   onResize(screenWidth: number): void {
     this.screenW = screenWidth;
     const compact = screenWidth < 520;
-    this.titleLabel.visible = !compact;
+    const narrow = screenWidth < 440;
+    this.titleLabel.visible = true;
+    this.hintLabel.visible = !this.touchDevice;
     this.hintLabel.text = compact ? 'A/D · SPC · E' : 'A/D  ·  SPACE  ·  E';
+    this.levelLabel.style.fontSize = narrow ? 15 : 18;
+    this.scale.set(narrow ? 0.92 : 1);
     this.layoutPanel();
     this.readoutRoot.position.set(this.panelW * 0.5, this.panelH * 0.5);
   }
@@ -224,6 +264,10 @@ export class HyperScoreboard extends Container {
     this.readoutRoot.position.set(this.panelW * 0.5, this.panelH * 0.5);
     this.scoreShadow.position.set(6, 6);
     this.scoreValue.position.set(0, 0);
+    this.levelUpAge = 0;
+    this.levelPulseAge = 0;
+    this.levelUpLabel.visible = false;
+    this.levelLabel.scale.set(1);
   }
 
   onPointsGained(delta: number): void {
@@ -243,6 +287,16 @@ export class HyperScoreboard extends Container {
   /** Beast Mode: heavier star/confetti mix (electric lime / hot pink bias). */
   triggerBeastBurst(): void {
     this.spawnBurst(52, 1.25, true);
+  }
+
+  setLevel(level: number): void {
+    this.level = Math.max(1, level);
+  }
+
+  triggerLevelUp(): void {
+    this.levelUpAge = 0.7;
+    this.levelPulseAge = 0.35;
+    this.spawnBurst(24, 0.95, false);
   }
 
   private spawnBurst(count: number, speedMul: number, beastBias: boolean): void {
@@ -271,7 +325,7 @@ export class HyperScoreboard extends Container {
     }
   }
 
-  update(dt: number, score: number, mult: number, heightMeters: number, runTime: number): void {
+  update(dt: number, score: number, mult: number, heightMeters: number, runTime: number, level: number): void {
     const midY = this.panelH * 0.5;
 
     if (this.punchAge > 0) {
@@ -317,6 +371,8 @@ export class HyperScoreboard extends Container {
     this.multLabel.text = `x${mult}`;
     this.multLabel.style.fill = multFill;
     this.heightLabel.text = `${heightMeters} m`;
+    this.level = Math.max(1, level);
+    this.levelLabel.text = `Lv${this.level}`;
 
     this.readoutRoot.position.set(this.panelW * 0.5, midY);
 
@@ -325,6 +381,8 @@ export class HyperScoreboard extends Container {
     this.multLabel.position.set(midRight, midY);
 
     this.heightLabel.position.set(midRight + this.multLabel.width + 12, midY);
+    this.levelLabel.position.set(6, midY);
+    this.titleLabel.position.set(this.panelW - 6, 8);
 
     const padR = 12;
     this.hintLabel.position.set(this.panelW - padR, midY);
@@ -333,12 +391,33 @@ export class HyperScoreboard extends Container {
     this.glowFilter.distance = 10 + climbNorm * 18 + mult * 0.7;
     this.glowFilter.color = hslToFill((hueBase + 275) % 360, 72, 52);
 
+    if (this.levelPulseAge > 0) {
+      this.levelPulseAge = Math.max(0, this.levelPulseAge - dt);
+      const u = 1 - this.levelPulseAge / 0.35;
+      this.levelLabel.scale.set(1 + 0.28 * Math.sin(u * Math.PI));
+    } else {
+      this.levelLabel.scale.set(1);
+    }
+
+    if (this.levelUpAge > 0) {
+      this.levelUpAge = Math.max(0, this.levelUpAge - dt);
+      const u = 1 - this.levelUpAge / 0.7;
+      this.levelUpLabel.visible = true;
+      this.levelUpLabel.alpha = (1 - u) * 0.95;
+      this.levelUpLabel.scale.set(0.88 + 0.35 * Math.sin(Math.min(1, u) * Math.PI));
+      this.levelUpLabel.position.set(this.panelW * 0.5, this.panelH + 12 + u * 10);
+    } else {
+      this.levelUpLabel.visible = false;
+    }
+
     this.updateBurstParticles(dt);
     this.drawBurstParticles();
   }
 
   private layoutPanel(): void {
-    const w = Math.min(600, Math.max(320, this.screenW - 24));
+    const sidePadding = this.screenW < 440 ? 40 : 24;
+    const minWidth = this.screenW < 440 ? 280 : 320;
+    const w = Math.min(600, Math.max(minWidth, this.screenW - sidePadding));
     this.panelW = w;
     this.panelH = 56;
 

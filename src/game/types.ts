@@ -3,6 +3,10 @@ export type Platform = {
   y: number;
   width: number;
   height: number;
+  baseWidth: number;
+  driftDir: -1 | 1;
+  /** Horizontal drift speed (px/s); sign matches `driftDir` after difficulty update. */
+  driftVx: number;
   /** Monotonic id for higher steps (used for score / grapple bonus). */
   stairId: number;
 };
@@ -30,4 +34,6 @@ export type ActiveGrapple = {
   targetY: number;
   extendT: number;
   hookStairId: number;
+  pullStartX: number;
+  pullStartY: number;
 };

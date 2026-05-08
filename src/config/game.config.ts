@@ -1,3 +1,27 @@
+/**
+ * PixiJS rendering / ticker tuning (maps Phaser-style “forceSingleUpdate” / “pixelArt” ideas to Pixi v8).
+ * @see Game.ts — applies ticker + default texture sampling after `Application.init`.
+ */
+export const RENDER = {
+  /**
+   * When true, clamp the app ticker to `maxTickerFps` so high-refresh mobile displays don’t run
+   * multiple logical steps per vsync (smoother, more consistent dt).
+   */
+  forceSingleUpdate: true,
+  maxTickerFps: 60,
+  /** Floor for FPS cap on the ticker (limits how large deltaMS can grow between ticks). */
+  minTickerFps: 10,
+  /**
+   * false → default linear texture filtering (smooth scaled sprites on mobile).
+   * true → nearest-neighbor (“pixel art” look).
+   */
+  pixelArt: false,
+  /**
+   * Custom physics: no engine friction. Platforms are kinematic; horizontal motion is `driftVx` only.
+   */
+  platformSurfaceFriction: 0,
+} as const;
+
 export const EYES = {
   baseColor: 0xffe066,
   comboColor: 0x66e0ff,
@@ -9,9 +33,14 @@ export const EYES = {
 };
 
 export const WALK = {
-  speedPxPerSecond: 420,
-  acceleration: 4200,
-  airAcceleration: 2400,
+  speedPxPerSecond: 588,
+  /**
+   * Scales joystick / touch analog axis toward max horizontal speed (`speedPxPerSecond`).
+   * Keyboard arrow keys unchanged (they bypass this by not using smoothed joystick).
+   */
+  touchJoystickWalkScale: 0.646,
+  acceleration: 5880,
+  airAcceleration: 3360,
   stopDeceleration: 2200,
   vxThreshold: 24,
   bobAmplitude: 1.2,
@@ -44,32 +73,41 @@ export const ALIVE = {
 
 export const PHYSICS = {
   gravity: 2100,
-  maxSpeed: 620,
-  baseJump: 760,
+  maxSpeed: 868,
+  baseJump: 1064,
   speedJumpBonus: 0.75,
+  /** Horizontal bounce when hitting left/right world bounds (custom physics, not Phaser). */
+  worldWallRestitution: 0,
 };
 
 /** Tongue grapple: Spider-Man style swing/pull from mouth to anchor. */
 export const GRAPPLE = {
-  cooldownSec: 0.42,
+  cooldownSec: 2,
   maxRangePx: 540,
   extendSec: 0.12,
-  pullAcceleration: 5200,
-  maxPullSpeed: 840,
+  pullAcceleration: 2500,
+  maxPullSpeed: 420,
   /** Feeds gravity along rope tangent (pendulum-style swing, y-down coords). */
-  swingTangentialScale: 0.26,
+  swingTangentialScale: 0.12,
   gravityMultiplierWhilePulling: 0.14,
   detachDistancePx: 58,
+  /** Cap pull travel to around four platform gaps. */
+  maxPullTravelPx: 472,
   /** Swing “peak”: release when moving away from anchor along the tongue. */
-  peakReleaseTowardSpeed: -140,
+  peakReleaseTowardSpeed: -85,
   peakReleaseMinDist: 36,
   peakReleaseMaxDist: 280,
-  peakLaunchVyMul: 1.14,
-  peakLaunchVxMul: 1.18,
-  launchVy: -1260,
+  peakLaunchVyMul: 1.05,
+  peakLaunchVxMul: 1.08,
+  launchVy: -760,
   /** Extra upward impulse from pull speed toward the anchor (slingshot). */
-  slingshotUpwardBoost: 0.52,
-  launchVxBoost: 280,
+  slingshotUpwardBoost: 0.2,
+  launchVxBoost: 120,
+  /** Continuous speed damping while attached to keep pull smooth. */
+  pullVelocityDampingPerSec: 0.14,
+  /** Short damping window right after release to curb overshoot. */
+  releaseDampingDurationSec: 0.28,
+  releaseDampingPerSec: 0.32,
   /** Mouth position offset from player body center (world follows facing). */
   mouthOffsetX: 54,
   mouthOffsetY: -44,
@@ -115,9 +153,10 @@ export const COMBO = {
 
 /** Procedural infinite stairs + run reset thresholds. */
 export const STAIRS = {
+  /** Fixed pool: stairs are recycled in-place (no per-frame alloc); see `recycleStairsOffscreen`. */
   poolCount: 20,
-  /** Vertical gap between step tops (matches legacy climb rhythm). */
-  stepPx: 118,
+  /** Vertical gap between step tops (larger climb cadence for clearer jumps). */
+  stepPx: 172,
   platformHeight: 28,
   /** When a platform’s top is this far below the camera, recycle it to the top. */
   recycleBelowScreenPx: 220,
