@@ -283,8 +283,8 @@ const GRAPPLE_PULL_HORIZONTAL_LERP_PER_SEC = 17;
 const BOOST_ACTION_BTN_GAP_PX = 8;
 /** Top-right HUD slot for boost buttons (screen px, `PlayScene` / `uiLayer` space). */
 const BOOST_BTN_SCREEN_MARGIN_RIGHT_PX = 14;
-/** Just below the title bar / scoreboard band — keeps cluster “top” but not flush to the notch. */
-const BOOST_BTN_SCREEN_MARGIN_TOP_PX = 56;
+/** Below the scoreboard band — larger Y moves TONGUE/360 further down (still right-aligned). */
+const BOOST_BTN_SCREEN_MARGIN_TOP_PX = 104;
 const GRAPPLE_STOP_ABOVE_PLATFORM_PX = 20;
 const LEVEL_MAX = 100;
 const LEVEL_SCORE_STEP = 1000;
