@@ -243,6 +243,8 @@ const BACKGROUND_PARALLAX_Y = 0.14;
 const CAMERA_DEADZONE_PX = 100;
 const CAMERA_FOLLOW_LERP_X = 0.1;
 const CAMERA_FOLLOW_LERP_Y = 0.1;
+const CAMERA_PLAYER_SCREEN_Y_RATIO = 0.62;
+const CAMERA_UPWARD_FOLLOW_BOOST = 1.45;
 const WORLD_BOUNDS_X = 0;
 const WORLD_BOUNDS_Y = -1000000;
 const WORLD_BOUNDS_W = 1400;
@@ -280,6 +282,7 @@ const TOUCH_SWIPE_UP_MAX_SIDEWAYS_PX = 22;
 const TOUCH_SWIPE_ABOVE_PLAYER_PX = 16;
 const TOUCH_FOLLOW_DISTANCE_PX = 44;
 const TOUCH_LOCK_RADIUS_PX = 120;
+const TOUCH_ACTION_RETRIGGER_MS = 110;
 
 export class PlayScene implements Scene {
   readonly name = 'play';
@@ -326,6 +329,8 @@ export class PlayScene implements Scene {
   private touchPointers = new Map<number, TouchPointerTrack>();
   private touchControlPointerId: number | null = null;
   private touchRipples: TouchRipple[] = [];
+  private touchLastJumpMs = 0;
+  private touchLastGrappleMs = 0;
   private collectibleHudGoldText?: Text;
   private collectibleHudDiamondText?: Text;
   private collectibles: Collectible[] = [];
@@ -1367,8 +1372,14 @@ export class PlayScene implements Scene {
       targetCamY = playerCy - (viewportH - deadY);
     }
 
+    // Keep the player slightly lower on screen so climbed stairs leave view sooner.
+    const desiredCamY = playerCy - viewportH * CAMERA_PLAYER_SCREEN_Y_RATIO;
+    targetCamY = Math.min(targetCamY, desiredCamY);
+
     this.cameraX += (targetCamX - this.cameraX) * CAMERA_FOLLOW_LERP_X;
-    this.cameraY += (targetCamY - this.cameraY) * CAMERA_FOLLOW_LERP_Y;
+    const movingUp = targetCamY < this.cameraY;
+    const yLerp = movingUp ? CAMERA_FOLLOW_LERP_Y * CAMERA_UPWARD_FOLLOW_BOOST : CAMERA_FOLLOW_LERP_Y;
+    this.cameraY += (targetCamY - this.cameraY) * Math.min(1, yLerp);
     const maxCamX = Math.max(0, this.worldWidth - viewportW);
     this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
     this.cameraY = Math.min(0, this.cameraY);
@@ -2157,7 +2168,17 @@ export class PlayScene implements Scene {
       touchAbovePlayer &&
       touchNearPlayerX
     ) {
-      this.input?.queueJump();
+      const now = performance.now();
+      const swipeOnLeft = p.lastX < playerScreenX;
+      if (swipeOnLeft) {
+        if (now - this.touchLastGrappleMs >= TOUCH_ACTION_RETRIGGER_MS) {
+          this.touchLastGrappleMs = now;
+          this.input?.queueGrapple();
+        }
+      } else if (now - this.touchLastJumpMs >= TOUCH_ACTION_RETRIGGER_MS) {
+        this.touchLastJumpMs = now;
+        this.input?.queueJump();
+      }
       p.swipeBaselineX = p.lastX;
       p.swipeBaselineY = p.lastY;
       this.spawnTouchRipple(p.lastX, p.lastY, 0.34);
