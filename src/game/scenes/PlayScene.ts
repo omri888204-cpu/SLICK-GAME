@@ -331,6 +331,13 @@ const SHIELD_BANK_GOLD = 10;
 const SHIELD_BANK_DIAMOND = 5;
 /** Shield break: teleport climb (~15 stair gaps) + upward impulse. */
 const SHIELD_SUPER_LAUNCH_STAIR_COUNT = 15;
+/**
+ * After launch, feet must stay at/under the pool's top tread (world Y grows downward).
+ * Max rise uses `feetY - minTopY + this` so feet end near `minTopY` (tiny slack for one frame of vy).
+ */
+const SHIELD_LAUNCH_MAX_FEET_ABOVE_TOP_PX = 28;
+/** After teleport, recycle passes so low stairs repack above the new camera. */
+const SHIELD_LAUNCH_RECYCLE_PASSES = 28;
 const FLASH_SKILL_BOOST_DURATION_SEC = 10;
 const FLASH_TONGUE_COOLDOWN_SPEEDUP = 2;
 const FLASH_BOOST_STAIR_COUNT = 4;
@@ -1710,14 +1717,27 @@ export class PlayScene implements Scene {
     this.grappleCooldown = 0;
     this.grappleReleaseDampingLeft = 0;
     this.currentGroundPlatform = null;
-    const rise = STAIRS.stepPx * SHIELD_SUPER_LAUNCH_STAIR_COUNT;
+    const desiredRise = STAIRS.stepPx * SHIELD_SUPER_LAUNCH_STAIR_COUNT;
+    let rise = desiredRise;
+    if (this.platforms.length > 0) {
+      const minTopY = Math.min(...this.platforms.map((p) => p.y));
+      const feetY = this.player.body.y + this.player.body.height;
+      const maxRise = feetY - minTopY + SHIELD_LAUNCH_MAX_FEET_ABOVE_TOP_PX;
+      rise = Math.min(desiredRise, Math.max(0, maxRise));
+    }
     this.player.body.y -= rise;
     this.player.body.vy = -Math.min(1750, 920 + rise * 0.38);
-    this.player.body.vx *= 0.72;
+    /** Strong forward speed + no stair under that X reads as “black void”; damp hard after warp. */
+    this.player.body.vx *= 0.32;
     this.player.body.grounded = false;
     this.highestY = Math.min(this.highestY, this.player.body.y);
     this.player.onJump();
     this.shakeTime = Math.max(this.shakeTime, 0.42);
+    this.snapCameraToPlayer();
+    for (let i = 0; i < SHIELD_LAUNCH_RECYCLE_PASSES; i += 1) {
+      this.recycleStairsOffscreen();
+    }
+    this.syncPlatformSpritesFromPlatforms();
     const cx = this.player.body.x + this.player.body.width * 0.5;
     const cy = this.player.body.y + this.player.body.height * 0.45;
     for (let i = 0; i < 18; i += 1) {
