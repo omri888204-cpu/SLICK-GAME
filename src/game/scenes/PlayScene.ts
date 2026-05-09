@@ -2361,6 +2361,9 @@ export class PlayScene implements Scene {
   }
 
   private setupGameOverUi(): void {
+    this.gameOverOverlay.eventMode = 'static';
+    this.gameOverBackdrop.eventMode = 'none';
+    this.gameOverPanel.eventMode = 'none';
     this.gameOverOverlay.visible = false;
     this.gameOverOverlay.zIndex = 1200;
     this.gameOverBackdrop.alpha = OVERLAY_BG_ALPHA;
@@ -2379,7 +2382,7 @@ export class PlayScene implements Scene {
 
     this.gameOverRestartBtn.eventMode = 'static';
     this.gameOverRestartBtn.cursor = 'pointer';
-    this.gameOverRestartBtn.on('pointerdown', () => {
+    this.gameOverRestartBtn.on('pointertap', () => {
       this.resetRun();
     });
     this.gameOverRestartLabel = new Text({
@@ -2390,7 +2393,7 @@ export class PlayScene implements Scene {
 
     this.gameOverLeaderboardBtn.eventMode = 'static';
     this.gameOverLeaderboardBtn.cursor = 'pointer';
-    this.gameOverLeaderboardBtn.on('pointerdown', () => {
+    this.gameOverLeaderboardBtn.on('pointertap', () => {
       void this.openLeaderboardOverlay();
     });
     this.gameOverLeaderboardLabel = new Text({
@@ -2408,6 +2411,9 @@ export class PlayScene implements Scene {
       this.gameOverLeaderboardLabel,
     );
 
+    this.leaderboardOverlay.eventMode = 'static';
+    this.leaderboardBackdrop.eventMode = 'none';
+    this.leaderboardPanel.eventMode = 'none';
     this.leaderboardOverlay.visible = false;
     this.leaderboardOverlay.zIndex = 1250;
     this.leaderboardBackdrop.alpha = OVERLAY_BG_ALPHA;
@@ -2428,7 +2434,7 @@ export class PlayScene implements Scene {
 
     this.leaderboardCloseBtn.eventMode = 'static';
     this.leaderboardCloseBtn.cursor = 'pointer';
-    this.leaderboardCloseBtn.on('pointerdown', () => {
+    this.leaderboardCloseBtn.on('pointertap', () => {
       this.leaderboardOverlay.visible = false;
     });
     this.leaderboardCloseLabel = new Text({
@@ -2476,6 +2482,8 @@ export class PlayScene implements Scene {
     const boardY = py + panelH - 98;
     this.drawOverlayButton(this.gameOverRestartBtn, btnX, restartY, btnW, btnH);
     this.drawOverlayButton(this.gameOverLeaderboardBtn, btnX, boardY, btnW, btnH);
+    this.gameOverRestartBtn.hitArea = new Rectangle(btnX, restartY, btnW, btnH);
+    this.gameOverLeaderboardBtn.hitArea = new Rectangle(btnX, boardY, btnW, btnH);
     this.gameOverRestartLabel?.position.set(overlayW * 0.5, restartY + btnH * 0.5);
     this.gameOverLeaderboardLabel?.position.set(overlayW * 0.5, boardY + btnH * 0.5);
 
@@ -2544,6 +2552,7 @@ export class PlayScene implements Scene {
     const closeX = overlayW * 0.5 - closeW * 0.5;
     const closeY = py + panelH - closeH - 16;
     this.drawOverlayButton(this.leaderboardCloseBtn, closeX, closeY, closeW, closeH);
+    this.leaderboardCloseBtn.hitArea = new Rectangle(closeX, closeY, closeW, closeH);
     this.leaderboardCloseLabel?.position.set(overlayW * 0.5, closeY + closeH * 0.5);
 
     if (this.leaderboardLoadingText) {
@@ -2574,6 +2583,7 @@ export class PlayScene implements Scene {
     this.finalMetersAtDeath = Math.max(0, Math.floor(-this.highestY / 12));
     this.refreshGameOverScoreText();
     this.gameOverOverlay.visible = true;
+    this.leaderboardOverlay.visible = false;
     if (!this.deathSubmitted) {
       this.deathSubmitted = true;
       const nickname = getSavedNickname() || 'Player';
