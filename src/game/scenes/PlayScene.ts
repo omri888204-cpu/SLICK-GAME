@@ -1157,6 +1157,7 @@ export class PlayScene implements Scene {
     this.deathSubmitted = false;
     this.gameOverOverlay.visible = false;
     this.leaderboardOverlay.visible = false;
+    this.touchControlsLayer.visible = true;
     this.currentGroundPlatform = null;
     this.clearFloatingComboUi();
     this.score = 0;
@@ -2584,6 +2585,10 @@ export class PlayScene implements Scene {
     this.refreshGameOverScoreText();
     this.gameOverOverlay.visible = true;
     this.leaderboardOverlay.visible = false;
+    this.touchPointers.clear();
+    this.touchControlPointerId = null;
+    this.input?.setTouchFollowAxis(0);
+    this.touchControlsLayer.visible = false;
     if (!this.deathSubmitted) {
       this.deathSubmitted = true;
       const nickname = getSavedNickname() || 'Player';
@@ -2830,6 +2835,9 @@ export class PlayScene implements Scene {
   }
 
   private readonly handleTouchPointerDown = (event: FederatedPointerEvent): void => {
+    if (this.gameOver || this.leaderboardOverlay.visible) {
+      return;
+    }
     if (!this.input?.isTouchControlsActive()) {
       return;
     }
@@ -2857,6 +2865,9 @@ export class PlayScene implements Scene {
   };
 
   private readonly handleTouchPointerMove = (event: FederatedPointerEvent): void => {
+    if (this.gameOver || this.leaderboardOverlay.visible) {
+      return;
+    }
     if (!this.input?.isTouchControlsActive()) {
       return;
     }
@@ -2874,6 +2885,9 @@ export class PlayScene implements Scene {
   };
 
   private readonly handleTouchPointerUpOrCancel = (event: FederatedPointerEvent): void => {
+    if (this.gameOver || this.leaderboardOverlay.visible) {
+      return;
+    }
     if (!this.input?.isTouchControlsActive()) {
       return;
     }
