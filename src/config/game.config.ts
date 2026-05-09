@@ -93,7 +93,8 @@ export const ALIVE = {
 
 export const PHYSICS = {
   gravity: 2100,
-  maxSpeed: 868,
+  /** Raised so late-run horizontal speed isn’t capped while scroll difficulty ramps. */
+  maxSpeed: 2600,
   /**
    * Standing jump apex ≈ `baseJump² / (2·gravity)`; tuned to clear typical stair gaps (~250–350px).
    */

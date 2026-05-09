@@ -257,9 +257,12 @@ const CAMERA_PLAYER_SCREEN_Y_RATIO = 0.62;
 const AUTO_SCROLL_BASE_SPEED_PX = 120;
 const HURRY_UP_FLASH_SEC = 2.6;
 /** HUD climb (m): no multiplier gain below this, then +`SCROLL_SPEED_STEP_DELTA` every `SCROLL_SPEED_STEP_METERS`. */
-const SCROLL_SPEED_WARMUP_METERS = 1000;
+const SCROLL_SPEED_WARMUP_METERS = 300;
 const SCROLL_SPEED_STEP_METERS = 200;
-const SCROLL_SPEED_STEP_DELTA = 0.05;
+/** Per milestone delta (3× legacy 0.05 → faster difficulty ramp). */
+const SCROLL_SPEED_STEP_DELTA = 0.15;
+/** Start subtle sustained camera shake once altitude scroll mult ≥ this × base (see `getAltitudeSpeedMultiplier`). */
+const ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD = 3;
 const SPEED_TIER_SHAKE_SEC = 0.2;
 const SPEED_TIER_UI_FLASH_SEC = 0.22;
 /** Cool lavender pulse — avoids harsh fullscreen white flash (read as glitch on some GPUs). */
@@ -497,6 +500,8 @@ export class PlayScene implements Scene {
   private shakeTime = 0;
   private shakeOffsetX = 0;
   private shakeOffsetY = 0;
+  /** Phase accumulator for speed-stress screenshake (continuous, not impact bursts). */
+  private velocityStressShakePhase = 0;
   private bgm?: HTMLAudioElement;
   private level = 1;
   private levelUpBannerTime = 0;
@@ -1304,6 +1309,7 @@ export class PlayScene implements Scene {
     this.shakeTime = 0;
     this.shakeOffsetX = 0;
     this.shakeOffsetY = 0;
+    this.velocityStressShakePhase = 0;
     this.speedTierUiFlashTime = 0;
     this.speedPulseGfx.visible = false;
     this.speedPulseGfx.alpha = 1;
@@ -1618,10 +1624,11 @@ export class PlayScene implements Scene {
   }
 
   private checkFallGameOver(): void {
-    const chameleonY = this.player.body.y;
-    // Must match `drawBottomDeathLine` / bottom of visible camera (auto-scroll moves `cameraY` at `getCameraScrollSpeedPx()`).
+    const feetY = this.player.body.y + this.player.body.height;
+    // Kill plane = bottom edge of the viewed world (`cameraY` moves up at `getCameraScrollSpeedPx()` + player chase).
+    // Use feet so there’s no invisible cushion below the viewport bottom (same frame as lava wipe).
     const deathLineY = this.cameraY + this.worldHeightFromScreen();
-    if (chameleonY > deathLineY) {
+    if (feetY > deathLineY) {
       this.triggerGameOver();
     }
   }
@@ -1697,16 +1704,31 @@ export class PlayScene implements Scene {
 
 
   private updateScreenShake(dt: number): void {
+    let ox = 0;
+    let oy = 0;
     if (this.shakeTime > 0) {
       this.shakeTime -= dt;
       const k = Math.max(0, this.shakeTime / SCORE_UI.shakeDurationSec);
       const mag = SCORE_UI.shakeMaxPx * k;
-      this.shakeOffsetX = (Math.random() - 0.5) * 2 * mag;
-      this.shakeOffsetY = (Math.random() - 0.5) * 2 * mag;
-    } else {
-      this.shakeOffsetX = 0;
-      this.shakeOffsetY = 0;
+      ox += (Math.random() - 0.5) * 2 * mag;
+      oy += (Math.random() - 0.5) * 2 * mag;
     }
+
+    const scrollMult = this.getAltitudeSpeedMultiplier();
+    if (scrollMult >= ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD) {
+      const over = scrollMult - ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD;
+      const ramp = Math.min(1, over / 6);
+      const stressMag = 1.2 + ramp * 6.5;
+      this.velocityStressShakePhase += dt * (11 + scrollMult * 2.4);
+      const ph = this.velocityStressShakePhase;
+      ox += Math.sin(ph * 2.08) * stressMag * 0.52;
+      oy += Math.cos(ph * 1.66) * stressMag * 0.42;
+      ox += (Math.random() - 0.5) * stressMag * 0.34;
+      oy += (Math.random() - 0.5) * stressMag * 0.34;
+    }
+
+    this.shakeOffsetX = ox;
+    this.shakeOffsetY = oy;
     this.applyCameraTransform();
   }
 
@@ -2121,7 +2143,7 @@ export class PlayScene implements Scene {
 
   /**
    * Scroll / difficulty multiplier: 1× until `SCROLL_SPEED_WARMUP_METERS`, then +`SCROLL_SPEED_STEP_DELTA`
-   * each `SCROLL_SPEED_STEP_METERS` (no cap).
+   * each `SCROLL_SPEED_STEP_METERS` (no cap; delta tripled vs legacy for faster scaling).
    */
   private getAltitudeSpeedMultiplier(): number {
     const m = this.getHudClimbMeters();
