@@ -3276,9 +3276,9 @@ export class PlayScene implements Scene {
 
   private drawBottomDeathLine(): void {
     /**
-     * `lavaLayer` is a direct child of `gameShake` (not `world`): same space as after `world` transform
-     * for the camera bottom edge — world point (cameraX, cameraY + vh) → local (0, vh).
-     * Ice top edge sits on that line (sync with `getDeathPlaneWorldY()`); strip extends downward (below fold).
+     * `lavaLayer` is under `gameShake` (not `world`). View bottom in this space is `vh` — same Y as
+     * `getDeathPlaneWorldY()` in world space. Ice uses anchor (0.5, 0.5) so the **horizontal death line**
+     * passes through the **vertical midline** of the bitmap (half strip above / half below → visible).
      */
     const vh = this.worldHeightFromScreen();
     const vw = this.worldWidthFromScreen();
@@ -3290,8 +3290,8 @@ export class PlayScene implements Scene {
     if (crystal?.texture) {
       this.deathZoneFallback.visible = false;
       crystal.visible = true;
-      crystal.anchor.set(0, 0);
-      crystal.position.set(xGs, vh);
+      crystal.anchor.set(0.5, 0.5);
+      crystal.position.set(vw * 0.5, vh);
       crystal.width = w;
       const sw = Math.max(1, this.deathZoneSourceW);
       const sh = Math.max(1, this.deathZoneSourceH);
@@ -3318,7 +3318,7 @@ export class PlayScene implements Scene {
       this.deathZoneSourceW = w;
       this.deathZoneSourceH = h;
       const spr = new Sprite(texture);
-      spr.anchor.set(0, 0);
+      spr.anchor.set(0.5, 0.5);
       spr.roundPixels = false;
       spr.eventMode = 'none';
       spr.tint = 0xffffff;
