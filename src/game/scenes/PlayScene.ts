@@ -492,6 +492,8 @@ export class PlayScene implements Scene {
   private currentBackgroundColor = 0x000000;
   private levelUpFloatText?: Text;
   private flashSkillBoostTime = 0;
+  /** Tracks ×6+ combo threshold for one-shot Flash arm only (avoids refreshing boost every frame). */
+  private beastComboAtLeastSixPrev = false;
   private action360State: Action360State | null = null;
   private action360Sparks: Action360Spark[] = [];
   private jumpArcAssistTime = 0;
@@ -1292,6 +1294,7 @@ export class PlayScene implements Scene {
     this.action360Sparks = [];
     this.player.rotation = 0;
     this.flashSkillBoostTime = 0;
+    this.beastComboAtLeastSixPrev = false;
     this.windParticles = [];
     this.windSpawnAcc = 0;
     this.syncBoostHudButtonsVisibility();
@@ -1324,13 +1327,17 @@ export class PlayScene implements Scene {
   private updateFlashSkillBoost(dt: number): void {
     const wasBoostActive = this.flashSkillBoostTime > 0;
     const beastModeActiveNow = this.getComboMultiplier() >= COMBO.beastModeMinMultiplier;
-    // Sustain tongue / 360 Flash for the whole time beast combo (×6+) is active — not a short timer that
-    // expires while the chain is still going, and no stair-gated rearm that could feel “dead” deep in a run.
-    if (beastModeActiveNow) {
-      this.flashSkillBoostTime = FLASH_SKILL_BOOST_DURATION_SEC;
-    } else if (this.flashSkillBoostTime > 0) {
+
+    if (this.flashSkillBoostTime > 0) {
       this.flashSkillBoostTime = Math.max(0, this.flashSkillBoostTime - dt);
     }
+    // Arm a single `FLASH_SKILL_BOOST_DURATION_SEC` window when crossing into ×6+, then count down — never
+    // refresh every frame while combo stays high (that trapped glow/jump boost and HUD buttons forever).
+    if (beastModeActiveNow && !this.beastComboAtLeastSixPrev) {
+      this.flashSkillBoostTime = FLASH_SKILL_BOOST_DURATION_SEC;
+    }
+    this.beastComboAtLeastSixPrev = beastModeActiveNow;
+
     if (wasBoostActive && this.flashSkillBoostTime <= 0) {
       this.resetBoostAbilitiesToNormal();
     }
