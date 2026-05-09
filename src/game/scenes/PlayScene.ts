@@ -258,6 +258,7 @@ const UI_GOLD = 0xffd700;
 const UI_HEADER_H = 92;
 const UI_SAFE_PAD_TOP = 10;
 const UI_SAFE_PAD_BOTTOM = 12;
+const UI_HEADER_INFO_ROW_Y = UI_SAFE_PAD_TOP + 40;
 const HURRY_BANNER_H = 46;
 const HURRY_BANNER_SLIDE_SPEED = 760;
 const WORLD_BOUNDS_X = 0;
@@ -2353,7 +2354,7 @@ export class PlayScene implements Scene {
       const timerX = mobile ? this.width * 0.37 : this.width * 0.5;
       const timerScale = mobile ? 0.82 : 1;
       this.timerHudText.scale.set(timerScale);
-      this.timerHudText.position.set(timerX, UI_SAFE_PAD_TOP + 10);
+      this.timerHudText.position.set(timerX, UI_HEADER_INFO_ROW_Y - 20);
     }
     this.hurryBannerRoot.position.set(-460, UI_SAFE_PAD_TOP + 8);
     this.hurryBannerX = this.hurryBannerRoot.position.x;
@@ -2723,7 +2724,7 @@ export class PlayScene implements Scene {
   /** Top header placement for collectible counters and bottom placement for boost buttons. */
   private syncCollectibleHudPosition(): void {
     this.collectibleHudRoot.pivot.set(0, 0.5);
-    this.collectibleHudRoot.position.set(26, UI_SAFE_PAD_TOP + 30);
+    this.collectibleHudRoot.position.set(26, UI_HEADER_INFO_ROW_Y);
     this.layoutBoostHudButtons();
   }
 
