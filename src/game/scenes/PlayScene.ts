@@ -254,6 +254,10 @@ const CAMERA_FOLLOW_LERP_Y = 0.1;
 const CAMERA_PLAYER_SCREEN_Y_RATIO = 0.62;
 const CAMERA_UPWARD_FOLLOW_BOOST = 1.45;
 const CAMERA_STAIRS_BELOW_PLAYER = 3;
+const AUTO_SCROLL_BASE_SPEED_PX = 120;
+const AUTO_SCROLL_SPEED_STEP_PX = 28;
+const AUTO_SCROLL_STEP_INTERVAL_SEC = 30;
+const HURRY_UP_FLASH_SEC = 2.6;
 const WORLD_BOUNDS_X = 0;
 const WORLD_BOUNDS_Y = -1000000;
 const WORLD_BOUNDS_W = 1400;
@@ -349,6 +353,7 @@ export class PlayScene implements Scene {
   private platformLayer = new Graphics();
   private rippleLayer = new Graphics();
   private collectiblesGfx = new Graphics();
+  private lavaLayer = new Graphics();
   private gameShake = new Container();
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
@@ -380,6 +385,8 @@ export class PlayScene implements Scene {
   private windParticles: WindParticle[] = [];
   private windSpawnAcc = 0;
   private climbHudText?: Text;
+  private timerHudText?: Text;
+  private hurryUpText?: Text;
   /** While `runTime < this`, climbing combo expires using `TONGUE_BOOST_COMBO_CLIMB_SEC` instead of `COMBO.chainWindowSec`. */
   private tongueBoostComboExtendUntil = -Infinity;
   private collectibles: Collectible[] = [];
@@ -423,6 +430,9 @@ export class PlayScene implements Scene {
   private comboChain = 0;
   private lastChainTime = -1e9;
   private runTime = 0;
+  private autoScrollLevel = 0;
+  private autoScrollSpeedPx = AUTO_SCROLL_BASE_SPEED_PX;
+  private hurryUpTimeLeft = 0;
   private comboPopups: ComboPopup[] = [];
   private beastParticles: BeastParticle[] = [];
   private diamondShineSparks: DiamondShineSpark[] = [];
@@ -464,6 +474,7 @@ export class PlayScene implements Scene {
       this.jelly,
       this.platformSpriteLayer,
       this.platformLayer,
+      this.lavaLayer,
       this.rippleLayer,
       this.collectiblesGfx,
       this.tongueRoot,
@@ -499,6 +510,7 @@ export class PlayScene implements Scene {
     this.setupTongueBoostButton(app);
     this.setupAction360Button(app);
     this.setupClimbHud(app);
+    this.setupAutoScrollHud();
 
     await this.tryLoadTongueArmature();
     this.startBackgroundMusic();
@@ -514,6 +526,7 @@ export class PlayScene implements Scene {
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
     this.runTime += dt;
+    this.updateAutoScrollSpeed(dt);
     this.expireComboIfNeeded();
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
     this.updateFlashSkillBoost(dt);
@@ -573,16 +586,6 @@ export class PlayScene implements Scene {
           this.grappleReleaseDampingLeft = GRAPPLE.releaseDampingDurationSec;
         }
       }
-    }
-
-    if (
-      !this.action360State &&
-      this.currentGroundPlatform &&
-      this.player.body.grounded &&
-      !this.grapple &&
-      RENDER.platformSurfaceFriction === 0
-    ) {
-      this.player.body.x += this.currentGroundPlatform.driftVx * dt;
     }
 
     if (this.action360State) {
@@ -744,6 +747,7 @@ export class PlayScene implements Scene {
     }
     this.layoutCollectibleHud();
     this.layoutClimbHud();
+    this.layoutAutoScrollHud();
     this.input?.onResize();
 
     // Mobile browser chrome toggles height in small steps; resetting the whole run felt like “stuck” stairs.
@@ -967,7 +971,6 @@ export class PlayScene implements Scene {
       this.cameraY - 2000,
     );
 
-    const recycleSpeed = this.getBaseScrollSpeedPx();
     for (const p of toRecycle) {
       this.nextStairId += 1;
       p.stairId = this.nextStairId;
@@ -975,7 +978,7 @@ export class PlayScene implements Scene {
       p.baseWidth = 150 + ((this.nextStairId * 37) % 80);
       p.width = p.baseWidth * PLATFORM_SCALE;
       p.driftDir = Math.random() < 0.5 ? -1 : 1;
-      p.driftVx = p.driftDir * recycleSpeed;
+      p.driftVx = 0;
       this.updatePlatformBodyFromScale(p);
       p.x = this.computePlatformSpawnX(this.nextStairId, p.width);
       spawnY -= this.computeStairGapPx(this.nextStairId);
@@ -1115,6 +1118,10 @@ export class PlayScene implements Scene {
     this.collectibles = [];
     this.comboChain = 0;
     this.lastChainTime = -1e9;
+    this.runTime = 0;
+    this.autoScrollLevel = 0;
+    this.autoScrollSpeedPx = AUTO_SCROLL_BASE_SPEED_PX;
+    this.hurryUpTimeLeft = 0;
     this.beastParticles = [];
     this.beastParticleSpawnAcc = 0;
     this.shakeTime = 0;
@@ -1152,6 +1159,7 @@ export class PlayScene implements Scene {
     this.collectibleHudRoot.scale.set(1);
     this.refreshCollectibleHudText();
     this.scoreboard?.setLevel(this.level);
+    this.refreshAutoScrollHud();
   }
 
   private updateFlashSkillBoost(dt: number): void {
@@ -1437,20 +1445,9 @@ export class PlayScene implements Scene {
   }
 
   private checkFallGameOver(): void {
-    const feetY = this.player.body.y + this.player.body.height;
-    const need = STAIRS.safetyStairBufferDrops;
-    const nextLower = this.platforms
-      .filter((p) => p.y > feetY + 1)
-      .sort((a, b) => a.y - b.y);
-    let deathFeetY: number;
-    if (nextLower.length >= need) {
-      const nth = nextLower[need - 1];
-      deathFeetY = nth.y + STAIRS.fallPastLastSafetyStairPx;
-    } else {
-      deathFeetY =
-        this.cameraY + this.worldHeightFromScreen() + STAIRS.fallDeathBelowViewportPx;
-    }
-    if (feetY > deathFeetY) {
+    const chameleonY = this.player.body.y;
+    const deathLineY = this.cameraY + this.worldHeightFromScreen();
+    if (chameleonY > deathLineY) {
       this.resetRun();
     }
   }
@@ -1480,45 +1477,19 @@ export class PlayScene implements Scene {
     });
   }
 
-  private updateCamera(_dt: number): void {
+  private updateCamera(dt: number): void {
     this.highestY = Math.min(this.highestY, this.player.body.y);
 
     const viewportW = this.worldWidthFromScreen();
     const viewportH = this.worldHeightFromScreen();
-    const halfW = Math.max(0, viewportW * 0.5);
-    const halfH = Math.max(0, viewportH * 0.5);
-    const deadX = Math.min(CAMERA_DEADZONE_PX, Math.max(20, halfW - 12));
-    const deadY = Math.min(CAMERA_DEADZONE_PX, Math.max(20, halfH - 12));
-
-    const playerCx = this.player.body.x + this.player.body.width * 0.5;
     const playerCy = this.player.body.y + this.player.body.height * 0.5;
-    const left = this.cameraX + deadX;
-    const right = this.cameraX + viewportW - deadX;
-    const top = this.cameraY + deadY;
-    const bottom = this.cameraY + viewportH - deadY;
-
-    let targetCamX = this.cameraX;
-    let targetCamY = this.cameraY;
-    if (playerCx < left) {
-      targetCamX = playerCx - deadX;
-    } else if (playerCx > right) {
-      targetCamX = playerCx - (viewportW - deadX);
+    this.cameraX = (this.worldWidth - viewportW) * 0.5;
+    this.cameraY -= this.autoScrollSpeedPx * dt;
+    const desiredPlayerScreenY = viewportH * 0.36;
+    const forceUpCamY = playerCy - desiredPlayerScreenY;
+    if (forceUpCamY < this.cameraY) {
+      this.cameraY = forceUpCamY;
     }
-    if (playerCy < top) {
-      targetCamY = playerCy - deadY;
-    } else if (playerCy > bottom) {
-      targetCamY = playerCy - (viewportH - deadY);
-    }
-
-    // Lock follow so one stair line stays below the player.
-    const desiredPlayerScreenY = viewportH - STAIRS.stepPx * CAMERA_STAIRS_BELOW_PLAYER;
-    const desiredCamY = playerCy - desiredPlayerScreenY;
-    targetCamY = Math.min(targetCamY, desiredCamY);
-
-    this.cameraX += (targetCamX - this.cameraX) * CAMERA_FOLLOW_LERP_X;
-    const movingUp = targetCamY < this.cameraY;
-    const yLerp = movingUp ? CAMERA_FOLLOW_LERP_Y * CAMERA_UPWARD_FOLLOW_BOOST : CAMERA_FOLLOW_LERP_Y;
-    this.cameraY += (targetCamY - this.cameraY) * Math.min(1, yLerp);
     const maxCamX = Math.max(0, this.worldWidth - viewportW);
     this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
     this.cameraY = Math.min(0, this.cameraY);
@@ -1535,12 +1506,11 @@ export class PlayScene implements Scene {
   private snapCameraToPlayer(): void {
     const viewportW = this.worldWidthFromScreen();
     const viewportH = this.worldHeightFromScreen();
-    const playerCx = this.player.body.x + this.player.body.width * 0.5;
-    this.cameraX = playerCx - viewportW * 0.5;
+    this.cameraX = (this.worldWidth - viewportW) * 0.5;
     const maxCamX = Math.max(0, this.worldWidth - viewportW);
     this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
     const playerCy = this.player.body.y + this.player.body.height * 0.5;
-    const desiredPlayerScreenY = viewportH - STAIRS.stepPx * CAMERA_STAIRS_BELOW_PLAYER;
+    const desiredPlayerScreenY = viewportH * CAMERA_PLAYER_SCREEN_Y_RATIO;
     this.cameraY = playerCy - desiredPlayerScreenY;
     this.cameraY = Math.min(0, this.cameraY);
     this.cameraY = Math.max(this.worldMinY, this.cameraY);
@@ -1877,15 +1847,13 @@ export class PlayScene implements Scene {
     void dt;
     const widthRatio = Math.max(0.5, 1 - this.level * LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL);
     const edgePad = PLATFORM_EDGE_PADDING_PX;
-    const scroll = this.getBaseScrollSpeedPx();
     for (const p of this.platforms) {
-      const wasScrolling = Math.abs(p.driftVx) > 0.25;
       const targetBaseWidth = Math.max(
         LEVEL_PLATFORM_MIN_BASE_WIDTH,
         p.baseWidth * widthRatio,
       );
       p.width = targetBaseWidth * PLATFORM_SCALE;
-      p.driftVx = wasScrolling ? p.driftDir * scroll : 0;
+      p.driftVx = 0;
       if (p.x < edgePad) {
         p.x = edgePad;
       } else if (p.x + p.width > this.worldWidth - edgePad) {
@@ -2043,6 +2011,7 @@ export class PlayScene implements Scene {
     }
 
     this.drawWindParticles();
+    this.drawBottomDeathLine();
 
     for (const platform of this.platforms) {
       this.drawCrystalPlatform(platform);
@@ -2271,10 +2240,94 @@ export class PlayScene implements Scene {
     this.climbHudText.text = `${mApprox}m  ·  ×${mult.toFixed(2)}`;
   }
 
+  private setupAutoScrollHud(): void {
+    this.timerHudText = new Text({
+      text: '',
+      style: new TextStyle({
+        fontFamily: 'Arial Black, Impact, sans-serif',
+        fontSize: 30,
+        fill: '#ffffff',
+        stroke: { color: '#1b0a1a', width: 6 },
+      }),
+    });
+    this.timerHudText.anchor.set(0.5, 0);
+    this.timerHudText.zIndex = 1005;
+    this.uiLayer.addChild(this.timerHudText);
+
+    this.hurryUpText = new Text({
+      text: 'HURRY UP!',
+      style: new TextStyle({
+        fontFamily: 'Arial Black, Impact, sans-serif',
+        fontSize: 42,
+        fill: '#ff5050',
+        stroke: { color: '#3b0000', width: 7 },
+      }),
+    });
+    this.hurryUpText.anchor.set(0.5, 0);
+    this.hurryUpText.zIndex = 1006;
+    this.hurryUpText.visible = false;
+    this.uiLayer.addChild(this.hurryUpText);
+    this.layoutAutoScrollHud();
+    this.refreshAutoScrollHud();
+  }
+
+  private layoutAutoScrollHud(): void {
+    if (this.timerHudText) {
+      this.timerHudText.position.set(this.width * 0.5, 10);
+    }
+    if (this.hurryUpText) {
+      this.hurryUpText.position.set(this.width * 0.5, 50);
+    }
+  }
+
+  private refreshAutoScrollHud(): void {
+    if (this.timerHudText) {
+      const totalSec = Math.floor(this.runTime);
+      const minutes = Math.floor(totalSec / 60)
+        .toString()
+        .padStart(2, '0');
+      const seconds = (totalSec % 60).toString().padStart(2, '0');
+      this.timerHudText.text = `${minutes}:${seconds}`;
+    }
+    if (this.hurryUpText) {
+      const flashing = this.hurryUpTimeLeft > 0;
+      this.hurryUpText.visible = flashing;
+      if (flashing) {
+        const pulse = Math.sin(this.runTime * 15) > 0 ? 1 : 0.35;
+        this.hurryUpText.alpha = pulse;
+      }
+    }
+  }
+
+  private updateAutoScrollSpeed(dt: number): void {
+    this.hurryUpTimeLeft = Math.max(0, this.hurryUpTimeLeft - dt);
+    const nextLevel = Math.floor(this.runTime / AUTO_SCROLL_STEP_INTERVAL_SEC);
+    if (nextLevel <= this.autoScrollLevel) {
+      return;
+    }
+    this.autoScrollLevel = nextLevel;
+    this.autoScrollSpeedPx = AUTO_SCROLL_BASE_SPEED_PX + this.autoScrollLevel * AUTO_SCROLL_SPEED_STEP_PX;
+    this.hurryUpTimeLeft = HURRY_UP_FLASH_SEC;
+    this.refreshAutoScrollHud();
+  }
+
+  private drawBottomDeathLine(): void {
+    const viewBottomY = this.cameraY + this.worldHeightFromScreen();
+    const lavaTop = viewBottomY - 32;
+    this.lavaLayer.clear();
+    this.lavaLayer
+      .rect(this.cameraX - 30, lavaTop, this.worldWidthFromScreen() + 60, 32)
+      .fill({ color: 0xff4b00, alpha: 0.78 });
+    this.lavaLayer
+      .rect(this.cameraX - 30, viewBottomY - 9, this.worldWidthFromScreen() + 60, 9)
+      .fill({ color: 0xffa621, alpha: 0.95 });
+  }
+
   private tickAltitudePresentation(dt: number): void {
     this.updateWindParticles(dt);
     this.spawnWindParticlesForAltitude(dt);
     this.refreshClimbHudText();
+    this.refreshAutoScrollHud();
   }
 
   private spawnWindParticlesForAltitude(dt: number): void {
