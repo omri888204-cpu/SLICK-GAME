@@ -345,11 +345,10 @@ const ALTITUDE_WIND_MAX_PARTICLES = 48;
  */
 const DEATH_ZONE_VISUAL_SCALE = 1.42;
 /**
- * Nudge the crystal strip downward (world px). Anchor stays bottom-aligned to the viewport bottom,
- * so this hides more ice below the fold and pulls the visible band down — reads like the map swallows
- * the player at the death line without moving gameplay (`feetY` vs death line).
+ * Tiny downward bleed in **screen pixels** (before camera zoom) so the strip covers the canvas bottom
+ * after scaling / filtering. Death gameplay still uses `cameraY + worldHeightFromScreen()` in world space.
  */
-const DEATH_ZONE_VISUAL_OFFSET_Y = 72;
+const DEATH_ZONE_BOTTOM_BLEED_SCREEN_PX = 10;
 
 type WindParticle = {
   x: number;
@@ -560,13 +559,14 @@ export class PlayScene implements Scene {
     app.stage.addChild(this.gameShake);
     app.stage.addChild(this.uiLayer);
     this.gameShake.addChild(this.background);
+    /** Death strip is parented here (not under `world`) so its Y aligns to the canvas bottom in `gameShake` space. */
+    this.gameShake.addChild(this.lavaLayer);
     this.gameShake.addChild(this.world);
     this.world.sortableChildren = true;
     this.world.addChild(
       this.jelly,
       this.platformSpriteLayer,
       this.platformLayer,
-      this.lavaLayer,
       this.rippleLayer,
       this.collectiblesGfx,
       this.tongueRoot,
@@ -3254,17 +3254,20 @@ export class PlayScene implements Scene {
   }
 
   private drawBottomDeathLine(): void {
-    const viewBottomY = this.cameraY + this.worldHeightFromScreen();
+    const zoom = this.getCameraZoom();
+    /** Viewport size in pre-zoom `gameShake` space (`lavaLayer` is a direct child of `gameShake`). */
     const vw = this.worldWidthFromScreen();
+    const vh = this.worldHeightFromScreen();
     const padX = 30;
-    const x = this.cameraX - padX;
+    const x = -padX;
     const w = vw + padX * 2;
+    const bleed = DEATH_ZONE_BOTTOM_BLEED_SCREEN_PX / zoom;
 
     const crystal = this.deathZoneCrystalSprite;
     if (crystal?.texture) {
       this.deathZoneFallback.visible = false;
       crystal.visible = true;
-      crystal.position.set(x, viewBottomY + DEATH_ZONE_VISUAL_OFFSET_Y);
+      crystal.position.set(x, vh + bleed);
       crystal.width = w;
       const sw = Math.max(1, this.deathZoneSourceW);
       const sh = Math.max(1, this.deathZoneSourceH);
@@ -3273,13 +3276,13 @@ export class PlayScene implements Scene {
     }
 
     this.deathZoneFallback.visible = true;
-    const lavaTop = viewBottomY - 32 + DEATH_ZONE_VISUAL_OFFSET_Y;
+    const lavaTop = vh - 32 + bleed;
     this.deathZoneFallback.clear();
     this.deathZoneFallback
       .rect(x, lavaTop, w, 32)
       .fill({ color: 0xff4b00, alpha: 0.78 });
     this.deathZoneFallback
-      .rect(x, viewBottomY - 9 + DEATH_ZONE_VISUAL_OFFSET_Y, w, 9)
+      .rect(x, vh - 9 + bleed, w, 9)
       .fill({ color: 0xffa621, alpha: 0.95 });
   }
 
@@ -3292,7 +3295,8 @@ export class PlayScene implements Scene {
       this.deathZoneSourceH = h;
       const spr = new Sprite(texture);
       spr.anchor.set(0, 1);
-      spr.roundPixels = RENDER.pixelArt;
+      /* Bottom strip: allow subpixel placement so it can sit flush with the canvas edge. */
+      spr.roundPixels = false;
       spr.eventMode = 'none';
       spr.tint = 0xffffff;
       this.deathZoneCrystalSprite = spr;
