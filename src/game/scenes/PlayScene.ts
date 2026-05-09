@@ -2634,12 +2634,19 @@ export class PlayScene implements Scene {
       void (async () => {
         try {
           await saveScore(nickname, this.finalMetersAtDeath);
+          if (typeof window !== 'undefined') {
+            window.alert('Score sent!');
+          }
           this.lastLeaderboardTop = await fetchTopLeaderboard(5);
           if (this.leaderboardOverlay.visible) {
             this.renderLeaderboardShell(this.lastLeaderboardTop, false);
           }
-        } catch {
-          /* keep game flow if firebase fails */
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error('[PlayScene] leaderboard save failed', err);
+          if (typeof window !== 'undefined') {
+            window.alert(`Score not saved: ${msg}`);
+          }
         }
       })();
     }
