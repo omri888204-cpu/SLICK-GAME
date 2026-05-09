@@ -260,7 +260,15 @@ const SCROLL_SPEED_STEP_METERS = 200;
 const SCROLL_SPEED_STEP_DELTA = 0.05;
 const SPEED_TIER_SHAKE_SEC = 0.2;
 const SPEED_TIER_UI_FLASH_SEC = 0.22;
+/** Cool lavender pulse — avoids harsh fullscreen white flash (read as glitch on some GPUs). */
+const SPEED_TIER_PULSE_COLOR = 0xb8a0ff;
+const SPEED_TIER_PULSE_FILL_ALPHA = 0.11;
 const PAUSE_RESUME_BTN_MIN_H = 64;
+/** Compact pause control: left column under main header bar (`drawTopHeaderPanel`). */
+const HEADER_PAUSE_BTN_W = 40;
+const HEADER_PAUSE_BTN_H = 34;
+const HEADER_PAUSE_LEFT_MARGIN_PX = 12;
+const HEADER_PAUSE_BELOW_HEADER_GAP_PX = 8;
 const UI_BG_BLACK = 0x000000;
 const UI_PANEL_PURPLE = 0x2e004b;
 const UI_NEON_GREEN = 0x39ff14;
@@ -1286,6 +1294,9 @@ export class PlayScene implements Scene {
     this.shakeTime = 0;
     this.shakeOffsetX = 0;
     this.shakeOffsetY = 0;
+    this.speedTierUiFlashTime = 0;
+    this.speedPulseGfx.visible = false;
+    this.speedPulseGfx.alpha = 1;
     this.diamondShineSparks = [];
     this.level = 1;
     this.levelUpBannerTime = 0;
@@ -2144,7 +2155,10 @@ export class PlayScene implements Scene {
   private redrawSpeedPulseOverlay(): void {
     const g = this.speedPulseGfx;
     g.clear();
-    g.rect(0, 0, this.width, this.height).fill({ color: 0xffffff, alpha: 0.38 });
+    g.rect(0, 0, this.width, this.height).fill({
+      color: SPEED_TIER_PULSE_COLOR,
+      alpha: SPEED_TIER_PULSE_FILL_ALPHA,
+    });
   }
 
   private updateSpeedTierUiFlash(dt: number): void {
@@ -2819,10 +2833,10 @@ export class PlayScene implements Scene {
       text: '||',
       style: new TextStyle({
         fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
-        fontSize: 22,
+        fontSize: 15,
         fontWeight: '800',
         fill: '#FFD700',
-        stroke: { color: '#4a3200', width: 3 },
+        stroke: { color: '#4a3200', width: 2 },
       }),
     });
     this.headerPauseIcon.anchor.set(0.5);
@@ -2833,15 +2847,15 @@ export class PlayScene implements Scene {
   }
 
   private layoutHeaderPauseButton(): void {
-    const btnW = Math.min(52, Math.max(44, this.width * 0.12));
-    const btnH = Math.max(44, UI_HEADER_H - 18);
-    const x = this.width - 12 - btnW;
-    const y = UI_SAFE_PAD_TOP + (UI_HEADER_H - btnH) * 0.5;
+    const btnW = HEADER_PAUSE_BTN_W;
+    const btnH = HEADER_PAUSE_BTN_H;
+    const x = HEADER_PAUSE_LEFT_MARGIN_PX;
+    const y = UI_SAFE_PAD_TOP + UI_HEADER_H + HEADER_PAUSE_BELOW_HEADER_GAP_PX;
     this.headerPauseBtn.clear();
-    this.headerPauseBtn.roundRect(0, 0, btnW, btnH, 10).fill({ color: UI_BG_BLACK, alpha: 0.48 });
-    this.headerPauseBtn.roundRect(0, 0, btnW, btnH, 10).stroke({
+    this.headerPauseBtn.roundRect(0, 0, btnW, btnH, 8).fill({ color: UI_BG_BLACK, alpha: 0.48 });
+    this.headerPauseBtn.roundRect(0, 0, btnW, btnH, 8).stroke({
       color: UI_NEON_GREEN,
-      width: 2,
+      width: 1.5,
       alpha: 0.82,
     });
     this.headerPauseBtn.hitArea = new Rectangle(0, 0, btnW, btnH);
@@ -2996,6 +3010,9 @@ export class PlayScene implements Scene {
       return;
     }
     this.gameOver = true;
+    this.speedTierUiFlashTime = 0;
+    this.speedPulseGfx.visible = false;
+    this.speedPulseGfx.alpha = 1;
     this.paused = false;
     this.pauseOverlay.visible = false;
     this.headerPauseRoot.visible = false;

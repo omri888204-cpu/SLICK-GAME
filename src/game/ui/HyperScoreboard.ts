@@ -396,8 +396,9 @@ export class HyperScoreboard extends Container {
     const padR = 12;
     this.hintLabel.position.set(this.panelW - padR, midY);
 
-    this.glowFilter.outerStrength = 1.5 + climbNorm * 7.2 + mult * 0.5;
-    this.glowFilter.distance = 10 + climbNorm * 18 + mult * 0.7;
+    // Cap bloom so high altitude / combo doesn’t blow out to a white flash on some GPUs.
+    this.glowFilter.outerStrength = Math.min(9, 1.5 + climbNorm * 7.2 + mult * 0.5);
+    this.glowFilter.distance = Math.min(30, 10 + climbNorm * 18 + mult * 0.7);
     this.glowFilter.color = hslToFill((hueBase + 275) % 360, 72, 52);
 
     if (this.levelPulseAge > 0) {
