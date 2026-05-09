@@ -432,6 +432,7 @@ export class PlayScene implements Scene {
   private touchLastJumpMs = 0;
   private collectibleHudGoldText?: Text;
   private collectibleHudDiamondText?: Text;
+  private collectibleHudShieldText?: Text;
   private tongueBoostButtonRoot = new Container();
   private tongueBoostButtonGfx = new Graphics();
   private tongueBoostLabel?: Text;
@@ -1396,7 +1397,6 @@ export class PlayScene implements Scene {
     this.jumpArcAssistDuration = 0;
     this.levelUpBoostTime = 0;
     this.playerShieldActive = false;
-    this.collectibleHudShieldIcon.visible = false;
     this.nextShieldGoldThreshold = SHIELD_SPAWN_GOLD;
     this.nextShieldDiamondThreshold = SHIELD_SPAWN_DIAMOND;
     this.tongueBoostComboExtendUntil = -Infinity;
@@ -2494,15 +2494,20 @@ export class PlayScene implements Scene {
       text: '0',
       style: this.createNeonGoldTextStyle(19, 3),
     });
+    this.collectibleHudShieldText = new Text({
+      text: '0',
+      style: this.createNeonGoldTextStyle(19, 3),
+    });
     this.collectibleHudGoldText.anchor.set(0, 0.5);
     this.collectibleHudDiamondText.anchor.set(0, 0.5);
-    this.collectibleHudShieldIcon.visible = false;
+    this.collectibleHudShieldText.anchor.set(0, 0.5);
     this.collectibleHudRoot.addChild(
       this.collectibleHudGoldIcon,
       this.collectibleHudDiamondIcon,
       this.collectibleHudShieldIcon,
       this.collectibleHudGoldText,
       this.collectibleHudDiamondText,
+      this.collectibleHudShieldText,
     );
     this.collectibleHudRoot.zIndex = 1008;
     this.uiLayer.addChild(this.collectibleHudRoot);
@@ -3831,11 +3836,24 @@ export class PlayScene implements Scene {
   private layoutCollectibleHud(): void {
     this.syncCollectibleHudPosition();
     const g = COLLECTIBLE_LINES_HALF_GAP_PX;
+    const shieldRowY = g - 2 + COLLECTIBLE_SHIELD_ICON_BELOW_DIAMOND_PX;
     this.collectibleHudGoldIcon.position.set(0, -g - 2);
     this.collectibleHudGoldText?.position.set(28, -g);
     this.collectibleHudDiamondIcon.position.set(0, g - 2);
     this.collectibleHudDiamondText?.position.set(28, g);
-    this.collectibleHudShieldIcon.position.set(0, g - 2 + COLLECTIBLE_SHIELD_ICON_BELOW_DIAMOND_PX);
+    this.collectibleHudShieldIcon.position.set(0, shieldRowY);
+    this.collectibleHudShieldText?.position.set(28, shieldRowY);
+  }
+
+  /** 1 = shield held or shield pickup on the field; 0 = not yet (need 10 gold + 5 diamonds per tier, then collect). */
+  private getShieldHudStock(): number {
+    if (this.playerShieldActive) {
+      return 1;
+    }
+    if (this.hasActiveShieldPickup()) {
+      return 1;
+    }
+    return 0;
   }
 
   private refreshCollectibleHudText(): void {
@@ -3845,6 +3863,9 @@ export class PlayScene implements Scene {
     if (this.collectibleHudDiamondText) {
       this.collectibleHudDiamondText.text = `${Math.round(this.hudDiamondShown)}`;
     }
+    if (this.collectibleHudShieldText) {
+      this.collectibleHudShieldText.text = `${this.getShieldHudStock()}`;
+    }
   }
 
   private updateCollectibleHudSmooth(dt: number): void {
@@ -3852,7 +3873,6 @@ export class PlayScene implements Scene {
     this.hudGoldShown += (this.goldCount - this.hudGoldShown) * k;
     this.hudDiamondShown += (this.diamondCount - this.hudDiamondShown) * k;
     this.refreshCollectibleHudText();
-    this.collectibleHudShieldIcon.visible = this.playerShieldActive;
 
     if (this.collectibleHudBump > 0) {
       this.collectibleHudBump = Math.max(0, this.collectibleHudBump - dt * 4.5);
