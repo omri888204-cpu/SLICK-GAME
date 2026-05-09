@@ -402,6 +402,9 @@ export class PlayScene implements Scene {
   private gameOverRestartLabel?: Text;
   private gameOverLeaderboardBtn = new Graphics();
   private gameOverLeaderboardLabel?: Text;
+  /** Brief non-blocking confirmation after Firebase save (fades in `update` while game over). */
+  private gameOverScoreSavedHint?: Text;
+  private scoreSavedHintTimeLeft = 0;
   private leaderboardOverlay = new Container();
   private leaderboardBackdrop = new Graphics();
   private leaderboardPanel = new Graphics();
@@ -561,6 +564,7 @@ export class PlayScene implements Scene {
     if (this.gameOver) {
       this.updateScreenShake(dt);
       this.refreshGameOverScoreText();
+      this.updateScoreSavedHint(dt);
       return;
     }
     this.runTime += dt;
@@ -1224,6 +1228,10 @@ export class PlayScene implements Scene {
     this.lastLeaderboardTop = [];
     this.gameOverOverlay.visible = false;
     this.leaderboardOverlay.visible = false;
+    this.scoreSavedHintTimeLeft = 0;
+    if (this.gameOverScoreSavedHint) {
+      this.gameOverScoreSavedHint.visible = false;
+    }
     this.touchControlsLayer.visible = true;
     this.currentGroundPlatform = null;
     this.clearFloatingComboUi();
@@ -2513,6 +2521,20 @@ export class PlayScene implements Scene {
     this.gameOverLeaderboardLabel.anchor.set(0.5);
     this.gameOverLeaderboardLabel.eventMode = 'none';
 
+    this.gameOverScoreSavedHint = new Text({
+      text: 'Score saved',
+      style: new TextStyle({
+        fontFamily: 'Urbanist, Orbitron, sans-serif',
+        fontSize: 12,
+        fontWeight: '600',
+        fill: '#7dffa8',
+        letterSpacing: 0.6,
+      }),
+    });
+    this.gameOverScoreSavedHint.anchor.set(0.5, 1);
+    this.gameOverScoreSavedHint.eventMode = 'none';
+    this.gameOverScoreSavedHint.visible = false;
+
     this.gameOverOverlay.addChild(
       this.gameOverTitle,
       this.gameOverScoreText,
@@ -2520,6 +2542,7 @@ export class PlayScene implements Scene {
       this.gameOverRestartLabel,
       this.gameOverLeaderboardBtn,
       this.gameOverLeaderboardLabel,
+      this.gameOverScoreSavedHint,
     );
 
     this.leaderboardOverlay.eventMode = 'passive';
@@ -2612,6 +2635,7 @@ export class PlayScene implements Scene {
     this.gameOverLeaderboardBtn.hitArea = new Rectangle(btnX, boardY, btnW, btnH);
     this.gameOverRestartLabel?.position.set(overlayW * 0.5, restartY + btnH * 0.5);
     this.gameOverLeaderboardLabel?.position.set(overlayW * 0.5, boardY + btnH * 0.5);
+    this.gameOverScoreSavedHint?.position.set(overlayW * 0.5, overlayH - 18);
 
     this.leaderboardBackdrop.clear();
     this.leaderboardBackdrop.rect(0, 0, overlayW, overlayH).fill({ color: 0x000000, alpha: 1 });
@@ -2703,6 +2727,34 @@ export class PlayScene implements Scene {
     this.gameOverScoreText.text = `${this.finalMetersAtDeath} m`;
   }
 
+  private showScoreSavedHint(): void {
+    const hint = this.gameOverScoreSavedHint;
+    if (!hint) {
+      return;
+    }
+    hint.visible = true;
+    hint.alpha = 0.88;
+    this.scoreSavedHintTimeLeft = 2.25;
+  }
+
+  private updateScoreSavedHint(dt: number): void {
+    const hint = this.gameOverScoreSavedHint;
+    if (!hint || this.scoreSavedHintTimeLeft <= 0 || !hint.visible) {
+      return;
+    }
+    this.scoreSavedHintTimeLeft -= dt;
+    const fadeDur = 0.55;
+    if (this.scoreSavedHintTimeLeft <= 0) {
+      hint.visible = false;
+      return;
+    }
+    if (this.scoreSavedHintTimeLeft < fadeDur) {
+      hint.alpha = Math.max(0, (this.scoreSavedHintTimeLeft / fadeDur) * 0.88);
+    } else {
+      hint.alpha = 0.88;
+    }
+  }
+
   private triggerGameOver(): void {
     if (this.gameOver) {
       return;
@@ -2722,19 +2774,17 @@ export class PlayScene implements Scene {
       void (async () => {
         try {
           await saveScore(nickname, this.finalMetersAtDeath);
-          if (typeof window !== 'undefined') {
-            window.alert('Score sent!');
-          }
+          console.info('[PlayScene] leaderboard score saved', {
+            nickname,
+            meters: this.finalMetersAtDeath,
+          });
+          this.showScoreSavedHint();
           this.lastLeaderboardTop = await fetchTopLeaderboard(5);
           if (this.leaderboardOverlay.visible) {
             this.renderLeaderboardShell(this.lastLeaderboardTop, false);
           }
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
           console.error('[PlayScene] leaderboard save failed', err);
-          if (typeof window !== 'undefined') {
-            window.alert(`Score not saved: ${msg}`);
-          }
         }
       })();
     }
