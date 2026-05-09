@@ -240,8 +240,11 @@ const COLLECTIBLE_LINES_HALF_GAP_PX = 13;
 /** Touch-only boost tongue button — sits under Gold/Diamonds (right-aligned). */
 const TONGUE_BOOST_BTN_W = 118;
 const TONGUE_BOOST_BTN_H = 38;
-/** After pressing TONGUE during boost, combo chain uses this longer gap window (seconds). */
-const TONGUE_BOOST_COMBO_CLIMB_SEC = 8;
+/**
+ * TONGUE combo boost: longer gap between landings, then the chain **resets** after this many seconds
+ * (so the sequence cannot run forever from landings alone).
+ */
+const TONGUE_COMBO_BOOST_DURATION_SEC = 10;
 const PLATFORM_SCALE = 2.1;
 const PLATFORM_EDGE_PADDING_PX = 8;
 const CAMERA_ZOOM = 0.5;
@@ -250,9 +253,14 @@ const BACKGROUND_PARALLAX_X = 0.2;
 const BACKGROUND_PARALLAX_Y = 0.14;
 const CAMERA_PLAYER_SCREEN_Y_RATIO = 0.62;
 const AUTO_SCROLL_BASE_SPEED_PX = 120;
-const AUTO_SCROLL_SPEED_STEP_PX = 28;
-const AUTO_SCROLL_STEP_INTERVAL_SEC = 30;
 const HURRY_UP_FLASH_SEC = 2.6;
+/** HUD climb (m): no multiplier gain below this, then +`SCROLL_SPEED_STEP_DELTA` every `SCROLL_SPEED_STEP_METERS`. */
+const SCROLL_SPEED_WARMUP_METERS = 1000;
+const SCROLL_SPEED_STEP_METERS = 200;
+const SCROLL_SPEED_STEP_DELTA = 0.05;
+const SPEED_TIER_SHAKE_SEC = 0.2;
+const SPEED_TIER_UI_FLASH_SEC = 0.22;
+const PAUSE_RESUME_BTN_MIN_H = 64;
 const UI_BG_BLACK = 0x000000;
 const UI_PANEL_PURPLE = 0x2e004b;
 const UI_NEON_GREEN = 0x39ff14;
@@ -312,12 +320,6 @@ const TOUCH_FOLLOW_DISTANCE_PX = 70;
 const TOUCH_LOCK_RADIUS_PX = 120;
 const TOUCH_ACTION_RETRIGGER_MS = 110;
 
-/** Every this many px climbed (upward), platform scroll speed gets +10% (multiplicative, capped). */
-const ALTITUDE_SPEED_BAND_PX = 1000;
-const ALTITUDE_SCROLL_MULT_PER_BAND = 0.1;
-const ALTITUDE_SCROLL_MULT_MAX = 2.5;
-/** Max horizontal platform drift (px/s) including level + altitude scaling. */
-const ALTITUDE_SCROLL_SPEED_CAP_PX = 115;
 /** Blend toward this cool color on background as altitude speed mult rises (0..1). */
 const ALTITUDE_WIND_TINT_COOL = 0x142a38;
 const ALTITUDE_WIND_TINT_MAX_BLEND = 0.32;
@@ -356,6 +358,20 @@ export class PlayScene implements Scene {
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
   private headerPanel = new Graphics();
+  private headerPauseRoot = new Container();
+  private headerPauseBtn = new Graphics();
+  private headerPauseIcon?: Text;
+  private paused = false;
+  private pauseOverlay = new Container();
+  private pauseBackdrop = new Graphics();
+  private pausePanel = new Graphics();
+  private pauseTitle?: Text;
+  private pauseResumeBtn = new Graphics();
+  private pauseResumeLabel?: Text;
+  /** Full-screen HUD flash when scroll speed tier increases (see `getScrollSpeedTier`). */
+  private speedPulseGfx = new Graphics();
+  private speedTierUiFlashTime = 0;
+  private lastScrollSpeedTier = 0;
   private tongueRoot = new Container();
   private tongueVector = new Graphics();
   private tongueArmature: PixiArmatureDisplay | null = null;
@@ -415,8 +431,10 @@ export class PlayScene implements Scene {
   private deathSubmitted = false;
   /** Latest Top 5 from Firestore (refreshed after each save and when opening leaderboard). */
   private lastLeaderboardTop: LeaderboardEntry[] = [];
-  /** While `runTime < this`, climbing combo expires using `TONGUE_BOOST_COMBO_CLIMB_SEC` instead of `COMBO.chainWindowSec`. */
+  /** While `runTime < this`, climbing combo expires using `TONGUE_COMBO_BOOST_DURATION_SEC` instead of `COMBO.chainWindowSec`. */
   private tongueBoostComboExtendUntil = -Infinity;
+  /** When reached, combo boost ends: chain clears (see `expireComboIfNeeded`). Refreshed on each TONGUE boost press. */
+  private tongueBoostComboResetAt: number | null = null;
   private collectibles: Collectible[] = [];
   private goldCount = 0;
   private diamondCount = 0;
@@ -458,8 +476,6 @@ export class PlayScene implements Scene {
   private comboChain = 0;
   private lastChainTime = -1e9;
   private runTime = 0;
-  private autoScrollLevel = 0;
-  private autoScrollSpeedPx = AUTO_SCROLL_BASE_SPEED_PX;
   private hurryUpTimeLeft = 0;
   private hurryBannerX = 0;
   private comboPopups: ComboPopup[] = [];
@@ -538,7 +554,11 @@ export class PlayScene implements Scene {
     this.setupClimbHud(app);
     this.setupAutoScrollHud();
     this.setupGameOverUi();
+    this.setupPauseUi();
+    this.setupHeaderPauseButton();
+    this.setupSpeedTierPulseOverlay();
     this.drawTopHeaderPanel();
+    this.layoutHeaderPauseButton();
     if (this.scoreboard) {
       this.scoreboard.visible = false;
     }
@@ -562,8 +582,12 @@ export class PlayScene implements Scene {
       this.updateScoreSavedHint(dt);
       return;
     }
+    if (this.paused) {
+      this.updateSpeedTierUiFlash(dt);
+      this.applyCameraTransform();
+      return;
+    }
     this.runTime += dt;
-    this.updateAutoScrollSpeed(dt);
     this.expireComboIfNeeded();
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
     this.updateFlashSkillBoost(dt);
@@ -628,6 +652,7 @@ export class PlayScene implements Scene {
     if (this.action360State) {
       this.currentGroundPlatform = null;
       this.updateCamera(dt);
+      this.maybeAdvanceScrollSpeedTierFeedback();
       this.recycleStairsOffscreen();
       this.syncPlatformSpritesFromPlatforms();
       this.checkFallGameOver();
@@ -650,6 +675,7 @@ export class PlayScene implements Scene {
     this.clampPlayerToCameraViewport();
     this.tickAltitudePresentation(dt);
     this.drawDynamicWorld();
+    this.updateSpeedTierUiFlash(dt);
     this.updateScreenShake(dt);
     const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
     this.scoreboard?.update(dt, this.score, mult, heightMeters, this.runTime, this.level);
@@ -743,6 +769,7 @@ export class PlayScene implements Scene {
     }
 
     this.updateCamera(dt);
+    this.maybeAdvanceScrollSpeedTierFeedback();
     this.clampPlayerToCameraViewport();
     this.recycleStairsOffscreen();
     this.syncPlatformSpritesFromPlatforms();
@@ -765,6 +792,7 @@ export class PlayScene implements Scene {
     );
     this.tickAltitudePresentation(dt);
     this.drawDynamicWorld();
+    this.updateSpeedTierUiFlash(dt);
     this.updateScreenShake(dt);
     const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
     this.scoreboard?.update(dt, this.score, mult, heightMeters, this.runTime, this.level);
@@ -788,6 +816,9 @@ export class PlayScene implements Scene {
     this.layoutClimbHud();
     this.layoutAutoScrollHud();
     this.layoutGameOverUi();
+    this.layoutHeaderPauseButton();
+    this.layoutPauseOverlay();
+    this.redrawSpeedPulseOverlay();
     this.drawTopHeaderPanel();
     this.input?.onResize();
 
@@ -797,6 +828,9 @@ export class PlayScene implements Scene {
     if (minorViewportJitter) {
       this.drawStaticWorld();
       this.drawTopHeaderPanel();
+      this.layoutHeaderPauseButton();
+      this.layoutPauseOverlay();
+      this.redrawSpeedPulseOverlay();
       this.clampEntitiesToWorldBounds();
       this.syncPlatformSpritesFromPlatforms();
       this.drawDynamicWorld();
@@ -1241,9 +1275,10 @@ export class PlayScene implements Scene {
     this.comboChain = 0;
     this.lastChainTime = -1e9;
     this.runTime = 0;
-    this.autoScrollLevel = 0;
-    this.autoScrollSpeedPx = AUTO_SCROLL_BASE_SPEED_PX;
     this.hurryUpTimeLeft = 0;
+    this.paused = false;
+    this.pauseOverlay.visible = false;
+    this.headerPauseRoot.visible = true;
     this.beastParticles = [];
     this.beastParticleSpawnAcc = 0;
     this.shakeTime = 0;
@@ -1263,6 +1298,7 @@ export class PlayScene implements Scene {
     this.jumpArcAssistTime = 0;
     this.jumpArcAssistDuration = 0;
     this.tongueBoostComboExtendUntil = -Infinity;
+    this.tongueBoostComboResetAt = null;
     this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
     if (this.levelUpFloatText) {
       this.levelUpFloatText.visible = false;
@@ -1282,6 +1318,7 @@ export class PlayScene implements Scene {
     this.refreshCollectibleHudText();
     this.scoreboard?.setLevel(this.level);
     this.refreshAutoScrollHud();
+    this.syncScrollSpeedTierBaseline();
   }
 
   private updateFlashSkillBoost(dt: number): void {
@@ -1554,6 +1591,7 @@ export class PlayScene implements Scene {
 
   private checkFallGameOver(): void {
     const chameleonY = this.player.body.y;
+    // Must match `drawBottomDeathLine` / bottom of visible camera (auto-scroll moves `cameraY` at `getCameraScrollSpeedPx()`).
     const deathLineY = this.cameraY + this.worldHeightFromScreen();
     if (chameleonY > deathLineY) {
       this.triggerGameOver();
@@ -1588,7 +1626,8 @@ export class PlayScene implements Scene {
     const viewportH = this.worldHeightFromScreen();
     const playerCy = this.player.body.y + this.player.body.height * 0.5;
     this.cameraX = (this.worldWidth - viewportW) * 0.5;
-    this.cameraY -= this.autoScrollSpeedPx * dt;
+    // Death check uses `cameraY + worldHeightFromScreen()` — same as `drawBottomDeathLine` (viewport bottom in world space).
+    this.cameraY -= this.getCameraScrollSpeedPx() * dt;
     const desiredPlayerScreenY = viewportH * 0.36;
     const forceUpCamY = playerCy - desiredPlayerScreenY;
     if (forceUpCamY < this.cameraY) {
@@ -1658,12 +1697,19 @@ export class PlayScene implements Scene {
   }
 
   private expireComboIfNeeded(): void {
+    if (this.tongueBoostComboResetAt !== null && this.runTime >= this.tongueBoostComboResetAt) {
+      this.tongueBoostComboResetAt = null;
+      this.tongueBoostComboExtendUntil = -Infinity;
+      this.comboChain = 0;
+      this.lastChainTime = -1e9;
+      return;
+    }
     if (this.comboChain <= 0) {
       return;
     }
     const chainWindowSec =
       this.runTime < this.tongueBoostComboExtendUntil
-        ? TONGUE_BOOST_COMBO_CLIMB_SEC
+        ? TONGUE_COMBO_BOOST_DURATION_SEC
         : COMBO.chainWindowSec;
     if (this.runTime - this.lastChainTime > chainWindowSec) {
       this.comboChain = 0;
@@ -2039,10 +2085,72 @@ export class PlayScene implements Scene {
     return Math.max(0, this.climbBaselineY - this.player.body.y);
   }
 
-  /** +10% map scroll speed per `ALTITUDE_SPEED_BAND_PX` climbed (capped). */
+  /** Same climb units as HUD “m” (approx). */
+  private getHudClimbMeters(): number {
+    return this.getClimbHeightPx() / 12;
+  }
+
+  /**
+   * Scroll / difficulty multiplier: 1× until `SCROLL_SPEED_WARMUP_METERS`, then +`SCROLL_SPEED_STEP_DELTA`
+   * each `SCROLL_SPEED_STEP_METERS` (no cap).
+   */
   private getAltitudeSpeedMultiplier(): number {
-    const bands = Math.floor(this.getClimbHeightPx() / ALTITUDE_SPEED_BAND_PX);
-    return Math.min(ALTITUDE_SCROLL_MULT_MAX, 1 + ALTITUDE_SCROLL_MULT_PER_BAND * bands);
+    const m = this.getHudClimbMeters();
+    if (m <= SCROLL_SPEED_WARMUP_METERS) {
+      return 1;
+    }
+    const steps = Math.floor((m - SCROLL_SPEED_WARMUP_METERS) / SCROLL_SPEED_STEP_METERS);
+    return 1 + SCROLL_SPEED_STEP_DELTA * steps;
+  }
+
+  private getCameraScrollSpeedPx(): number {
+    return AUTO_SCROLL_BASE_SPEED_PX * this.getAltitudeSpeedMultiplier();
+  }
+
+  /** Tier index for speed feedback; 0 = warmup, 1 = first step above warmup, … */
+  private getScrollSpeedTier(): number {
+    const m = this.getHudClimbMeters();
+    if (m <= SCROLL_SPEED_WARMUP_METERS) {
+      return 0;
+    }
+    return Math.floor((m - SCROLL_SPEED_WARMUP_METERS) / SCROLL_SPEED_STEP_METERS);
+  }
+
+  private syncScrollSpeedTierBaseline(): void {
+    this.lastScrollSpeedTier = this.getScrollSpeedTier();
+  }
+
+  private maybeAdvanceScrollSpeedTierFeedback(): void {
+    const tier = this.getScrollSpeedTier();
+    if (tier > this.lastScrollSpeedTier) {
+      this.lastScrollSpeedTier = tier;
+      if (tier > 0) {
+        this.shakeTime = Math.max(this.shakeTime, SPEED_TIER_SHAKE_SEC);
+        this.speedTierUiFlashTime = SPEED_TIER_UI_FLASH_SEC;
+        this.speedPulseGfx.alpha = 1;
+        this.redrawSpeedPulseOverlay();
+        this.speedPulseGfx.visible = true;
+      }
+    }
+  }
+
+  private redrawSpeedPulseOverlay(): void {
+    const g = this.speedPulseGfx;
+    g.clear();
+    g.rect(0, 0, this.width, this.height).fill({ color: 0xffffff, alpha: 0.38 });
+  }
+
+  private updateSpeedTierUiFlash(dt: number): void {
+    if (this.speedTierUiFlashTime <= 0 || !this.speedPulseGfx.visible) {
+      return;
+    }
+    this.speedTierUiFlashTime -= dt;
+    const u = Math.max(0, this.speedTierUiFlashTime / SPEED_TIER_UI_FLASH_SEC);
+    this.speedPulseGfx.alpha = u * 0.95;
+    if (this.speedTierUiFlashTime <= 0) {
+      this.speedPulseGfx.visible = false;
+      this.speedPulseGfx.alpha = 1;
+    }
   }
 
   /** Level-based horizontal stair drift before altitude scaling. */
@@ -2051,12 +2159,10 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Effective platform drift speed (px/s): scales with climb height, capped so difficulty doesn’t explode.
-   * Recycled stairs and re-synced scrolling platforms use this value.
+   * Effective platform drift speed (px/s): scales with climb height (same multiplier as camera scroll).
    */
   private getBaseScrollSpeedPx(): number {
-    const scaled = this.getLevelScrollSpeedPx() * this.getAltitudeSpeedMultiplier();
-    return Math.min(ALTITUDE_SCROLL_SPEED_CAP_PX, scaled);
+    return this.getLevelScrollSpeedPx() * this.getAltitudeSpeedMultiplier();
   }
 
   private mixRgbInt(c0: number, c1: number, t: number): number {
@@ -2076,8 +2182,7 @@ export class PlayScene implements Scene {
   /** Subtle cool shift on the tiling background as altitude speed multiplier rises. */
   private applyBackgroundTintForAltitude(): void {
     const mult = this.getAltitudeSpeedMultiplier();
-    const tintBlend =
-      Math.min(1, (mult - 1) / Math.max(1e-6, ALTITUDE_SCROLL_MULT_MAX - 1)) * ALTITUDE_WIND_TINT_MAX_BLEND;
+    const tintBlend = Math.min(1, (mult - 1) / 12) * ALTITUDE_WIND_TINT_MAX_BLEND;
     this.background.tint = this.mixRgbInt(this.currentBackgroundColor, ALTITUDE_WIND_TINT_COOL, tintBlend);
   }
 
@@ -2620,6 +2725,152 @@ export class PlayScene implements Scene {
     this.renderLeaderboardShell();
   }
 
+  private setupPauseUi(): void {
+    this.pauseOverlay.eventMode = 'passive';
+    this.pauseOverlay.interactiveChildren = true;
+    this.pauseOverlay.visible = false;
+    this.pauseOverlay.zIndex = 1260;
+    this.pauseBackdrop.eventMode = 'static';
+    this.pauseBackdrop.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.pauseBackdrop.on('pointertap', (event) => {
+      event.stopPropagation();
+    });
+    this.pausePanel.eventMode = 'none';
+    this.pauseTitle = new Text({
+      text: 'PAUSED',
+      style: this.createNeonGoldTextStyle(34, 4),
+    });
+    this.pauseTitle.anchor.set(0.5);
+    this.pauseTitle.eventMode = 'none';
+    this.pauseResumeBtn.eventMode = 'static';
+    this.pauseResumeBtn.cursor = 'pointer';
+    this.pauseResumeBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+      this.resumeFromPause();
+    });
+    this.pauseResumeBtn.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.resumeFromPause();
+    });
+    this.pauseResumeLabel = new Text({
+      text: 'RESUME',
+      style: this.createNeonGoldTextStyle(22, 3),
+    });
+    this.pauseResumeLabel.anchor.set(0.5);
+    this.pauseResumeLabel.eventMode = 'none';
+    this.pauseOverlay.addChild(
+      this.pauseBackdrop,
+      this.pausePanel,
+      this.pauseTitle,
+      this.pauseResumeBtn,
+      this.pauseResumeLabel,
+    );
+    this.uiLayer.addChild(this.pauseOverlay);
+    this.layoutPauseOverlay();
+  }
+
+  private layoutPauseOverlay(): void {
+    const overlayW = this.width;
+    const overlayH = this.height;
+    this.pauseBackdrop.clear();
+    this.pauseBackdrop.rect(0, 0, overlayW, overlayH).fill({ color: 0x000000, alpha: 0.62 });
+    const panelW = Math.min(400, overlayW - 40);
+    const panelH = Math.min(300, overlayH - 80);
+    const px = (overlayW - panelW) * 0.5;
+    const py = (overlayH - panelH) * 0.5;
+    this.pausePanel.clear();
+    this.pausePanel.roundRect(px, py, panelW, panelH, 18).fill({ color: UI_PANEL_PURPLE, alpha: 0.88 });
+    this.pausePanel.roundRect(px, py, panelW, panelH, 18).stroke({
+      color: UI_NEON_GREEN,
+      width: 2,
+      alpha: 0.82,
+    });
+    this.pauseTitle?.position.set(overlayW * 0.5, py + 62);
+    const resumeW = Math.min(340, panelW - 28);
+    const resumeH = Math.max(PAUSE_RESUME_BTN_MIN_H, 60);
+    const resumeX = overlayW * 0.5 - resumeW * 0.5;
+    const resumeY = py + panelH - resumeH - 32;
+    this.drawOverlayButton(this.pauseResumeBtn, resumeX, resumeY, resumeW, resumeH);
+    this.pauseResumeBtn.hitArea = new Rectangle(resumeX, resumeY, resumeW, resumeH);
+    this.pauseResumeLabel?.position.set(overlayW * 0.5, resumeY + resumeH * 0.5);
+  }
+
+  private setupHeaderPauseButton(): void {
+    this.headerPauseRoot.zIndex = 1001;
+    this.headerPauseBtn.eventMode = 'static';
+    this.headerPauseBtn.cursor = 'pointer';
+    this.headerPauseBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.headerPauseBtn.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.requestPause();
+    });
+    this.headerPauseIcon = new Text({
+      text: '||',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 22,
+        fontWeight: '800',
+        fill: '#FFD700',
+        stroke: { color: '#4a3200', width: 3 },
+      }),
+    });
+    this.headerPauseIcon.anchor.set(0.5);
+    this.headerPauseIcon.eventMode = 'none';
+    this.headerPauseRoot.addChild(this.headerPauseBtn, this.headerPauseIcon);
+    this.uiLayer.addChild(this.headerPauseRoot);
+    this.layoutHeaderPauseButton();
+  }
+
+  private layoutHeaderPauseButton(): void {
+    const btnW = Math.min(52, Math.max(44, this.width * 0.12));
+    const btnH = Math.max(44, UI_HEADER_H - 18);
+    const x = this.width - 12 - btnW;
+    const y = UI_SAFE_PAD_TOP + (UI_HEADER_H - btnH) * 0.5;
+    this.headerPauseBtn.clear();
+    this.headerPauseBtn.roundRect(0, 0, btnW, btnH, 10).fill({ color: UI_BG_BLACK, alpha: 0.48 });
+    this.headerPauseBtn.roundRect(0, 0, btnW, btnH, 10).stroke({
+      color: UI_NEON_GREEN,
+      width: 2,
+      alpha: 0.82,
+    });
+    this.headerPauseBtn.hitArea = new Rectangle(0, 0, btnW, btnH);
+    this.headerPauseRoot.position.set(x, y);
+    this.headerPauseIcon?.position.set(btnW * 0.5, btnH * 0.5);
+  }
+
+  private setupSpeedTierPulseOverlay(): void {
+    this.speedPulseGfx.eventMode = 'none';
+    this.speedPulseGfx.visible = false;
+    this.speedPulseGfx.zIndex = 1105;
+    this.uiLayer.addChild(this.speedPulseGfx);
+    this.redrawSpeedPulseOverlay();
+  }
+
+  private requestPause(): void {
+    if (this.gameOver || this.paused) {
+      return;
+    }
+    this.paused = true;
+    this.pauseOverlay.visible = true;
+    this.layoutPauseOverlay();
+    this.bgm?.pause();
+  }
+
+  private resumeFromPause(): void {
+    if (!this.paused) {
+      return;
+    }
+    this.paused = false;
+    this.pauseOverlay.visible = false;
+    void this.bgm?.play().catch(() => {
+      /* autoplay */
+    });
+  }
+
   private renderLeaderboardShell(entries: LeaderboardEntry[] = [], loading = false): void {
     const overlayW = this.width;
     const overlayH = this.height;
@@ -2738,6 +2989,9 @@ export class PlayScene implements Scene {
       return;
     }
     this.gameOver = true;
+    this.paused = false;
+    this.pauseOverlay.visible = false;
+    this.headerPauseRoot.visible = false;
     this.finalMetersAtDeath = Math.max(0, Math.floor(-this.highestY / 12));
     this.refreshGameOverScoreText();
     this.gameOverOverlay.visible = true;
@@ -2828,19 +3082,6 @@ export class PlayScene implements Scene {
     if (this.hurryBannerText) {
       this.hurryBannerRoot.visible = false;
     }
-  }
-
-  private updateAutoScrollSpeed(dt: number): void {
-    this.hurryUpTimeLeft = Math.max(0, this.hurryUpTimeLeft - dt);
-    const nextLevel = Math.floor(this.runTime / AUTO_SCROLL_STEP_INTERVAL_SEC);
-    if (nextLevel <= this.autoScrollLevel) {
-      return;
-    }
-    this.autoScrollLevel = nextLevel;
-    this.autoScrollSpeedPx = AUTO_SCROLL_BASE_SPEED_PX + this.autoScrollLevel * AUTO_SCROLL_SPEED_STEP_PX;
-    this.hurryUpTimeLeft = 0;
-    this.hurryBannerRoot.visible = false;
-    this.refreshAutoScrollHud();
   }
 
   private drawBottomDeathLine(): void {
@@ -2969,7 +3210,9 @@ export class PlayScene implements Scene {
     if (!this.isFlashSkillBoostActive()) {
       return;
     }
-    this.tongueBoostComboExtendUntil = this.runTime + TONGUE_BOOST_COMBO_CLIMB_SEC;
+    const d = TONGUE_COMBO_BOOST_DURATION_SEC;
+    this.tongueBoostComboExtendUntil = this.runTime + d;
+    this.tongueBoostComboResetAt = this.runTime + d;
     this.feedComboFromLand();
     const mult = this.getComboMultiplier();
     this.maybeSpawnComboPopup(mult);
