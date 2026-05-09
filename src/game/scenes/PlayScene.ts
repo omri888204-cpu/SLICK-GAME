@@ -337,6 +337,8 @@ const TOUCH_ACTION_RETRIGGER_MS = 110;
 const ALTITUDE_WIND_TINT_COOL = 0x142a38;
 const ALTITUDE_WIND_TINT_MAX_BLEND = 0.32;
 const ALTITUDE_WIND_MAX_PARTICLES = 48;
+/** World-space height for the crystal death-zone tiling strip (bottom-aligned with viewport kill line). */
+const DEATH_ZONE_TILING_HEIGHT_PX = 76;
 
 type WindParticle = {
   x: number;
@@ -366,7 +368,10 @@ export class PlayScene implements Scene {
   private platformLayer = new Graphics();
   private rippleLayer = new Graphics();
   private collectiblesGfx = new Graphics();
-  private lavaLayer = new Graphics();
+  /** Bottom hazard strip (crystal tiling + optional vector fallback). */
+  private lavaLayer = new Container();
+  private deathZoneFallback = new Graphics();
+  private deathZoneCrystalTiling: TilingSprite | null = null;
   private gameShake = new Container();
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
@@ -523,7 +528,13 @@ export class PlayScene implements Scene {
     this.height = app.screen.height;
     this.refreshWorldViewport();
 
-    await Promise.all([this.loadPlatformSprite(), this.player.load(), this.sfx.load()]);
+    this.lavaLayer.addChild(this.deathZoneFallback);
+    await Promise.all([
+      this.loadPlatformSprite(),
+      this.player.load(),
+      this.sfx.load(),
+      this.loadDeathZoneStrip(),
+    ]);
 
     /** `Texture.WHITE` tiles as 1×1px — GPU filtering leaves visible grid/stripe seams when scrolling. */
     this.installRepeatFriendlyBackgroundTexture();
@@ -3157,14 +3168,49 @@ export class PlayScene implements Scene {
 
   private drawBottomDeathLine(): void {
     const viewBottomY = this.cameraY + this.worldHeightFromScreen();
+    const vw = this.worldWidthFromScreen();
+    const padX = 30;
+    const x = this.cameraX - padX;
+    const w = vw + padX * 2;
+
+    const crystal = this.deathZoneCrystalTiling;
+    if (crystal) {
+      this.deathZoneFallback.visible = false;
+      crystal.visible = true;
+      crystal.position.set(x, viewBottomY);
+      crystal.width = w;
+      crystal.height = DEATH_ZONE_TILING_HEIGHT_PX;
+      crystal.tilePosition.x = Math.round(-this.cameraX * 0.18);
+      return;
+    }
+
+    this.deathZoneFallback.visible = true;
     const lavaTop = viewBottomY - 32;
-    this.lavaLayer.clear();
-    this.lavaLayer
-      .rect(this.cameraX - 30, lavaTop, this.worldWidthFromScreen() + 60, 32)
+    this.deathZoneFallback.clear();
+    this.deathZoneFallback
+      .rect(x, lavaTop, w, 32)
       .fill({ color: 0xff4b00, alpha: 0.78 });
-    this.lavaLayer
-      .rect(this.cameraX - 30, viewBottomY - 9, this.worldWidthFromScreen() + 60, 9)
+    this.deathZoneFallback
+      .rect(x, viewBottomY - 9, w, 9)
       .fill({ color: 0xffa621, alpha: 0.95 });
+  }
+
+  private async loadDeathZoneStrip(): Promise<void> {
+    try {
+      const tex = await Assets.load<Texture>(`${GAME_ASSETS}/death-zone-crystals.png`);
+      const ts = new TilingSprite({
+        texture: tex,
+        width: 400,
+        height: DEATH_ZONE_TILING_HEIGHT_PX,
+      });
+      ts.anchor.set(0, 1);
+      ts.roundPixels = RENDER.pixelArt;
+      this.deathZoneCrystalTiling = ts;
+      this.lavaLayer.addChild(ts);
+      this.deathZoneFallback.visible = false;
+    } catch {
+      this.deathZoneFallback.visible = true;
+    }
   }
 
   private tickAltitudePresentation(dt: number): void {
