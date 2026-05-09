@@ -25,6 +25,8 @@ import {
 } from '../../config/game.config';
 import { HyperScoreboard } from '../ui/HyperScoreboard';
 import { Player } from '../entities/Player';
+import { fetchTopLeaderboard, submitLeaderboardScore, type LeaderboardEntry } from '../services/leaderboard';
+import { getSavedNickname } from '../services/playerProfile';
 import { InputManager } from '../systems/InputManager';
 import { Physics } from '../systems/Physics';
 import type { ActiveGrapple, Platform, Ripple } from '../types';
@@ -261,6 +263,7 @@ const UI_SAFE_PAD_BOTTOM = 12;
 const UI_HEADER_INFO_ROW_Y = UI_SAFE_PAD_TOP + 40;
 const HURRY_BANNER_H = 46;
 const HURRY_BANNER_SLIDE_SPEED = 760;
+const OVERLAY_BG_ALPHA = 0.72;
 const WORLD_BOUNDS_X = 0;
 const WORLD_BOUNDS_Y = -1000000;
 const WORLD_BOUNDS_W = 1400;
@@ -395,6 +398,26 @@ export class PlayScene implements Scene {
   private hurryBannerRoot = new Container();
   private hurryBannerGfx = new Graphics();
   private hurryBannerText?: Text;
+  private gameOver = false;
+  private gameOverOverlay = new Container();
+  private gameOverBackdrop = new Graphics();
+  private gameOverPanel = new Graphics();
+  private gameOverTitle?: Text;
+  private gameOverScoreText?: Text;
+  private gameOverRestartBtn = new Graphics();
+  private gameOverRestartLabel?: Text;
+  private gameOverLeaderboardBtn = new Graphics();
+  private gameOverLeaderboardLabel?: Text;
+  private leaderboardOverlay = new Container();
+  private leaderboardBackdrop = new Graphics();
+  private leaderboardPanel = new Graphics();
+  private leaderboardTitle?: Text;
+  private leaderboardRows: Text[] = [];
+  private leaderboardCloseBtn = new Graphics();
+  private leaderboardCloseLabel?: Text;
+  private leaderboardLoadingText?: Text;
+  private finalMetersAtDeath = 0;
+  private deathSubmitted = false;
   /** While `runTime < this`, climbing combo expires using `TONGUE_BOOST_COMBO_CLIMB_SEC` instead of `COMBO.chainWindowSec`. */
   private tongueBoostComboExtendUntil = -Infinity;
   private collectibles: Collectible[] = [];
@@ -520,6 +543,7 @@ export class PlayScene implements Scene {
     this.setupAction360Button(app);
     this.setupClimbHud(app);
     this.setupAutoScrollHud();
+    this.setupGameOverUi();
     this.drawTopHeaderPanel();
     if (this.scoreboard) {
       this.scoreboard.visible = false;
@@ -538,6 +562,11 @@ export class PlayScene implements Scene {
     // Use real frame delta on mobile — capping to 1/30s made slow frames *lose* time so drifting
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
+    if (this.gameOver) {
+      this.updateScreenShake(dt);
+      this.refreshGameOverScoreText();
+      return;
+    }
     this.runTime += dt;
     this.updateAutoScrollSpeed(dt);
     this.expireComboIfNeeded();
@@ -761,6 +790,7 @@ export class PlayScene implements Scene {
     this.layoutCollectibleHud();
     this.layoutClimbHud();
     this.layoutAutoScrollHud();
+    this.layoutGameOverUi();
     this.drawTopHeaderPanel();
     this.input?.onResize();
 
@@ -1122,6 +1152,11 @@ export class PlayScene implements Scene {
   }
 
   private resetRun(): void {
+    this.gameOver = false;
+    this.finalMetersAtDeath = 0;
+    this.deathSubmitted = false;
+    this.gameOverOverlay.visible = false;
+    this.leaderboardOverlay.visible = false;
     this.currentGroundPlatform = null;
     this.clearFloatingComboUi();
     this.score = 0;
@@ -1464,7 +1499,7 @@ export class PlayScene implements Scene {
     const chameleonY = this.player.body.y;
     const deathLineY = this.cameraY + this.worldHeightFromScreen();
     if (chameleonY > deathLineY) {
-      this.resetRun();
+      this.triggerGameOver();
     }
   }
 
@@ -2323,6 +2358,236 @@ export class PlayScene implements Scene {
       alpha: 0.26,
     });
     this.hurryBannerText?.position.set(w * 0.5, h * 0.5);
+  }
+
+  private setupGameOverUi(): void {
+    this.gameOverOverlay.visible = false;
+    this.gameOverOverlay.zIndex = 1200;
+    this.gameOverBackdrop.alpha = OVERLAY_BG_ALPHA;
+    this.gameOverOverlay.addChild(this.gameOverBackdrop, this.gameOverPanel);
+
+    this.gameOverTitle = new Text({
+      text: 'GAME OVER',
+      style: this.createNeonGoldTextStyle(36, 4),
+    });
+    this.gameOverTitle.anchor.set(0.5);
+    this.gameOverScoreText = new Text({
+      text: '0 m',
+      style: this.createNeonGoldTextStyle(24, 3),
+    });
+    this.gameOverScoreText.anchor.set(0.5);
+
+    this.gameOverRestartBtn.eventMode = 'static';
+    this.gameOverRestartBtn.cursor = 'pointer';
+    this.gameOverRestartBtn.on('pointerdown', () => {
+      this.resetRun();
+    });
+    this.gameOverRestartLabel = new Text({
+      text: 'PLAY AGAIN',
+      style: this.createNeonGoldTextStyle(16, 2),
+    });
+    this.gameOverRestartLabel.anchor.set(0.5);
+
+    this.gameOverLeaderboardBtn.eventMode = 'static';
+    this.gameOverLeaderboardBtn.cursor = 'pointer';
+    this.gameOverLeaderboardBtn.on('pointerdown', () => {
+      void this.openLeaderboardOverlay();
+    });
+    this.gameOverLeaderboardLabel = new Text({
+      text: 'LEADERBOARD',
+      style: this.createNeonGoldTextStyle(16, 2),
+    });
+    this.gameOverLeaderboardLabel.anchor.set(0.5);
+
+    this.gameOverOverlay.addChild(
+      this.gameOverTitle,
+      this.gameOverScoreText,
+      this.gameOverRestartBtn,
+      this.gameOverRestartLabel,
+      this.gameOverLeaderboardBtn,
+      this.gameOverLeaderboardLabel,
+    );
+
+    this.leaderboardOverlay.visible = false;
+    this.leaderboardOverlay.zIndex = 1250;
+    this.leaderboardBackdrop.alpha = OVERLAY_BG_ALPHA;
+    this.leaderboardOverlay.addChild(
+      this.leaderboardBackdrop,
+      this.leaderboardPanel,
+    );
+    this.leaderboardTitle = new Text({
+      text: 'GLOBAL TOP 5',
+      style: this.createNeonGoldTextStyle(30, 3),
+    });
+    this.leaderboardTitle.anchor.set(0.5);
+    this.leaderboardLoadingText = new Text({
+      text: 'Loading...',
+      style: this.createNeonGoldTextStyle(18, 2),
+    });
+    this.leaderboardLoadingText.anchor.set(0.5);
+
+    this.leaderboardCloseBtn.eventMode = 'static';
+    this.leaderboardCloseBtn.cursor = 'pointer';
+    this.leaderboardCloseBtn.on('pointerdown', () => {
+      this.leaderboardOverlay.visible = false;
+    });
+    this.leaderboardCloseLabel = new Text({
+      text: 'CLOSE',
+      style: this.createNeonGoldTextStyle(20, 2),
+    });
+    this.leaderboardCloseLabel.anchor.set(0.5);
+
+    this.leaderboardOverlay.addChild(
+      this.leaderboardTitle,
+      this.leaderboardLoadingText,
+      this.leaderboardCloseBtn,
+      this.leaderboardCloseLabel,
+    );
+
+    this.uiLayer.addChild(this.gameOverOverlay, this.leaderboardOverlay);
+    this.layoutGameOverUi();
+  }
+
+  private layoutGameOverUi(): void {
+    const overlayW = this.width;
+    const overlayH = this.height;
+    const panelW = Math.min(560, overlayW - 44);
+    const panelH = Math.min(460, overlayH - 120);
+    const px = (overlayW - panelW) * 0.5;
+    const py = (overlayH - panelH) * 0.5;
+
+    this.gameOverBackdrop.clear();
+    this.gameOverBackdrop.rect(0, 0, overlayW, overlayH).fill({ color: 0x000000, alpha: 1 });
+    this.gameOverPanel.clear();
+    this.gameOverPanel.roundRect(px, py, panelW, panelH, 18).fill({ color: UI_PANEL_PURPLE, alpha: 0.78 });
+    this.gameOverPanel.roundRect(px, py, panelW, panelH, 18).stroke({
+      color: UI_NEON_GREEN,
+      width: 2,
+      alpha: 0.7,
+    });
+
+    this.gameOverTitle?.position.set(overlayW * 0.5, py + 68);
+    this.gameOverScoreText?.position.set(overlayW * 0.5, py + 128);
+
+    const btnW = Math.min(320, panelW - 70);
+    const btnH = 54;
+    const btnX = overlayW * 0.5 - btnW * 0.5;
+    const restartY = py + panelH - 168;
+    const boardY = py + panelH - 98;
+    this.drawOverlayButton(this.gameOverRestartBtn, btnX, restartY, btnW, btnH);
+    this.drawOverlayButton(this.gameOverLeaderboardBtn, btnX, boardY, btnW, btnH);
+    this.gameOverRestartLabel?.position.set(overlayW * 0.5, restartY + btnH * 0.5);
+    this.gameOverLeaderboardLabel?.position.set(overlayW * 0.5, boardY + btnH * 0.5);
+
+    this.leaderboardBackdrop.clear();
+    this.leaderboardBackdrop.rect(0, 0, overlayW, overlayH).fill({ color: 0x000000, alpha: 1 });
+    this.renderLeaderboardShell();
+  }
+
+  private renderLeaderboardShell(entries: LeaderboardEntry[] = [], loading = false): void {
+    const overlayW = this.width;
+    const overlayH = this.height;
+    const panelW = Math.min(620, overlayW - 32);
+    const panelH = Math.min(560, overlayH - 52);
+    const px = (overlayW - panelW) * 0.5;
+    const py = (overlayH - panelH) * 0.5;
+    const titleY = py + 52;
+
+    this.leaderboardPanel.clear();
+    this.leaderboardPanel.roundRect(px, py, panelW, panelH, 18).fill({ color: UI_PANEL_PURPLE, alpha: 0.86 });
+    this.leaderboardPanel.roundRect(px, py, panelW, panelH, 18).stroke({
+      color: UI_NEON_GREEN,
+      width: 2,
+      alpha: 0.74,
+    });
+    this.leaderboardTitle?.position.set(overlayW * 0.5, titleY);
+
+    for (const row of this.leaderboardRows) {
+      row.destroy();
+    }
+    this.leaderboardRows = [];
+
+    const rowsStartY = titleY + 36;
+    const rowH = 62;
+    const tablePad = 22;
+    const rowW = panelW - tablePad * 2;
+    const rowX = px + tablePad;
+    const data = entries.slice(0, 5);
+    for (let i = 0; i < 5; i += 1) {
+      const y = rowsStartY + i * rowH;
+      const bg = i % 2 === 0 ? 0x12001d : 0x000000;
+      this.leaderboardPanel.roundRect(rowX, y, rowW, rowH - 8, 10).fill({ color: bg, alpha: 0.78 });
+      this.leaderboardPanel.roundRect(rowX, y, rowW, rowH - 8, 10).stroke({
+        color: UI_NEON_GREEN,
+        width: 1,
+        alpha: 0.35,
+      });
+      const entry = data[i];
+      const placeLabel = i === 0 ? 'CROWN #1' : `#${i + 1}`;
+      const line = entry
+        ? `${placeLabel}  ${entry.nickname.toUpperCase()}  -  ${entry.score}m`
+        : loading
+          ? `${placeLabel}  ...`
+          : `${placeLabel}  ---`;
+      const rowText = new Text({
+        text: line,
+        style: this.createNeonGoldTextStyle(18, 2),
+      });
+      rowText.anchor.set(0, 0.5);
+      rowText.position.set(rowX + 14, y + (rowH - 8) * 0.5);
+      this.leaderboardRows.push(rowText);
+      this.leaderboardOverlay.addChild(rowText);
+    }
+
+    const closeW = Math.min(240, panelW - 48);
+    const closeH = Math.max(56, this.width <= MOBILE_NARROW_UI_MAX_W ? 64 : 56);
+    const closeX = overlayW * 0.5 - closeW * 0.5;
+    const closeY = py + panelH - closeH - 16;
+    this.drawOverlayButton(this.leaderboardCloseBtn, closeX, closeY, closeW, closeH);
+    this.leaderboardCloseLabel?.position.set(overlayW * 0.5, closeY + closeH * 0.5);
+
+    if (this.leaderboardLoadingText) {
+      this.leaderboardLoadingText.visible = loading;
+      this.leaderboardLoadingText.position.set(overlayW * 0.5, rowsStartY + rowH * 1.5);
+    }
+  }
+
+  private drawOverlayButton(target: Graphics, x: number, y: number, w: number, h: number): void {
+    target.clear();
+    target.roundRect(x, y, w, h, 12).fill({ color: UI_BG_BLACK, alpha: 0.52 });
+    target.roundRect(x, y, w, h, 12).stroke({ color: UI_NEON_GREEN, width: 2, alpha: 0.78 });
+    target.roundRect(x + 3, y + 3, w - 6, h - 6, 9).stroke({ color: UI_NEON_GREEN, width: 1, alpha: 0.2 });
+  }
+
+  private refreshGameOverScoreText(): void {
+    if (!this.gameOverScoreText) {
+      return;
+    }
+    this.gameOverScoreText.text = `${this.finalMetersAtDeath} m`;
+  }
+
+  private triggerGameOver(): void {
+    if (this.gameOver) {
+      return;
+    }
+    this.gameOver = true;
+    this.finalMetersAtDeath = Math.max(0, Math.floor(-this.highestY / 12));
+    this.refreshGameOverScoreText();
+    this.gameOverOverlay.visible = true;
+    if (!this.deathSubmitted) {
+      this.deathSubmitted = true;
+      const nickname = getSavedNickname() || 'Player';
+      void submitLeaderboardScore(nickname, this.finalMetersAtDeath).catch(() => {
+        /* keep game flow if firebase fails */
+      });
+    }
+  }
+
+  private async openLeaderboardOverlay(): Promise<void> {
+    this.leaderboardOverlay.visible = true;
+    this.renderLeaderboardShell([], true);
+    const top = await fetchTopLeaderboard(5).catch(() => []);
+    this.renderLeaderboardShell(top, false);
   }
 
   private setupAutoScrollHud(): void {
