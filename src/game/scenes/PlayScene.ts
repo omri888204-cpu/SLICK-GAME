@@ -245,6 +245,8 @@ const TONGUE_BOOST_BTN_H = 38;
  * (so the sequence cannot run forever from landings alone).
  */
 const TONGUE_COMBO_BOOST_DURATION_SEC = 10;
+/** Landing combo when `stairId` regresses after recycle — must climb ≥ this many px higher (world Y↓). */
+const COMBO_LAND_MIN_WORLD_Y_DELTA_PX = 6;
 const PLATFORM_SCALE = 2.1;
 const PLATFORM_EDGE_PADDING_PX = 8;
 const CAMERA_ZOOM = 0.5;
@@ -477,6 +479,8 @@ export class PlayScene implements Scene {
   private score = 0;
   /** Highest stair id that has already awarded points (landing or grapple). */
   private lastScoredStairId = -1;
+  /** Last landing we scored points on — platform top Y (smaller = higher climb). Used when recycle breaks id order. */
+  private lastScoredLandWorldTopY = Number.POSITIVE_INFINITY;
   /** Next id assigned to a stair recycled to the top. */
   private nextStairId = 0;
 
@@ -649,6 +653,7 @@ export class PlayScene implements Scene {
             const delta = grappleGain * mult;
             this.score += delta * this.getScoreGainMultiplier();
             this.lastScoredStairId = hookId;
+            this.lastScoredLandWorldTopY = Math.min(this.lastScoredLandWorldTopY, hookPlatform.y);
             this.maybeSpawnComboPopup(mult);
             this.scoreboard?.onPointsGained(delta);
             this.maybeTriggerScreenShake(delta, mult);
@@ -762,13 +767,18 @@ export class PlayScene implements Scene {
         this.sfx.play('player_land', 0.35 + landVol * 0.65);
       }
       const p = result.landedPlatform;
-      const landGain = Math.max(0, p.stairId - this.lastScoredStairId);
+      const idDelta = p.stairId - this.lastScoredStairId;
+      const climbedHigherPhysically =
+        p.y < this.lastScoredLandWorldTopY - COMBO_LAND_MIN_WORLD_Y_DELTA_PX;
+      const landGain =
+        idDelta > 0 ? idDelta : climbedHigherPhysically ? 1 : 0;
       if (landGain > 0) {
         this.feedComboFromLand();
         const mult = this.getComboMultiplier();
         const delta = landGain * mult;
         this.score += delta * this.getScoreGainMultiplier();
         this.lastScoredStairId = p.stairId;
+        this.lastScoredLandWorldTopY = Math.min(this.lastScoredLandWorldTopY, p.y);
         this.maybeSpawnComboPopup(mult);
         this.scoreboard?.onPointsGained(delta);
         this.maybeTriggerScreenShake(delta, mult);
@@ -1626,6 +1636,7 @@ export class PlayScene implements Scene {
     this.grappleReleaseDampingLeft = 0;
     this.grappleReloadingLogged = false;
     this.lastScoredStairId = this.platforms[0]?.stairId ?? 0;
+    this.lastScoredLandWorldTopY = this.platforms[0]?.y ?? Number.POSITIVE_INFINITY;
     this.player.update(0, 0, false, null, false);
   }
 
