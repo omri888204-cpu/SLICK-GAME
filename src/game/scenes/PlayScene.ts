@@ -400,8 +400,8 @@ export class PlayScene implements Scene {
   private pauseResumeBtn = new Graphics();
   private pauseResumeLabel?: Text;
   private pauseTouchLockLabel?: Text;
-  /** Touch accessibility: first finger locks steering without needing to tap near the player. */
-  private touchGlobalAnywhereLock = false;
+  /** Touch accessibility: first finger locks steering without needing to tap near the player (default on). */
+  private touchGlobalAnywhereLock = true;
   /** Full-screen HUD flash when scroll speed tier increases (see `getScrollSpeedTier`). */
   private speedPulseGfx = new Graphics();
   private speedTierUiFlashTime = 0;
@@ -2926,9 +2926,17 @@ export class PlayScene implements Scene {
 
   private loadTouchGlobalSteeringPreference(): boolean {
     try {
-      return typeof localStorage !== 'undefined' && localStorage.getItem(LS_TOUCH_GLOBAL_STEERING) === '1';
+      if (typeof localStorage === 'undefined') {
+        return true;
+      }
+      const v = localStorage.getItem(LS_TOUCH_GLOBAL_STEERING);
+      if (v === '0') {
+        return false;
+      }
+      // unset or '1' — full-screen steering is the primary default for new sessions.
+      return true;
     } catch {
-      return false;
+      return true;
     }
   }
 
