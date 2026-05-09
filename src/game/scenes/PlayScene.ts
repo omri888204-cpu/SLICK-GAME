@@ -25,7 +25,7 @@ import {
 } from '../../config/game.config';
 import { HyperScoreboard } from '../ui/HyperScoreboard';
 import { Player } from '../entities/Player';
-import { fetchTopLeaderboard, submitLeaderboardScore, type LeaderboardEntry } from '../services/leaderboard';
+import { fetchTopLeaderboard, saveScore, type LeaderboardEntry } from '../services/leaderboard';
 import { getSavedNickname } from '../services/playerProfile';
 import { InputManager } from '../systems/InputManager';
 import { Physics } from '../systems/Physics';
@@ -418,6 +418,8 @@ export class PlayScene implements Scene {
   private leaderboardLoadingText?: Text;
   private finalMetersAtDeath = 0;
   private deathSubmitted = false;
+  /** Latest Top 5 from Firestore (refreshed after each save and when opening leaderboard). */
+  private lastLeaderboardTop: LeaderboardEntry[] = [];
   /** While `runTime < this`, climbing combo expires using `TONGUE_BOOST_COMBO_CLIMB_SEC` instead of `COMBO.chainWindowSec`. */
   private tongueBoostComboExtendUntil = -Infinity;
   private collectibles: Collectible[] = [];
@@ -1155,6 +1157,7 @@ export class PlayScene implements Scene {
     this.gameOver = false;
     this.finalMetersAtDeath = 0;
     this.deathSubmitted = false;
+    this.lastLeaderboardTop = [];
     this.gameOverOverlay.visible = false;
     this.leaderboardOverlay.visible = false;
     this.touchControlsLayer.visible = true;
@@ -2628,16 +2631,29 @@ export class PlayScene implements Scene {
     if (!this.deathSubmitted) {
       this.deathSubmitted = true;
       const nickname = getSavedNickname() || 'Player';
-      void submitLeaderboardScore(nickname, this.finalMetersAtDeath).catch(() => {
-        /* keep game flow if firebase fails */
-      });
+      void (async () => {
+        try {
+          await saveScore(nickname, this.finalMetersAtDeath);
+          this.lastLeaderboardTop = await fetchTopLeaderboard(5);
+          if (this.leaderboardOverlay.visible) {
+            this.renderLeaderboardShell(this.lastLeaderboardTop, false);
+          }
+        } catch {
+          /* keep game flow if firebase fails */
+        }
+      })();
     }
   }
 
   private async openLeaderboardOverlay(): Promise<void> {
     this.leaderboardOverlay.visible = true;
-    this.renderLeaderboardShell([], true);
+    if (this.lastLeaderboardTop.length > 0) {
+      this.renderLeaderboardShell(this.lastLeaderboardTop, false);
+    } else {
+      this.renderLeaderboardShell([], true);
+    }
     const top = await fetchTopLeaderboard(5).catch(() => []);
+    this.lastLeaderboardTop = top;
     this.renderLeaderboardShell(top, false);
   }
 
