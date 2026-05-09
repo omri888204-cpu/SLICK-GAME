@@ -2349,7 +2349,10 @@ export class PlayScene implements Scene {
 
   private layoutAutoScrollHud(): void {
     if (this.timerHudText) {
-      const timerX = this.width <= MOBILE_NARROW_UI_MAX_W ? this.width * 0.44 : this.width * 0.5;
+      const mobile = this.width <= MOBILE_NARROW_UI_MAX_W;
+      const timerX = mobile ? this.width * 0.37 : this.width * 0.5;
+      const timerScale = mobile ? 0.82 : 1;
+      this.timerHudText.scale.set(timerScale);
       this.timerHudText.position.set(timerX, UI_SAFE_PAD_TOP + 10);
     }
     this.hurryBannerRoot.position.set(-460, UI_SAFE_PAD_TOP + 8);
