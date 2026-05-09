@@ -332,6 +332,8 @@ const TOUCH_SWIPE_UPWARD_RATIO_MIN = 0.4;
 const TOUCH_FOLLOW_DISTANCE_PX = 70;
 const TOUCH_LOCK_RADIUS_PX = 120;
 const TOUCH_ACTION_RETRIGGER_MS = 110;
+/** localStorage: accessibility — steer from first touch anywhere on screen (no “near character” gate). */
+const LS_TOUCH_GLOBAL_STEERING = 'sky_climber_touch_global_steering';
 
 /** Blend toward this cool color on background as altitude speed mult rises (0..1). */
 const ALTITUDE_WIND_TINT_COOL = 0x142a38;
@@ -392,6 +394,9 @@ export class PlayScene implements Scene {
   private pauseTitle?: Text;
   private pauseResumeBtn = new Graphics();
   private pauseResumeLabel?: Text;
+  private pauseTouchLockLabel?: Text;
+  /** Touch accessibility: first finger locks steering without needing to tap near the player. */
+  private touchGlobalAnywhereLock = false;
   /** Full-screen HUD flash when scroll speed tier increases (see `getScrollSpeedTier`). */
   private speedPulseGfx = new Graphics();
   private speedTierUiFlashTime = 0;
@@ -593,6 +598,7 @@ export class PlayScene implements Scene {
     this.setupClimbHud(app);
     this.setupAutoScrollHud();
     this.setupGameOverUi();
+    this.touchGlobalAnywhereLock = this.loadTouchGlobalSteeringPreference();
     this.setupPauseUi();
     this.setupHeaderPauseButton();
     this.setupSpeedTierPulseOverlay();
@@ -2845,10 +2851,34 @@ export class PlayScene implements Scene {
     });
     this.pauseResumeLabel.anchor.set(0.5);
     this.pauseResumeLabel.eventMode = 'none';
+    this.pauseTouchLockLabel = new Text({
+      text: '',
+      style: new TextStyle({
+        fontFamily: 'Heebo, Orbitron, Arial, sans-serif',
+        fontSize: 12,
+        fontWeight: '700',
+        fill: '#b8ffd4',
+        stroke: { color: '#102818', width: 3 },
+        align: 'center',
+        wordWrap: true,
+        wordWrapWidth: Math.min(340, Math.max(220, this.width - 48)),
+      }),
+    });
+    this.pauseTouchLockLabel.anchor.set(0.5);
+    this.pauseTouchLockLabel.eventMode = 'static';
+    this.pauseTouchLockLabel.cursor = 'pointer';
+    this.pauseTouchLockLabel.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.pauseTouchLockLabel.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.toggleTouchGlobalSteeringSetting();
+    });
     this.pauseOverlay.addChild(
       this.pauseBackdrop,
       this.pausePanel,
       this.pauseTitle,
+      this.pauseTouchLockLabel,
       this.pauseResumeBtn,
       this.pauseResumeLabel,
     );
@@ -2862,7 +2892,7 @@ export class PlayScene implements Scene {
     this.pauseBackdrop.clear();
     this.pauseBackdrop.rect(0, 0, overlayW, overlayH).fill({ color: 0x000000, alpha: 0.62 });
     const panelW = Math.min(400, overlayW - 40);
-    const panelH = Math.min(300, overlayH - 80);
+    const panelH = Math.min(360, overlayH - 72);
     const px = (overlayW - panelW) * 0.5;
     const py = (overlayH - panelH) * 0.5;
     this.pausePanel.clear();
@@ -2873,6 +2903,11 @@ export class PlayScene implements Scene {
       alpha: 0.82,
     });
     this.pauseTitle?.position.set(overlayW * 0.5, py + 62);
+    if (this.pauseTouchLockLabel?.style) {
+      const nw = Math.min(340, panelW - 24);
+      this.pauseTouchLockLabel.style.wordWrapWidth = nw;
+    }
+    this.pauseTouchLockLabel?.position.set(overlayW * 0.5, py + 118);
     const resumeW = Math.min(340, panelW - 28);
     const resumeH = Math.max(PAUSE_RESUME_BTN_MIN_H, 60);
     const resumeX = overlayW * 0.5 - resumeW * 0.5;
@@ -2880,6 +2915,43 @@ export class PlayScene implements Scene {
     this.drawOverlayButton(this.pauseResumeBtn, resumeX, resumeY, resumeW, resumeH);
     this.pauseResumeBtn.hitArea = new Rectangle(resumeX, resumeY, resumeW, resumeH);
     this.pauseResumeLabel?.position.set(overlayW * 0.5, resumeY + resumeH * 0.5);
+    this.refreshPauseTouchLockLabel();
+  }
+
+  private loadTouchGlobalSteeringPreference(): boolean {
+    try {
+      return typeof localStorage !== 'undefined' && localStorage.getItem(LS_TOUCH_GLOBAL_STEERING) === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  private saveTouchGlobalSteeringPreference(on: boolean): void {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(LS_TOUCH_GLOBAL_STEERING, on ? '1' : '0');
+      }
+    } catch {
+      /* private mode / quota */
+    }
+  }
+
+  private toggleTouchGlobalSteeringSetting(): void {
+    this.touchGlobalAnywhereLock = !this.touchGlobalAnywhereLock;
+    this.saveTouchGlobalSteeringPreference(this.touchGlobalAnywhereLock);
+    this.refreshPauseTouchLockLabel();
+  }
+
+  private refreshPauseTouchLockLabel(): void {
+    const label = this.pauseTouchLockLabel;
+    if (!label) {
+      return;
+    }
+    const touchActive = this.input?.isTouchControlsActive() ?? false;
+    label.visible = touchActive;
+    label.text = this.touchGlobalAnywhereLock
+      ? 'נגישות — נעילת שליטה מכל המסך: פועל (הקש לכיבוי)'
+      : 'נגישות — נעילת שליטה מכל המסך: כבוי (הקש להפעלה)';
   }
 
   private setupHeaderPauseButton(): void {
@@ -2939,6 +3011,9 @@ export class PlayScene implements Scene {
     if (this.gameOver || this.paused) {
       return;
     }
+    this.touchPointers.clear();
+    this.touchControlPointerId = null;
+    this.input?.setTouchFollowAxis(0);
     this.paused = true;
     this.pauseOverlay.visible = true;
     this.layoutPauseOverlay();
@@ -3421,7 +3496,7 @@ export class PlayScene implements Scene {
   }
 
   private readonly handleTouchPointerDown = (event: FederatedPointerEvent): void => {
-    if (this.gameOver || this.leaderboardOverlay.visible) {
+    if (this.gameOver || this.leaderboardOverlay.visible || this.paused) {
       return;
     }
     if (!this.input?.isTouchControlsActive()) {
@@ -3444,14 +3519,16 @@ export class PlayScene implements Scene {
       startMs: performance.now(),
       swipeHandled: false,
     });
-    if (this.touchControlPointerId === null && this.isTouchNearChameleon(event.global.x, event.global.y)) {
+    const takeLock =
+      this.touchGlobalAnywhereLock || this.isTouchNearChameleon(event.global.x, event.global.y);
+    if (this.touchControlPointerId === null && takeLock) {
       this.touchControlPointerId = pointerId;
     }
     this.spawnTouchRipple(event.global.x, event.global.y, 0.26);
   };
 
   private readonly handleTouchPointerMove = (event: FederatedPointerEvent): void => {
-    if (this.gameOver || this.leaderboardOverlay.visible) {
+    if (this.gameOver || this.leaderboardOverlay.visible || this.paused) {
       return;
     }
     if (!this.input?.isTouchControlsActive()) {
@@ -3464,14 +3541,16 @@ export class PlayScene implements Scene {
     p.lastX = event.global.x;
     p.lastY = event.global.y;
     p.side = p.lastX < this.width * 0.5 ? 'left' : 'right';
-    if (this.touchControlPointerId === null && this.isTouchNearChameleon(p.lastX, p.lastY)) {
+    const takeLock =
+      this.touchGlobalAnywhereLock || this.isTouchNearChameleon(p.lastX, p.lastY);
+    if (this.touchControlPointerId === null && takeLock) {
       this.touchControlPointerId = event.pointerId;
     }
     this.tryHandleSwipeUp(event.pointerId, false);
   };
 
   private readonly handleTouchPointerUpOrCancel = (event: FederatedPointerEvent): void => {
-    if (this.gameOver || this.leaderboardOverlay.visible) {
+    if (this.gameOver || this.leaderboardOverlay.visible || this.paused) {
       return;
     }
     if (!this.input?.isTouchControlsActive()) {
