@@ -233,8 +233,6 @@ const CHECKER_BACKGROUND_COLOR_SPREAD = 10;
 /** Pixels at image edges this dark (and connected) are cleared — removes black letterbox around Photoroom exports. */
 const DARK_BG_MAX_CHANNEL = 42;
 
-/** Horizontal gap between `Lv#` and Gold/Diamond lines (scoreboard local px). */
-const COLLECT_AFTER_LEVEL_GAP = 8;
 /** Vertical half-gap between Gold and Diamond lines (stack centered on scoreboard bar midline). */
 const COLLECTIBLE_LINES_HALF_GAP_PX = 13;
 /** Touch-only boost tongue button — sits under Gold/Diamonds (right-aligned). */
@@ -248,16 +246,21 @@ const CAMERA_ZOOM = 0.5;
 const MOBILE_CAMERA_ZOOM = 0.42;
 const BACKGROUND_PARALLAX_X = 0.2;
 const BACKGROUND_PARALLAX_Y = 0.14;
-const CAMERA_DEADZONE_PX = 100;
-const CAMERA_FOLLOW_LERP_X = 0.1;
-const CAMERA_FOLLOW_LERP_Y = 0.1;
 const CAMERA_PLAYER_SCREEN_Y_RATIO = 0.62;
-const CAMERA_UPWARD_FOLLOW_BOOST = 1.45;
-const CAMERA_STAIRS_BELOW_PLAYER = 3;
 const AUTO_SCROLL_BASE_SPEED_PX = 120;
 const AUTO_SCROLL_SPEED_STEP_PX = 28;
 const AUTO_SCROLL_STEP_INTERVAL_SEC = 30;
 const HURRY_UP_FLASH_SEC = 2.6;
+const UI_BG_BLACK = 0x000000;
+const UI_PANEL_PURPLE = 0x2e004b;
+const UI_NEON_GREEN = 0x39ff14;
+const UI_GOLD = 0xffd700;
+const UI_HEADER_H = 92;
+const UI_BOTTOM_PANEL_H = 76;
+const UI_SAFE_PAD_TOP = 10;
+const UI_SAFE_PAD_BOTTOM = 12;
+const HURRY_BANNER_H = 46;
+const HURRY_BANNER_SLIDE_SPEED = 760;
 const WORLD_BOUNDS_X = 0;
 const WORLD_BOUNDS_Y = -1000000;
 const WORLD_BOUNDS_W = 1400;
@@ -357,6 +360,8 @@ export class PlayScene implements Scene {
   private gameShake = new Container();
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
+  private headerPanel = new Graphics();
+  private footerPanel = new Graphics();
   private tongueRoot = new Container();
   private tongueVector = new Graphics();
   private tongueArmature: PixiArmatureDisplay | null = null;
@@ -364,6 +369,8 @@ export class PlayScene implements Scene {
   private player = new Player();
   private scoreboard?: HyperScoreboard;
   private collectibleHudRoot = new Container();
+  private collectibleHudGoldIcon = new Graphics();
+  private collectibleHudDiamondIcon = new Graphics();
   private touchControlsLayer = new Container();
   private touchFeedbackLayer = new Graphics();
   private touchPointers = new Map<number, TouchPointerTrack>();
@@ -386,7 +393,9 @@ export class PlayScene implements Scene {
   private windSpawnAcc = 0;
   private climbHudText?: Text;
   private timerHudText?: Text;
-  private hurryUpText?: Text;
+  private hurryBannerRoot = new Container();
+  private hurryBannerGfx = new Graphics();
+  private hurryBannerText?: Text;
   /** While `runTime < this`, climbing combo expires using `TONGUE_BOOST_COMBO_CLIMB_SEC` instead of `COMBO.chainWindowSec`. */
   private tongueBoostComboExtendUntil = -Infinity;
   private collectibles: Collectible[] = [];
@@ -433,6 +442,7 @@ export class PlayScene implements Scene {
   private autoScrollLevel = 0;
   private autoScrollSpeedPx = AUTO_SCROLL_BASE_SPEED_PX;
   private hurryUpTimeLeft = 0;
+  private hurryBannerX = 0;
   private comboPopups: ComboPopup[] = [];
   private beastParticles: BeastParticle[] = [];
   private diamondShineSparks: DiamondShineSpark[] = [];
@@ -511,6 +521,10 @@ export class PlayScene implements Scene {
     this.setupAction360Button(app);
     this.setupClimbHud(app);
     this.setupAutoScrollHud();
+    this.drawCyberHudChrome();
+    if (this.scoreboard) {
+      this.scoreboard.visible = false;
+    }
 
     await this.tryLoadTongueArmature();
     this.startBackgroundMusic();
@@ -755,6 +769,7 @@ export class PlayScene implements Scene {
       prevW > 0 && this.platforms.length > 0 && dw <= 36 && dh <= 96;
     if (minorViewportJitter) {
       this.drawStaticWorld();
+      this.drawCyberHudChrome();
       this.clampEntitiesToWorldBounds();
       this.syncPlatformSpritesFromPlatforms();
       this.drawDynamicWorld();
@@ -763,6 +778,7 @@ export class PlayScene implements Scene {
 
     this.resetRun();
     this.drawStaticWorld();
+    this.drawCyberHudChrome();
     this.drawDynamicWorld();
   }
 
@@ -1926,11 +1942,8 @@ export class PlayScene implements Scene {
   }
 
   private getBackgroundColorForLevel(level: number): number {
-    const palette = [
-      0x06060f, 0x101226, 0x1a1130, 0x1c142f, 0x10232f, 0x19301d, 0x2e2b14, 0x2f1f12, 0x2c1527, 0x10103a,
-    ];
-    const idx = Math.max(0, Math.floor((level - 1) / LEVEL_MILESTONE_STEP)) % palette.length;
-    return palette[idx];
+    void level;
+    return UI_BG_BLACK;
   }
 
   /** Pixels climbed upward from this run’s spawn baseline (`player.y` decreases when going up). */
@@ -2074,29 +2087,26 @@ export class PlayScene implements Scene {
   }
 
   private setupCollectibleHud(app: Application): void {
+    void app;
     this.collectibleHudGoldText = new Text({
-      text: 'Gold     0',
-      style: new TextStyle({
-        fontFamily: 'system-ui, Segoe UI, sans-serif',
-        fontSize: 13,
-        fill: '#ffd24a',
-        stroke: { color: '#1a1020', width: 3 },
-      }),
+      text: '0',
+      style: this.createNeonGoldTextStyle(19, 3),
     });
     this.collectibleHudDiamondText = new Text({
-      text: 'Diamonds 0',
-      style: new TextStyle({
-        fontFamily: 'system-ui, Segoe UI, sans-serif',
-        fontSize: 13,
-        fill: '#9df6ff',
-        stroke: { color: '#1a1020', width: 3 },
-      }),
+      text: '0',
+      style: this.createNeonGoldTextStyle(19, 3),
     });
     this.collectibleHudGoldText.anchor.set(0, 0.5);
     this.collectibleHudDiamondText.anchor.set(0, 0.5);
-    this.collectibleHudRoot.addChild(this.collectibleHudGoldText, this.collectibleHudDiamondText);
-    this.collectibleHudRoot.zIndex = 12;
-    this.scoreboard?.addChild(this.collectibleHudRoot);
+    this.collectibleHudRoot.addChild(
+      this.collectibleHudGoldIcon,
+      this.collectibleHudDiamondIcon,
+      this.collectibleHudGoldText,
+      this.collectibleHudDiamondText,
+    );
+    this.collectibleHudRoot.zIndex = 1008;
+    this.uiLayer.addChild(this.collectibleHudRoot);
+    this.drawCollectibleIcons();
   }
 
   /** Tongue grapple is only available during Flash skill boost (beast combo activation window). */
@@ -2111,14 +2121,7 @@ export class PlayScene implements Scene {
     this.tongueBoostButtonGfx.cursor = 'pointer';
     this.tongueBoostLabel = new Text({
       text: 'TONGUE',
-      style: new TextStyle({
-        fontFamily: 'Arial Black, Heebo, sans-serif',
-        fontSize: 12,
-        fontWeight: '800',
-        fill: '#ffea80',
-        stroke: { color: '#261c06', width: 2 },
-        letterSpacing: 0.6,
-      }),
+      style: this.createNeonGoldTextStyle(12, 2),
     });
     this.tongueBoostLabel.anchor.set(0.5);
     this.tongueBoostLabel.position.set(TONGUE_BOOST_BTN_W * 0.5, TONGUE_BOOST_BTN_H * 0.5);
@@ -2140,14 +2143,7 @@ export class PlayScene implements Scene {
     this.action360ButtonGfx.cursor = 'pointer';
     this.action360ButtonLabel = new Text({
       text: '360',
-      style: new TextStyle({
-        fontFamily: 'Arial Black, Heebo, sans-serif',
-        fontSize: 12,
-        fontWeight: '800',
-        fill: '#9df6ff',
-        stroke: { color: '#102428', width: 2 },
-        letterSpacing: 0.6,
-      }),
+      style: this.createNeonGoldTextStyle(12, 2),
     });
     this.action360ButtonLabel.anchor.set(0.5);
     this.action360ButtonLabel.position.set(TONGUE_BOOST_BTN_W * 0.5, TONGUE_BOOST_BTN_H * 0.5);
@@ -2165,11 +2161,11 @@ export class PlayScene implements Scene {
   private redrawAction360Button(pressed: boolean): void {
     const gfx = this.action360ButtonGfx;
     gfx.clear();
-    const accent = 0x66eeff;
+    const accent = UI_NEON_GREEN;
     const boost = pressed ? 1.25 : 1;
     gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).fill({
-      color: 0x102428,
-      alpha: pressed ? 0.82 : 0.72,
+      color: UI_PANEL_PURPLE,
+      alpha: pressed ? 0.9 : 0.78,
     });
     gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).stroke({
       color: accent,
@@ -2205,12 +2201,7 @@ export class PlayScene implements Scene {
     void app;
     this.climbHudText = new Text({
       text: '',
-      style: new TextStyle({
-        fontFamily: 'system-ui, Segoe UI, sans-serif',
-        fontSize: 11,
-        fill: '#cfe8ff',
-        stroke: { color: '#080812', width: 3 },
-      }),
+      style: this.createNeonGoldTextStyle(13, 2),
     });
     this.climbHudText.anchor.set(1, 0);
     this.climbHudText.zIndex = 1003;
@@ -2224,11 +2215,7 @@ export class PlayScene implements Scene {
     if (!this.climbHudText) {
       return;
     }
-    const y =
-      BOOST_BTN_SCREEN_MARGIN_TOP_PX +
-      TONGUE_BOOST_BTN_H +
-      (this.width <= MOBILE_NARROW_UI_MAX_W ? 5 : 6);
-    this.climbHudText.position.set(this.width - BOOST_BTN_SCREEN_MARGIN_RIGHT_PX, y);
+    this.climbHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + UI_HEADER_H - 32);
   }
 
   private refreshClimbHudText(): void {
@@ -2237,47 +2224,155 @@ export class PlayScene implements Scene {
     }
     const mult = this.getAltitudeSpeedMultiplier();
     const mApprox = Math.round(this.getClimbHeightPx() / 12);
-    this.climbHudText.text = `${mApprox}m  ·  ×${mult.toFixed(2)}`;
+    this.climbHudText.text = `${mApprox}M  |  SPD x${mult.toFixed(2)}`;
+  }
+
+  private createNeonGoldTextStyle(size: number, strokeWidth: number): TextStyle {
+    return new TextStyle({
+      fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+      fontSize: size,
+      fontWeight: '800',
+      fill: '#FFD700',
+      stroke: { color: '#5a3d00', width: strokeWidth },
+      letterSpacing: 1.1,
+      dropShadow: {
+        color: '#ffd700',
+        alpha: 0.65,
+        blur: 6,
+        angle: Math.PI / 4,
+        distance: 0,
+      },
+    });
+  }
+
+  private drawCyberHudChrome(): void {
+    const w = this.width;
+    const headerY = UI_SAFE_PAD_TOP;
+    const footerY = this.height - UI_BOTTOM_PANEL_H - UI_SAFE_PAD_BOTTOM;
+
+    this.headerPanel.clear();
+    this.headerPanel.roundRect(12, headerY, w - 24, UI_HEADER_H, 16).fill({
+      color: UI_PANEL_PURPLE,
+      alpha: 0.4,
+    });
+    this.headerPanel.roundRect(12, headerY, w - 24, UI_HEADER_H, 16).stroke({
+      color: UI_NEON_GREEN,
+      width: 2.2,
+      alpha: 0.65,
+    });
+    this.headerPanel.rect(12, headerY + UI_HEADER_H - 3, w - 24, 3).fill({
+      color: UI_NEON_GREEN,
+      alpha: 0.95,
+    });
+    this.headerPanel.roundRect(16, headerY + 4, w - 32, UI_HEADER_H - 8, 14).fill({
+      color: 0x5b2d83,
+      alpha: 0.12,
+    });
+
+    this.footerPanel.clear();
+    this.footerPanel.roundRect(16, footerY, w - 32, UI_BOTTOM_PANEL_H, 14).fill({
+      color: UI_PANEL_PURPLE,
+      alpha: 0.28,
+    });
+    this.footerPanel.roundRect(16, footerY, w - 32, UI_BOTTOM_PANEL_H, 14).stroke({
+      color: UI_NEON_GREEN,
+      width: 2,
+      alpha: 0.5,
+    });
+
+    if (!this.uiLayer.children.includes(this.headerPanel)) {
+      this.headerPanel.zIndex = 1000;
+      this.footerPanel.zIndex = 1000;
+      this.uiLayer.addChild(this.headerPanel, this.footerPanel);
+    }
+  }
+
+  private drawCollectibleIcons(): void {
+    this.collectibleHudGoldIcon.clear();
+    this.collectibleHudGoldIcon.circle(10, 0, 9).fill({ color: UI_GOLD, alpha: 0.9 });
+    this.collectibleHudGoldIcon.circle(10, 0, 9).stroke({ color: UI_NEON_GREEN, width: 1.5, alpha: 0.75 });
+    this.collectibleHudGoldIcon
+      .moveTo(10, -5)
+      .lineTo(12, -1)
+      .lineTo(16, -1)
+      .lineTo(13, 1.8)
+      .lineTo(14.3, 6)
+      .lineTo(10, 3.4)
+      .lineTo(5.7, 6)
+      .lineTo(7, 1.8)
+      .lineTo(4, -1)
+      .lineTo(8, -1)
+      .lineTo(10, -5)
+      .fill({ color: 0xffffff, alpha: 0.45 });
+
+    this.collectibleHudDiamondIcon.clear();
+    this.collectibleHudDiamondIcon
+      .moveTo(10, -9)
+      .lineTo(18, 0)
+      .lineTo(10, 10)
+      .lineTo(2, 0)
+      .lineTo(10, -9)
+      .fill({ color: 0x9fe8ff, alpha: 0.95 });
+    this.collectibleHudDiamondIcon
+      .moveTo(10, -9)
+      .lineTo(18, 0)
+      .lineTo(10, 10)
+      .lineTo(2, 0)
+      .lineTo(10, -9)
+      .stroke({ color: UI_NEON_GREEN, width: 1.5, alpha: 0.82 });
+    this.collectibleHudDiamondIcon
+      .moveTo(10, -8)
+      .lineTo(10, 9)
+      .moveTo(2, 0)
+      .lineTo(18, 0)
+      .stroke({ color: 0xffffff, width: 1, alpha: 0.35 });
+  }
+
+  private drawHurryBanner(): void {
+    const w = 440;
+    const h = HURRY_BANNER_H;
+    this.hurryBannerGfx.clear();
+    this.hurryBannerGfx.roundRect(0, 0, w, h, 10).fill({ color: UI_PANEL_PURPLE, alpha: 0.92 });
+    this.hurryBannerGfx.roundRect(0, 0, w, h, 10).stroke({ color: UI_NEON_GREEN, width: 2.5, alpha: 0.96 });
+    for (let x = 10; x < w - 10; x += 30) {
+      this.hurryBannerGfx
+        .moveTo(x, h - 3)
+        .lineTo(x + 16, 3)
+        .stroke({ color: UI_NEON_GREEN, width: 2, alpha: 0.35 });
+    }
+    this.hurryBannerText?.position.set(w * 0.5, h * 0.5);
   }
 
   private setupAutoScrollHud(): void {
     this.timerHudText = new Text({
       text: '',
-      style: new TextStyle({
-        fontFamily: 'Arial Black, Impact, sans-serif',
-        fontSize: 30,
-        fill: '#ffffff',
-        stroke: { color: '#1b0a1a', width: 6 },
-      }),
+      style: this.createNeonGoldTextStyle(38, 4),
     });
     this.timerHudText.anchor.set(0.5, 0);
     this.timerHudText.zIndex = 1005;
     this.uiLayer.addChild(this.timerHudText);
 
-    this.hurryUpText = new Text({
+    this.hurryBannerText = new Text({
       text: 'HURRY UP!',
-      style: new TextStyle({
-        fontFamily: 'Arial Black, Impact, sans-serif',
-        fontSize: 42,
-        fill: '#ff5050',
-        stroke: { color: '#3b0000', width: 7 },
-      }),
+      style: this.createNeonGoldTextStyle(26, 3),
     });
-    this.hurryUpText.anchor.set(0.5, 0);
-    this.hurryUpText.zIndex = 1006;
-    this.hurryUpText.visible = false;
-    this.uiLayer.addChild(this.hurryUpText);
+    this.hurryBannerText.anchor.set(0.5);
+    this.hurryBannerText.position.set(220, HURRY_BANNER_H * 0.5);
+    this.hurryBannerRoot.zIndex = 1007;
+    this.hurryBannerRoot.visible = false;
+    this.hurryBannerRoot.addChild(this.hurryBannerGfx, this.hurryBannerText);
+    this.uiLayer.addChild(this.hurryBannerRoot);
     this.layoutAutoScrollHud();
     this.refreshAutoScrollHud();
   }
 
   private layoutAutoScrollHud(): void {
     if (this.timerHudText) {
-      this.timerHudText.position.set(this.width * 0.5, 10);
+      this.timerHudText.position.set(this.width * 0.5, UI_SAFE_PAD_TOP + 10);
     }
-    if (this.hurryUpText) {
-      this.hurryUpText.position.set(this.width * 0.5, 50);
-    }
+    this.hurryBannerRoot.position.set(-460, UI_SAFE_PAD_TOP + UI_HEADER_H + 6);
+    this.hurryBannerX = this.hurryBannerRoot.position.x;
+    this.drawHurryBanner();
   }
 
   private refreshAutoScrollHud(): void {
@@ -2289,18 +2384,25 @@ export class PlayScene implements Scene {
       const seconds = (totalSec % 60).toString().padStart(2, '0');
       this.timerHudText.text = `${minutes}:${seconds}`;
     }
-    if (this.hurryUpText) {
+    if (this.hurryBannerText) {
       const flashing = this.hurryUpTimeLeft > 0;
-      this.hurryUpText.visible = flashing;
+      this.hurryBannerRoot.visible = flashing;
       if (flashing) {
-        const pulse = Math.sin(this.runTime * 15) > 0 ? 1 : 0.35;
-        this.hurryUpText.alpha = pulse;
+        const pulse = 0.76 + 0.24 * (0.5 + 0.5 * Math.sin(this.runTime * 14));
+        this.hurryBannerRoot.alpha = pulse;
       }
     }
   }
 
   private updateAutoScrollSpeed(dt: number): void {
     this.hurryUpTimeLeft = Math.max(0, this.hurryUpTimeLeft - dt);
+    if (this.hurryUpTimeLeft > 0) {
+      this.hurryBannerX += HURRY_BANNER_SLIDE_SPEED * dt;
+      if (this.hurryBannerX > this.width + 30) {
+        this.hurryBannerX = -450;
+      }
+      this.hurryBannerRoot.x = this.hurryBannerX;
+    }
     const nextLevel = Math.floor(this.runTime / AUTO_SCROLL_STEP_INTERVAL_SEC);
     if (nextLevel <= this.autoScrollLevel) {
       return;
@@ -2308,6 +2410,9 @@ export class PlayScene implements Scene {
     this.autoScrollLevel = nextLevel;
     this.autoScrollSpeedPx = AUTO_SCROLL_BASE_SPEED_PX + this.autoScrollLevel * AUTO_SCROLL_SPEED_STEP_PX;
     this.hurryUpTimeLeft = HURRY_UP_FLASH_SEC;
+    this.hurryBannerX = -450;
+    this.hurryBannerRoot.x = this.hurryBannerX;
+    this.drawHurryBanner();
     this.refreshAutoScrollHud();
   }
 
@@ -2383,10 +2488,10 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Positions TONGUE (right) and 360 (just to its left) along the top-right of the screen. */
+  /** Positions TONGUE (right) and 360 (left) on the bottom HUD safe zone. */
   private layoutBoostHudButtons(): void {
     const tongueRightX = this.width - BOOST_BTN_SCREEN_MARGIN_RIGHT_PX;
-    const by = BOOST_BTN_SCREEN_MARGIN_TOP_PX;
+    const by = this.height - UI_SAFE_PAD_BOTTOM - TONGUE_BOOST_BTN_H - 8;
     const tongueLeftX = tongueRightX - TONGUE_BOOST_BTN_W;
     const action360RightX = tongueLeftX - BOOST_ACTION_BTN_GAP_PX;
     this.action360ButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
@@ -2400,11 +2505,11 @@ export class PlayScene implements Scene {
   private redrawTongueBoostButton(pressed: boolean): void {
     const gfx = this.tongueBoostButtonGfx;
     gfx.clear();
-    const gold = 0xffea80;
+    const gold = UI_NEON_GREEN;
     const boost = pressed ? 1.25 : 1;
     gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).fill({
-      color: 0x1b1324,
-      alpha: pressed ? 0.82 : 0.72,
+      color: UI_PANEL_PURPLE,
+      alpha: pressed ? 0.9 : 0.78,
     });
     gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).stroke({
       color: gold,
@@ -2644,31 +2749,28 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Places Gold/Diamond lines next to `Lv#` (no panel); boost buttons use fixed top-right layout. Call each frame after `scoreboard.update`. */
+  /** Top header placement for collectible counters and bottom placement for boost buttons. */
   private syncCollectibleHudPosition(): void {
-    const sb = this.scoreboard;
-    if (!sb) {
-      return;
-    }
-    const midY = sb.getPanelHeight() * 0.5;
     this.collectibleHudRoot.pivot.set(0, 0.5);
-    this.collectibleHudRoot.position.set(sb.getLevelLabelRightLocal() + COLLECT_AFTER_LEVEL_GAP, midY);
+    this.collectibleHudRoot.position.set(26, UI_SAFE_PAD_TOP + UI_HEADER_H * 0.5);
     this.layoutBoostHudButtons();
   }
 
   private layoutCollectibleHud(): void {
     this.syncCollectibleHudPosition();
     const g = COLLECTIBLE_LINES_HALF_GAP_PX;
-    this.collectibleHudGoldText?.position.set(0, -g);
-    this.collectibleHudDiamondText?.position.set(0, g);
+    this.collectibleHudGoldIcon.position.set(0, -g - 2);
+    this.collectibleHudGoldText?.position.set(28, -g);
+    this.collectibleHudDiamondIcon.position.set(0, g - 2);
+    this.collectibleHudDiamondText?.position.set(28, g);
   }
 
   private refreshCollectibleHudText(): void {
     if (this.collectibleHudGoldText) {
-      this.collectibleHudGoldText.text = `Gold     ${Math.round(this.hudGoldShown)}`;
+      this.collectibleHudGoldText.text = `${Math.round(this.hudGoldShown)}`;
     }
     if (this.collectibleHudDiamondText) {
-      this.collectibleHudDiamondText.text = `Diamonds ${Math.round(this.hudDiamondShown)}`;
+      this.collectibleHudDiamondText.text = `${Math.round(this.hudDiamondShown)}`;
     }
   }
 
