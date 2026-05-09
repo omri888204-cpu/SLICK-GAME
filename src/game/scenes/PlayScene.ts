@@ -556,13 +556,14 @@ export class PlayScene implements Scene {
     app.stage.addChild(this.gameShake);
     app.stage.addChild(this.uiLayer);
     this.gameShake.addChild(this.background);
+    /** View-fixed strip: above parallax bg, under `world` (platforms / player). `uiLayer` stays on `stage` above `gameShake`. */
+    this.gameShake.addChild(this.lavaLayer);
     this.gameShake.addChild(this.world);
     this.world.sortableChildren = true;
     this.world.addChild(
       this.jelly,
       this.platformSpriteLayer,
       this.platformLayer,
-      this.lavaLayer,
       this.rippleLayer,
       this.collectiblesGfx,
       this.tongueRoot,
@@ -3274,17 +3275,23 @@ export class PlayScene implements Scene {
   }
 
   private drawBottomDeathLine(): void {
-    const deathY = this.getDeathPlaneWorldY();
+    /**
+     * `lavaLayer` is a direct child of `gameShake` (not `world`): same space as after `world` transform
+     * for the camera bottom edge — world point (cameraX, cameraY + vh) → local (0, vh).
+     * Ice top edge sits on that line (sync with `getDeathPlaneWorldY()`); strip extends downward (below fold).
+     */
+    const vh = this.worldHeightFromScreen();
     const vw = this.worldWidthFromScreen();
     const padX = 30;
-    const x = this.cameraX - padX;
+    const xGs = -padX;
     const w = vw + padX * 2;
 
     const crystal = this.deathZoneCrystalSprite;
     if (crystal?.texture) {
       this.deathZoneFallback.visible = false;
       crystal.visible = true;
-      crystal.position.set(x, deathY);
+      crystal.anchor.set(0, 0);
+      crystal.position.set(xGs, vh);
       crystal.width = w;
       const sw = Math.max(1, this.deathZoneSourceW);
       const sh = Math.max(1, this.deathZoneSourceH);
@@ -3293,13 +3300,13 @@ export class PlayScene implements Scene {
     }
 
     this.deathZoneFallback.visible = true;
-    const lavaTop = deathY - 32;
+    const lavaTop = vh - 32;
     this.deathZoneFallback.clear();
     this.deathZoneFallback
-      .rect(x, lavaTop, w, 32)
+      .rect(xGs, lavaTop, w, 32)
       .fill({ color: 0xff4b00, alpha: 0.78 });
     this.deathZoneFallback
-      .rect(x, deathY - 9, w, 9)
+      .rect(xGs, vh - 9, w, 9)
       .fill({ color: 0xffa621, alpha: 0.95 });
   }
 
@@ -3311,7 +3318,7 @@ export class PlayScene implements Scene {
       this.deathZoneSourceW = w;
       this.deathZoneSourceH = h;
       const spr = new Sprite(texture);
-      spr.anchor.set(0, 1);
+      spr.anchor.set(0, 0);
       spr.roundPixels = false;
       spr.eventMode = 'none';
       spr.tint = 0xffffff;
