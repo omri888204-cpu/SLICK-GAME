@@ -320,6 +320,8 @@ const LEVEL_PLATFORM_MIN_BASE_WIDTH = 72;
 const LEVEL_MILESTONE_STEP = 10;
 /** After each new level (score tier), short move + jump feel boost. */
 const LEVEL_UP_BOOST_DURATION_SEC = 4.5;
+/** Cap total stacked duration when multiple levels are gained in one score tick. */
+const LEVEL_UP_BOOST_TIME_CAP_SEC = 14;
 const LEVEL_UP_BOOST_JUMP_MUL = 1.2;
 const LEVEL_UP_BOOST_SCROLL_MUL = 1.1;
 /** Spawn a shield pickup when both gold and diamond totals cross these thresholds (10 + 5, then 20 + 10, …). */
@@ -1709,8 +1711,7 @@ export class PlayScene implements Scene {
     this.grappleCooldown = 0;
     this.grappleReleaseDampingLeft = 0;
     this.currentGroundPlatform = null;
-    const avgGap = (STAIR_GAP_MIN_PX + STAIR_GAP_MAX_PX) * 0.5;
-    const rise = avgGap * SHIELD_SUPER_LAUNCH_STAIR_COUNT;
+    const rise = STAIRS.stepPx * SHIELD_SUPER_LAUNCH_STAIR_COUNT;
     this.player.body.y -= rise;
     this.player.body.vy = -Math.min(1750, 920 + rise * 0.38);
     this.player.body.vx *= 0.72;
@@ -2155,8 +2156,14 @@ export class PlayScene implements Scene {
       return;
     }
     const previousMilestone = Math.floor(this.level / LEVEL_MILESTONE_STEP);
+    const prevLevel = this.level;
+    const gained = nextLevel - prevLevel;
     this.level = nextLevel;
-    this.levelUpBoostTime = LEVEL_UP_BOOST_DURATION_SEC;
+    /** Combo boost: extend duration for each level tier crossed in one update (capped). */
+    this.levelUpBoostTime = Math.min(
+      LEVEL_UP_BOOST_TIME_CAP_SEC,
+      this.levelUpBoostTime + LEVEL_UP_BOOST_DURATION_SEC * gained,
+    );
     this.levelUpBannerTime = 1;
     this.spawnLevelUpParticles();
     this.scoreboard?.setLevel(this.level);
@@ -3874,15 +3881,29 @@ export class PlayScene implements Scene {
       return null;
     }
     const margin = COLLECTIBLES.platformEdgeMarginPx;
+    if (c.kind === 'shield') {
+      /** Same horizontal slot as the paired diamond (`along` is shared). */
+      const diaR = COLLECTIBLES.diamondRadius;
+      const innerWx = p.width - 2 * margin - 2 * diaR;
+      if (innerWx < 4) {
+        return null;
+      }
+      const x = p.x + margin + diaR + c.along * innerWx;
+      const diamondCenterY = p.y - COLLECTIBLES.aboveSurfacePx;
+      const diamondHalfH = COLLECTIBLES.diamondRadius * (1.05 + COLLECTIBLES.diamondPulseScale);
+      const y =
+        diamondCenterY +
+        diamondHalfH +
+        COLLECTIBLES.shieldGapBelowDiamondPx +
+        COLLECTIBLES.shieldRadius;
+      return { x, y };
+    }
     const innerW = p.width - 2 * margin - 2 * c.r;
     if (innerW < 4) {
       return null;
     }
     const x = p.x + margin + c.r + c.along * innerW;
-    const y =
-      c.kind === 'shield'
-        ? p.y + COLLECTIBLES.shieldBelowPlatformTopPx
-        : p.y - COLLECTIBLES.aboveSurfacePx;
+    const y = p.y - COLLECTIBLES.aboveSurfacePx;
     return { x, y };
   }
 

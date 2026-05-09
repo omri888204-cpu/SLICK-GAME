@@ -251,8 +251,8 @@ export const COLLECTIBLES = {
   collectRisePx: 80,
   /** Shield pickup radius (spawned under diamonds after gold/diamond milestones). */
   shieldRadius: 18,
-  /** World Y offset from platform top for shield anchor (below floating diamond). */
-  shieldBelowPlatformTopPx: 22,
+  /** Gap between diamond bottom and shield center (world px). */
+  shieldGapBelowDiamondPx: 6,
   /** Soft glow rings (px beyond main shape). */
   glowOuterPx: 6,
   glowMidPx: 3,
