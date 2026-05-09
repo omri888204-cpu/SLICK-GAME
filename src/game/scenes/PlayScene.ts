@@ -257,8 +257,6 @@ const UI_BG_BLACK = 0x000000;
 const UI_PANEL_PURPLE = 0x2e004b;
 const UI_NEON_GREEN = 0x39ff14;
 const UI_GOLD = 0xffd700;
-const UI_HEADER_H = 92;
-const UI_BOTTOM_PANEL_H = 76;
 const UI_SAFE_PAD_TOP = 10;
 const UI_SAFE_PAD_BOTTOM = 12;
 const HURRY_BANNER_H = 46;
@@ -362,8 +360,6 @@ export class PlayScene implements Scene {
   private gameShake = new Container();
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
-  private headerPanel = new Graphics();
-  private footerPanel = new Graphics();
   private tongueRoot = new Container();
   private tongueVector = new Graphics();
   private tongueArmature: PixiArmatureDisplay | null = null;
@@ -523,7 +519,6 @@ export class PlayScene implements Scene {
     this.setupAction360Button(app);
     this.setupClimbHud(app);
     this.setupAutoScrollHud();
-    this.drawCyberHudChrome();
     if (this.scoreboard) {
       this.scoreboard.visible = false;
     }
@@ -771,7 +766,6 @@ export class PlayScene implements Scene {
       prevW > 0 && this.platforms.length > 0 && dw <= 36 && dh <= 96;
     if (minorViewportJitter) {
       this.drawStaticWorld();
-      this.drawCyberHudChrome();
       this.clampEntitiesToWorldBounds();
       this.syncPlatformSpritesFromPlatforms();
       this.drawDynamicWorld();
@@ -780,7 +774,6 @@ export class PlayScene implements Scene {
 
     this.resetRun();
     this.drawStaticWorld();
-    this.drawCyberHudChrome();
     this.drawDynamicWorld();
   }
 
@@ -2217,7 +2210,7 @@ export class PlayScene implements Scene {
     if (!this.climbHudText) {
       return;
     }
-    this.climbHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + UI_HEADER_H - 32);
+    this.climbHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + 34);
   }
 
   private refreshClimbHudText(): void {
@@ -2245,48 +2238,6 @@ export class PlayScene implements Scene {
         distance: 0,
       },
     });
-  }
-
-  private drawCyberHudChrome(): void {
-    const w = this.width;
-    const headerY = UI_SAFE_PAD_TOP;
-    const footerY = this.height - UI_BOTTOM_PANEL_H - UI_SAFE_PAD_BOTTOM;
-
-    this.headerPanel.clear();
-    this.headerPanel.roundRect(12, headerY, w - 24, UI_HEADER_H, 16).fill({
-      color: UI_PANEL_PURPLE,
-      alpha: 0.4,
-    });
-    this.headerPanel.roundRect(12, headerY, w - 24, UI_HEADER_H, 16).stroke({
-      color: UI_NEON_GREEN,
-      width: 2.2,
-      alpha: 0.65,
-    });
-    this.headerPanel.rect(12, headerY + UI_HEADER_H - 3, w - 24, 3).fill({
-      color: UI_NEON_GREEN,
-      alpha: 0.95,
-    });
-    this.headerPanel.roundRect(16, headerY + 4, w - 32, UI_HEADER_H - 8, 14).fill({
-      color: 0x5b2d83,
-      alpha: 0.12,
-    });
-
-    this.footerPanel.clear();
-    this.footerPanel.roundRect(16, footerY, w - 32, UI_BOTTOM_PANEL_H, 14).fill({
-      color: UI_PANEL_PURPLE,
-      alpha: 0.28,
-    });
-    this.footerPanel.roundRect(16, footerY, w - 32, UI_BOTTOM_PANEL_H, 14).stroke({
-      color: UI_NEON_GREEN,
-      width: 2,
-      alpha: 0.5,
-    });
-
-    if (!this.uiLayer.children.includes(this.headerPanel)) {
-      this.headerPanel.zIndex = 1000;
-      this.footerPanel.zIndex = 1000;
-      this.uiLayer.addChild(this.headerPanel, this.footerPanel);
-    }
   }
 
   private drawCollectibleIcons(): void {
@@ -2333,15 +2284,15 @@ export class PlayScene implements Scene {
   private drawHurryBanner(): void {
     const w = 440;
     const h = HURRY_BANNER_H;
+    const r = h * 0.5;
     this.hurryBannerGfx.clear();
-    this.hurryBannerGfx.roundRect(0, 0, w, h, 10).fill({ color: UI_PANEL_PURPLE, alpha: 0.92 });
-    this.hurryBannerGfx.roundRect(0, 0, w, h, 10).stroke({ color: UI_NEON_GREEN, width: 2.5, alpha: 0.96 });
-    for (let x = 10; x < w - 10; x += 30) {
-      this.hurryBannerGfx
-        .moveTo(x, h - 3)
-        .lineTo(x + 16, 3)
-        .stroke({ color: UI_NEON_GREEN, width: 2, alpha: 0.35 });
-    }
+    this.hurryBannerGfx.roundRect(0, 0, w, h, r).fill({ color: UI_PANEL_PURPLE, alpha: 0.94 });
+    this.hurryBannerGfx.roundRect(0, 0, w, h, r).stroke({ color: UI_NEON_GREEN, width: 2.2, alpha: 0.95 });
+    this.hurryBannerGfx.roundRect(3, 3, w - 6, h - 6, r - 3).stroke({
+      color: UI_NEON_GREEN,
+      width: 1,
+      alpha: 0.26,
+    });
     this.hurryBannerText?.position.set(w * 0.5, h * 0.5);
   }
 
@@ -2372,7 +2323,7 @@ export class PlayScene implements Scene {
     if (this.timerHudText) {
       this.timerHudText.position.set(this.width * 0.5, UI_SAFE_PAD_TOP + 10);
     }
-    this.hurryBannerRoot.position.set(-460, UI_SAFE_PAD_TOP + UI_HEADER_H + 6);
+    this.hurryBannerRoot.position.set(-460, UI_SAFE_PAD_TOP + 8);
     this.hurryBannerX = this.hurryBannerRoot.position.x;
     this.drawHurryBanner();
   }
@@ -2752,7 +2703,7 @@ export class PlayScene implements Scene {
   /** Top header placement for collectible counters and bottom placement for boost buttons. */
   private syncCollectibleHudPosition(): void {
     this.collectibleHudRoot.pivot.set(0, 0.5);
-    this.collectibleHudRoot.position.set(26, UI_SAFE_PAD_TOP + UI_HEADER_H * 0.5);
+    this.collectibleHudRoot.position.set(26, UI_SAFE_PAD_TOP + 30);
     this.layoutBoostHudButtons();
   }
 
