@@ -371,7 +371,7 @@ export class PlayScene implements Scene {
   /** Bottom hazard strip (crystal tiling + optional vector fallback). */
   private lavaLayer = new Container();
   private deathZoneFallback = new Graphics();
-  private deathZoneCrystalTiling: TilingSprite | null = null;
+  private deathZoneCrystalSprite: Sprite | null = null;
   private gameShake = new Container();
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
@@ -3173,14 +3173,13 @@ export class PlayScene implements Scene {
     const x = this.cameraX - padX;
     const w = vw + padX * 2;
 
-    const crystal = this.deathZoneCrystalTiling;
-    if (crystal) {
+    const crystal = this.deathZoneCrystalSprite;
+    if (crystal?.texture) {
       this.deathZoneFallback.visible = false;
       crystal.visible = true;
       crystal.position.set(x, viewBottomY);
       crystal.width = w;
       crystal.height = DEATH_ZONE_TILING_HEIGHT_PX;
-      crystal.tilePosition.x = Math.round(-this.cameraX * 0.18);
       return;
     }
 
@@ -3197,20 +3196,54 @@ export class PlayScene implements Scene {
 
   private async loadDeathZoneStrip(): Promise<void> {
     try {
-      const tex = await Assets.load<Texture>(`${GAME_ASSETS}/death-zone-crystals.png`);
-      const ts = new TilingSprite({
-        texture: tex,
-        width: 400,
-        height: DEATH_ZONE_TILING_HEIGHT_PX,
-      });
-      ts.anchor.set(0, 1);
-      ts.roundPixels = RENDER.pixelArt;
-      this.deathZoneCrystalTiling = ts;
-      this.lavaLayer.addChild(ts);
+      const tex = await this.createDeathZoneStripTexture(`${GAME_ASSETS}/death-zone-crystals.png`);
+      const spr = new Sprite(tex);
+      spr.anchor.set(0, 1);
+      spr.roundPixels = RENDER.pixelArt;
+      spr.eventMode = 'none';
+      spr.tint = 0xffffff;
+      this.deathZoneCrystalSprite = spr;
+      this.lavaLayer.addChild(spr);
       this.deathZoneFallback.visible = false;
     } catch {
       this.deathZoneFallback.visible = true;
     }
+  }
+
+  /**
+   * Loads the PNG, removes edge-connected near-black (Photoroom letterbox / leftover bg),
+   * then builds a texture — `Sprite` + canvas path avoids TilingSprite solid-black issues in Pixi v8.
+   */
+  private async createDeathZoneStripTexture(assetPath: string): Promise<Texture> {
+    const res = await fetch(assetPath);
+    if (!res.ok) {
+      throw new Error(`death-zone fetch ${res.status}`);
+    }
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = blobUrl;
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('death-zone decode'));
+    });
+    URL.revokeObjectURL(blobUrl);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx || canvas.width < 2 || canvas.height < 2) {
+      return Assets.load<Texture>(assetPath);
+    }
+
+    ctx.drawImage(img, 0, 0);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    this.removeConnectedDarkEdgeBackground(imageData.data, canvas.width, canvas.height);
+    ctx.putImageData(imageData, 0, 0);
+
+    return Texture.from(canvas);
   }
 
   private tickAltitudePresentation(dt: number): void {
