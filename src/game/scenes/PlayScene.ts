@@ -336,7 +336,7 @@ const TOUCH_ACTION_RETRIGGER_MS = 110;
 /** Blend toward this cool color on background as altitude speed mult rises (0..1). */
 const ALTITUDE_WIND_TINT_COOL = 0x142a38;
 const ALTITUDE_WIND_TINT_MAX_BLEND = 0.32;
-const ALTITUDE_WIND_MAX_PARTICLES = 72;
+const ALTITUDE_WIND_MAX_PARTICLES = 48;
 
 type WindParticle = {
   x: number;
@@ -524,6 +524,9 @@ export class PlayScene implements Scene {
     this.refreshWorldViewport();
 
     await Promise.all([this.loadPlatformSprite(), this.player.load(), this.sfx.load()]);
+
+    /** `Texture.WHITE` tiles as 1×1px — GPU filtering leaves visible grid/stripe seams when scrolling. */
+    this.installRepeatFriendlyBackgroundTexture();
 
     this.uiLayer.sortableChildren = true;
     app.stage.addChild(this.gameShake);
@@ -1675,10 +1678,7 @@ export class PlayScene implements Scene {
 
     this.world.position.set(-this.cameraX, -this.cameraY);
     const parallaxBoost = 1 + 0.1 * Math.max(0, this.getAltitudeSpeedMultiplier() - 1);
-    this.background.tilePosition.set(
-      -this.cameraX * BACKGROUND_PARALLAX_X * parallaxBoost,
-      -this.cameraY * BACKGROUND_PARALLAX_Y * parallaxBoost,
-    );
+    this.applyBackgroundParallaxTileShift(parallaxBoost);
     this.applyBackgroundTintForAltitude();
   }
 
@@ -1695,13 +1695,30 @@ export class PlayScene implements Scene {
     this.cameraY = Math.max(this.worldMinY, this.cameraY);
     this.world.position.set(-this.cameraX, -this.cameraY);
     const parallaxBoost = 1 + 0.1 * Math.max(0, this.getAltitudeSpeedMultiplier() - 1);
-    this.background.tilePosition.set(
-      -this.cameraX * BACKGROUND_PARALLAX_X * parallaxBoost,
-      -this.cameraY * BACKGROUND_PARALLAX_Y * parallaxBoost,
-    );
+    this.applyBackgroundParallaxTileShift(parallaxBoost);
     this.applyBackgroundTintForAltitude();
   }
 
+  /** Integer tile shift reduces subpixel shimmer; larger-than-1×1 tile texture avoids seam stripes. */
+  private applyBackgroundParallaxTileShift(parallaxBoost: number): void {
+    const tx = -this.cameraX * BACKGROUND_PARALLAX_X * parallaxBoost;
+    const ty = -this.cameraY * BACKGROUND_PARALLAX_Y * parallaxBoost;
+    this.background.tilePosition.set(Math.round(tx), Math.round(ty));
+  }
+
+  private installRepeatFriendlyBackgroundTexture(): void {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      return;
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+    this.background.texture = Texture.from(canvas);
+  }
 
   private updateScreenShake(dt: number): void {
     let ox = 0;
@@ -2177,10 +2194,7 @@ export class PlayScene implements Scene {
       this.lastScrollSpeedTier = tier;
       if (tier > 0) {
         this.shakeTime = Math.max(this.shakeTime, SPEED_TIER_SHAKE_SEC);
-        this.speedTierUiFlashTime = SPEED_TIER_UI_FLASH_SEC;
-        this.speedPulseGfx.alpha = 1;
-        this.redrawSpeedPulseOverlay();
-        this.speedPulseGfx.visible = true;
+        // Full-screen tier pulse removed — read as random white flashes / “cancelled overlay” on scroll.
       }
     }
   }
@@ -3165,7 +3179,7 @@ export class PlayScene implements Scene {
     if (mult <= 1.001 || this.windParticles.length >= ALTITUDE_WIND_MAX_PARTICLES) {
       return;
     }
-    this.windSpawnAcc += dt * (mult - 1) * 26;
+    this.windSpawnAcc += dt * (mult - 1) * 12;
     const vw = this.worldWidthFromScreen();
     const vh = this.worldHeightFromScreen();
     while (this.windSpawnAcc >= 1 && this.windParticles.length < ALTITUDE_WIND_MAX_PARTICLES) {
@@ -3200,14 +3214,14 @@ export class PlayScene implements Scene {
   private drawWindParticles(): void {
     for (const p of this.windParticles) {
       const u = p.age / p.life;
-      const alpha = (1 - u) * 0.38;
+      const alpha = (1 - u) * 0.2;
       const x1 = p.x;
       const y1 = p.y;
       const x2 = p.x + p.len * 0.94;
       const y2 = p.y + (p.vy / Math.max(120, Math.abs(p.vx))) * p.len * 0.12;
       this.fxLayer.moveTo(x1, y1).lineTo(x2, y2).stroke({
-        width: 1.25,
-        color: 0xd8f0ff,
+        width: 1,
+        color: 0x5a8cbb,
         alpha,
       });
     }
