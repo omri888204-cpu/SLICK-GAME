@@ -107,7 +107,7 @@ type TouchRipple = {
   life: number;
 };
 
-type CollectibleKind = 'coin' | 'diamond';
+type CollectibleKind = 'coin' | 'diamond' | 'shield';
 
 type Collectible = {
   kind: CollectibleKind;
@@ -318,6 +318,15 @@ const LEVEL_PLATFORM_SPEED_PER_LEVEL = 5;
 const LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL = 0.005;
 const LEVEL_PLATFORM_MIN_BASE_WIDTH = 72;
 const LEVEL_MILESTONE_STEP = 10;
+/** After each new level (score tier), short move + jump feel boost. */
+const LEVEL_UP_BOOST_DURATION_SEC = 4.5;
+const LEVEL_UP_BOOST_JUMP_MUL = 1.2;
+const LEVEL_UP_BOOST_SCROLL_MUL = 1.1;
+/** Spawn a shield pickup when both gold and diamond totals cross these thresholds (10 + 5, then 20 + 10, …). */
+const SHIELD_SPAWN_GOLD = 10;
+const SHIELD_SPAWN_DIAMOND = 5;
+/** Shield break: teleport climb (~15 stair gaps) + upward impulse. */
+const SHIELD_SUPER_LAUNCH_STAIR_COUNT = 15;
 const FLASH_SKILL_BOOST_DURATION_SEC = 10;
 const FLASH_TONGUE_COOLDOWN_SPEEDUP = 2;
 const FLASH_BOOST_STAIR_COUNT = 4;
@@ -535,6 +544,13 @@ export class PlayScene implements Scene {
   private jumpArcAssistDuration = 0;
   private jumpArcStartCenterX = 0;
   private jumpArcTargetCenterX = 0;
+  /** Level-up reward: faster scroll + stronger jumps for a few seconds. */
+  private levelUpBoostTime = 0;
+  /** One-use: survive death ice once, then super-launch upward. */
+  private playerShieldActive = false;
+  /** Next cumulative gold/diamond totals required to spawn a shield (both must be met). */
+  private nextShieldGoldThreshold = SHIELD_SPAWN_GOLD;
+  private nextShieldDiamondThreshold = SHIELD_SPAWN_DIAMOND;
   async init(app: Application): Promise<void> {
     this.app = app;
     this.width = app.screen.width;
@@ -646,6 +662,9 @@ export class PlayScene implements Scene {
       return;
     }
     this.runTime += dt;
+    if (this.levelUpBoostTime > 0) {
+      this.levelUpBoostTime = Math.max(0, this.levelUpBoostTime - dt);
+    }
     this.expireComboIfNeeded();
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
     this.updateFlashSkillBoost(dt);
@@ -728,8 +747,9 @@ export class PlayScene implements Scene {
         0,
         this.highestY < -650,
         this.grapple,
-      mult >= COMBO.beastModeMinMultiplier,
-    );
+        mult >= COMBO.beastModeMinMultiplier,
+        this.playerShieldActive,
+      );
     this.physics.applyWorldBounds(this.player.body, this.worldWidth);
     this.clampPlayerToCameraViewport();
     this.tickAltitudePresentation(dt);
@@ -853,6 +873,7 @@ export class PlayScene implements Scene {
       this.highestY < -650,
       this.grapple,
       boostVisualActive,
+      this.playerShieldActive,
     );
     this.tickAltitudePresentation(dt);
     this.drawDynamicWorld();
@@ -1043,6 +1064,8 @@ export class PlayScene implements Scene {
       const maxBoostJumpHeight = STAIRS.stepPx * FLASH_BOOST_STAIR_COUNT;
       const maxBoostJumpVy = -Math.sqrt(2 * PHYSICS.gravity * maxBoostJumpHeight);
       this.player.body.vy = maxBoostJumpVy;
+    } else if (this.levelUpBoostTime > 0) {
+      this.player.body.vy *= LEVEL_UP_BOOST_JUMP_MUL;
     }
     if (fromRightSwipe) {
       const body = this.player.body;
@@ -1366,6 +1389,10 @@ export class PlayScene implements Scene {
     this.syncBoostHudButtonsVisibility();
     this.jumpArcAssistTime = 0;
     this.jumpArcAssistDuration = 0;
+    this.levelUpBoostTime = 0;
+    this.playerShieldActive = false;
+    this.nextShieldGoldThreshold = SHIELD_SPAWN_GOLD;
+    this.nextShieldDiamondThreshold = SHIELD_SPAWN_DIAMOND;
     this.tongueBoostComboExtendUntil = -Infinity;
     this.tongueBoostComboResetAt = null;
     this.tongueBoostChainWindowSec = null;
@@ -1666,8 +1693,44 @@ export class PlayScene implements Scene {
   private checkFallGameOver(): void {
     const feetY = this.player.body.y + this.player.body.height;
     const deathLineY = this.getDeathPlaneWorldY();
-    if (feetY > deathLineY) {
-      this.triggerGameOver();
+    if (feetY <= deathLineY) {
+      return;
+    }
+    if (this.playerShieldActive) {
+      this.playerShieldActive = false;
+      this.performShieldSuperLaunch();
+      return;
+    }
+    this.triggerGameOver();
+  }
+
+  private performShieldSuperLaunch(): void {
+    this.grapple = null;
+    this.grappleCooldown = 0;
+    this.grappleReleaseDampingLeft = 0;
+    this.currentGroundPlatform = null;
+    const avgGap = (STAIR_GAP_MIN_PX + STAIR_GAP_MAX_PX) * 0.5;
+    const rise = avgGap * SHIELD_SUPER_LAUNCH_STAIR_COUNT;
+    this.player.body.y -= rise;
+    this.player.body.vy = -Math.min(1750, 920 + rise * 0.38);
+    this.player.body.vx *= 0.72;
+    this.player.body.grounded = false;
+    this.highestY = Math.min(this.highestY, this.player.body.y);
+    this.player.onJump();
+    this.shakeTime = Math.max(this.shakeTime, 0.42);
+    const cx = this.player.body.x + this.player.body.width * 0.5;
+    const cy = this.player.body.y + this.player.body.height * 0.45;
+    for (let i = 0; i < 18; i += 1) {
+      const a = (i / 18) * Math.PI * 2;
+      const sp = 140 + Math.random() * 200;
+      this.levelUpParticles.push({
+        x: cx,
+        y: cy,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - 140,
+        age: 0,
+        life: 0.45 + Math.random() * 0.2,
+      });
     }
   }
 
@@ -1687,7 +1750,7 @@ export class PlayScene implements Scene {
     this.grappleReloadingLogged = false;
     this.lastScoredStairId = this.platforms[0]?.stairId ?? 0;
     this.lastScoredLandWorldTopY = this.platforms[0]?.y ?? Number.POSITIVE_INFINITY;
-    this.player.update(0, 0, false, null, false);
+    this.player.update(0, 0, false, null, false, false);
   }
 
   private landOn(platform: Platform): void {
@@ -2093,6 +2156,7 @@ export class PlayScene implements Scene {
     }
     const previousMilestone = Math.floor(this.level / LEVEL_MILESTONE_STEP);
     this.level = nextLevel;
+    this.levelUpBoostTime = LEVEL_UP_BOOST_DURATION_SEC;
     this.levelUpBannerTime = 1;
     this.spawnLevelUpParticles();
     this.scoreboard?.setLevel(this.level);
@@ -2223,8 +2287,14 @@ export class PlayScene implements Scene {
     return 1 + 0.24 * Math.min(4, Math.max(0, scrollMult - 1));
   }
 
+  private getLevelUpBoostScrollMul(): number {
+    return this.levelUpBoostTime > 0 ? LEVEL_UP_BOOST_SCROLL_MUL : 1;
+  }
+
   private getCameraScrollSpeedPx(): number {
-    return AUTO_SCROLL_BASE_SPEED_PX * this.getAltitudeSpeedMultiplier();
+    return (
+      AUTO_SCROLL_BASE_SPEED_PX * this.getAltitudeSpeedMultiplier() * this.getLevelUpBoostScrollMul()
+    );
   }
 
   /** Tier index for speed feedback; 0 = warmup, 1 = first step above warmup, … */
@@ -2282,7 +2352,11 @@ export class PlayScene implements Scene {
    * Effective platform drift speed (px/s): scales with climb height (same multiplier as camera scroll).
    */
   private getBaseScrollSpeedPx(): number {
-    return this.getLevelScrollSpeedPx() * this.getAltitudeSpeedMultiplier();
+    return (
+      this.getLevelScrollSpeedPx() *
+      this.getAltitudeSpeedMultiplier() *
+      this.getLevelUpBoostScrollMul()
+    );
   }
 
   private mixRgbInt(c0: number, c1: number, t: number): number {
@@ -3805,8 +3879,73 @@ export class PlayScene implements Scene {
       return null;
     }
     const x = p.x + margin + c.r + c.along * innerW;
-    const y = p.y - COLLECTIBLES.aboveSurfacePx;
+    const y =
+      c.kind === 'shield'
+        ? p.y + COLLECTIBLES.shieldBelowPlatformTopPx
+        : p.y - COLLECTIBLES.aboveSurfacePx;
     return { x, y };
+  }
+
+  private findDiamondCollectibleForShieldSpawn(): Collectible | null {
+    let best: Collectible | null = null;
+    let bestPy = Infinity;
+    for (const c of this.collectibles) {
+      if (c.kind !== 'diamond' || c.phase !== 'active') {
+        continue;
+      }
+      const p = this.platforms[c.platformIdx];
+      if (!p) {
+        continue;
+      }
+      if (p.y < bestPy) {
+        bestPy = p.y;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  private hasActiveShieldPickup(): boolean {
+    return this.collectibles.some((c) => c.kind === 'shield' && c.phase === 'active');
+  }
+
+  private maybeSpawnShieldPowerUp(): void {
+    if (
+      this.goldCount < this.nextShieldGoldThreshold ||
+      this.diamondCount < this.nextShieldDiamondThreshold
+    ) {
+      return;
+    }
+    if (!this.spawnShieldPickupUnderNextDiamond()) {
+      return;
+    }
+    this.nextShieldGoldThreshold += SHIELD_SPAWN_GOLD;
+    this.nextShieldDiamondThreshold += SHIELD_SPAWN_DIAMOND;
+  }
+
+  /** Spawns a shield pickup under the “next” diamond (topmost active diamond stair). */
+  private spawnShieldPickupUnderNextDiamond(): boolean {
+    if (this.hasActiveShieldPickup()) {
+      return false;
+    }
+    if (this.collectibles.length >= COLLECTIBLES.maxActive) {
+      return false;
+    }
+    const d = this.findDiamondCollectibleForShieldSpawn();
+    if (!d) {
+      return false;
+    }
+    this.collectibles.push({
+      kind: 'shield',
+      platformIdx: d.platformIdx,
+      along: d.along,
+      r: COLLECTIBLES.shieldRadius,
+      phase: 'active',
+      collectT: 0,
+      collectStartX: 0,
+      collectStartY: 0,
+    });
+    return true;
   }
 
   private spawnCollectibleField(): void {
@@ -3914,16 +4053,26 @@ export class PlayScene implements Scene {
     if (!hit) {
       return;
     }
-    const add = c.kind === 'coin' ? COLLECTIBLES.coinPoints : COLLECTIBLES.diamondPoints;
+    const add =
+      c.kind === 'coin'
+        ? COLLECTIBLES.coinPoints
+        : c.kind === 'diamond'
+          ? COLLECTIBLES.diamondPoints
+          : COLLECTIBLES.shieldPickupPoints;
     this.score += add * this.getScoreGainMultiplier();
     this.scoreboard?.onPointsGained(add);
     if (c.kind === 'coin') {
       this.goldCount += 1;
       this.sfx.play('collect_coin', 0.9);
-    } else {
+      this.maybeSpawnShieldPowerUp();
+    } else if (c.kind === 'diamond') {
       this.diamondCount += 1;
       this.sfx.play('collect_diamond', 0.92);
       this.spawnDiamondCollectShine(pos.x, pos.y);
+      this.maybeSpawnShieldPowerUp();
+    } else {
+      this.playerShieldActive = true;
+      this.sfx.play('collect_diamond', 0.72);
     }
     this.collectibleHudBump = 1;
     c.phase = 'collecting';
@@ -4011,6 +4160,23 @@ export class PlayScene implements Scene {
         this.collectiblesGfx
           .ellipse(cx - rx * 0.32, cy - ry * 0.22, rx * 0.38, ry * 0.24)
           .fill({ color: 0xfff2a0, alpha: alphaMul * 0.65 });
+      } else if (c.kind === 'shield') {
+        const pulse = 0.55 + 0.45 * Math.sin(t * Math.PI * 2 * 2.4 + c.platformIdx * 0.6);
+        const s = baseR * (1.05 + 0.12 * pulse) * (c.phase === 'collecting' ? 1 + 0.35 * c.collectT : 1);
+        const go = COLLECTIBLES.glowOuterPx;
+        this.collectiblesGfx
+          .circle(cx, cy, s + go)
+          .stroke({ width: 3, color: 0x66ccff, alpha: 0.45 * alphaMul });
+        this.collectiblesGfx
+          .circle(cx, cy, s + 2)
+          .stroke({ width: 2.2, color: 0xa8f0ff, alpha: 0.55 * alphaMul });
+        this.collectiblesGfx
+          .roundRect(cx - s * 0.55, cy - s * 0.72, s * 1.1, s * 1.35, s * 0.35)
+          .stroke({ width: 2.4, color: 0x88eeff, alpha: 0.75 * alphaMul });
+        this.collectiblesGfx
+          .roundRect(cx - s * 0.42, cy - s * 0.58, s * 0.84, s * 1.1, s * 0.28)
+          .fill({ color: 0x4060a0, alpha: 0.35 * alphaMul })
+          .stroke({ width: 1.5, color: 0xc8ffff, alpha: 0.85 * alphaMul });
       } else {
         const pulse = Math.sin(t * Math.PI * 2 * COLLECTIBLES.diamondPulseHz + c.platformIdx * 0.45);
         const pulse01 = (pulse + 1) * 0.5;

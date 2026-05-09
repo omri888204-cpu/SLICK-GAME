@@ -125,6 +125,7 @@ export class Player extends Container {
     comboActive = false,
     grapple: ActiveGrapple | null = null,
     beastMode = false,
+    shieldActive = false,
   ): void {
     this.grappleClip = grapple;
     this.grapplePoseActive = grapple !== null;
@@ -153,7 +154,7 @@ export class Player extends Container {
     this.updateWalkBlend(dt);
     this.updateWalk(dt);
     this.syncContainerToBody();
-    this.drawSprite(comboActive, beastMode);
+    this.drawSprite(comboActive, beastMode, shieldActive);
     this.drawFeet();
   }
 
@@ -210,7 +211,7 @@ export class Player extends Container {
     this.walkBlend += (target - this.walkBlend) * delta;
   }
 
-  private drawSprite(_comboActive: boolean, beastMode: boolean): void {
+  private drawSprite(_comboActive: boolean, beastMode: boolean, shieldActive: boolean): void {
     if (!this.avatarRig || !this.bodySprite || !this.silhouette || !this.textures) {
       return;
     }
@@ -316,6 +317,18 @@ export class Player extends Container {
       this.glow
         .ellipse(0, -6, 40 * pulse, 30 * pulse)
         .stroke({ width: 2, color: 0xffcc44, alpha: 0.25 + 0.15 * pulse });
+    }
+    if (shieldActive) {
+      const pulse = 0.58 + 0.42 * Math.sin(this.idleTime * 12);
+      this.glow
+        .ellipse(0, -6, 56 * pulse, 42 * pulse)
+        .stroke({ width: 3.2, color: 0x66e8ff, alpha: 0.42 + 0.22 * pulse });
+      this.glow
+        .ellipse(0, -6, 44 * pulse, 34 * pulse)
+        .stroke({ width: 2.2, color: 0xc8ffff, alpha: 0.32 + 0.18 * pulse });
+      this.glow
+        .ellipse(0, -6, 30 * pulse, 24 * pulse)
+        .stroke({ width: 1.4, color: 0xffffff, alpha: 0.18 + 0.12 * pulse });
     }
   }
 
