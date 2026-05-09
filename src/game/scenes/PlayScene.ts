@@ -2362,8 +2362,15 @@ export class PlayScene implements Scene {
   }
 
   private setupGameOverUi(): void {
-    this.gameOverOverlay.eventMode = 'static';
-    this.gameOverBackdrop.eventMode = 'none';
+    this.gameOverOverlay.eventMode = 'passive';
+    this.gameOverOverlay.interactiveChildren = true;
+    this.gameOverBackdrop.eventMode = 'static';
+    this.gameOverBackdrop.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.gameOverBackdrop.on('pointertap', (event) => {
+      event.stopPropagation();
+    });
     this.gameOverPanel.eventMode = 'none';
     this.gameOverOverlay.visible = false;
     this.gameOverOverlay.zIndex = 1200;
@@ -2375,15 +2382,22 @@ export class PlayScene implements Scene {
       style: this.createNeonGoldTextStyle(36, 4),
     });
     this.gameOverTitle.anchor.set(0.5);
+    this.gameOverTitle.eventMode = 'none';
     this.gameOverScoreText = new Text({
       text: '0 m',
       style: this.createNeonGoldTextStyle(24, 3),
     });
     this.gameOverScoreText.anchor.set(0.5);
+    this.gameOverScoreText.eventMode = 'none';
 
     this.gameOverRestartBtn.eventMode = 'static';
     this.gameOverRestartBtn.cursor = 'pointer';
-    this.gameOverRestartBtn.on('pointertap', () => {
+    this.gameOverRestartBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+      this.resetRun();
+    });
+    this.gameOverRestartBtn.on('pointertap', (event) => {
+      event.stopPropagation();
       this.resetRun();
     });
     this.gameOverRestartLabel = new Text({
@@ -2391,10 +2405,16 @@ export class PlayScene implements Scene {
       style: this.createNeonGoldTextStyle(16, 2),
     });
     this.gameOverRestartLabel.anchor.set(0.5);
+    this.gameOverRestartLabel.eventMode = 'none';
 
     this.gameOverLeaderboardBtn.eventMode = 'static';
     this.gameOverLeaderboardBtn.cursor = 'pointer';
-    this.gameOverLeaderboardBtn.on('pointertap', () => {
+    this.gameOverLeaderboardBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+      void this.openLeaderboardOverlay();
+    });
+    this.gameOverLeaderboardBtn.on('pointertap', (event) => {
+      event.stopPropagation();
       void this.openLeaderboardOverlay();
     });
     this.gameOverLeaderboardLabel = new Text({
@@ -2402,6 +2422,7 @@ export class PlayScene implements Scene {
       style: this.createNeonGoldTextStyle(16, 2),
     });
     this.gameOverLeaderboardLabel.anchor.set(0.5);
+    this.gameOverLeaderboardLabel.eventMode = 'none';
 
     this.gameOverOverlay.addChild(
       this.gameOverTitle,
@@ -2412,8 +2433,15 @@ export class PlayScene implements Scene {
       this.gameOverLeaderboardLabel,
     );
 
-    this.leaderboardOverlay.eventMode = 'static';
-    this.leaderboardBackdrop.eventMode = 'none';
+    this.leaderboardOverlay.eventMode = 'passive';
+    this.leaderboardOverlay.interactiveChildren = true;
+    this.leaderboardBackdrop.eventMode = 'static';
+    this.leaderboardBackdrop.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.leaderboardBackdrop.on('pointertap', (event) => {
+      event.stopPropagation();
+    });
     this.leaderboardPanel.eventMode = 'none';
     this.leaderboardOverlay.visible = false;
     this.leaderboardOverlay.zIndex = 1250;
@@ -2427,15 +2455,22 @@ export class PlayScene implements Scene {
       style: this.createNeonGoldTextStyle(30, 3),
     });
     this.leaderboardTitle.anchor.set(0.5);
+    this.leaderboardTitle.eventMode = 'none';
     this.leaderboardLoadingText = new Text({
       text: 'Loading...',
       style: this.createNeonGoldTextStyle(18, 2),
     });
     this.leaderboardLoadingText.anchor.set(0.5);
+    this.leaderboardLoadingText.eventMode = 'none';
 
     this.leaderboardCloseBtn.eventMode = 'static';
     this.leaderboardCloseBtn.cursor = 'pointer';
-    this.leaderboardCloseBtn.on('pointertap', () => {
+    this.leaderboardCloseBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+      this.leaderboardOverlay.visible = false;
+    });
+    this.leaderboardCloseBtn.on('pointertap', (event) => {
+      event.stopPropagation();
       this.leaderboardOverlay.visible = false;
     });
     this.leaderboardCloseLabel = new Text({
@@ -2443,6 +2478,7 @@ export class PlayScene implements Scene {
       style: this.createNeonGoldTextStyle(20, 2),
     });
     this.leaderboardCloseLabel.anchor.set(0.5);
+    this.leaderboardCloseLabel.eventMode = 'none';
 
     this.leaderboardOverlay.addChild(
       this.leaderboardTitle,
