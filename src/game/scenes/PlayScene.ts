@@ -468,6 +468,8 @@ export class PlayScene implements Scene {
   private tongueBoostComboExtendUntil = -Infinity;
   /** When reached, combo boost ends: chain clears (see `expireComboIfNeeded`). Refreshed on each TONGUE boost press. */
   private tongueBoostComboResetAt: number | null = null;
+  /** Max seconds between landings while TONGUE boost extend is active (set at press, matches `tongueBoostComboResetAt`). */
+  private tongueBoostChainWindowSec: number | null = null;
   private collectibles: Collectible[] = [];
   private goldCount = 0;
   private diamondCount = 0;
@@ -1360,6 +1362,7 @@ export class PlayScene implements Scene {
     this.jumpArcAssistDuration = 0;
     this.tongueBoostComboExtendUntil = -Infinity;
     this.tongueBoostComboResetAt = null;
+    this.tongueBoostChainWindowSec = null;
     this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
     if (this.levelUpFloatText) {
       this.levelUpFloatText.visible = false;
@@ -1392,7 +1395,7 @@ export class PlayScene implements Scene {
     // Arm a single `FLASH_SKILL_BOOST_DURATION_SEC` window when crossing into ×6+, then count down — never
     // refresh every frame while combo stays high (that trapped glow/jump boost and HUD buttons forever).
     if (beastModeActiveNow && !this.beastComboAtLeastSixPrev) {
-      this.flashSkillBoostTime = FLASH_SKILL_BOOST_DURATION_SEC;
+      this.flashSkillBoostTime = FLASH_SKILL_BOOST_DURATION_SEC * this.getComboWindowAltitudeMultiplier();
     }
     this.beastComboAtLeastSixPrev = beastModeActiveNow;
 
@@ -1807,6 +1810,7 @@ export class PlayScene implements Scene {
     if (this.tongueBoostComboResetAt !== null && this.runTime >= this.tongueBoostComboResetAt) {
       this.tongueBoostComboResetAt = null;
       this.tongueBoostComboExtendUntil = -Infinity;
+      this.tongueBoostChainWindowSec = null;
       this.comboChain = 0;
       this.lastChainTime = -1e9;
       return;
@@ -1814,10 +1818,11 @@ export class PlayScene implements Scene {
     if (this.comboChain <= 0) {
       return;
     }
+    const altEase = this.getComboWindowAltitudeMultiplier();
     const chainWindowSec =
       this.runTime < this.tongueBoostComboExtendUntil
-        ? TONGUE_COMBO_BOOST_DURATION_SEC
-        : COMBO.chainWindowSec;
+        ? (this.tongueBoostChainWindowSec ?? TONGUE_COMBO_BOOST_DURATION_SEC)
+        : COMBO.chainWindowSec * altEase;
     if (this.runTime - this.lastChainTime > chainWindowSec) {
       this.comboChain = 0;
     }
@@ -1842,7 +1847,8 @@ export class PlayScene implements Scene {
     launchSpeed: number,
   ): void {
     let add = 1 + Math.max(0, grappleGain - 1);
-    if (peakBonus && launchSpeed >= COMBO.highLaunchSpeedPx) {
+    const launchNeed = COMBO.highLaunchSpeedPx / this.getComboWindowAltitudeMultiplier();
+    if (peakBonus && launchSpeed >= launchNeed) {
       add += 1;
     }
 
@@ -2208,6 +2214,15 @@ export class PlayScene implements Scene {
     }
     const steps = Math.floor((m - SCROLL_SPEED_WARMUP_METERS) / SCROLL_SPEED_STEP_METERS);
     return 1 + SCROLL_SPEED_STEP_DELTA * steps;
+  }
+
+  /**
+   * Widen combo / boost timing as altitude scroll mult rises — faster world = more time to chain and
+   * to use TONGUE boost (same mult source as camera / stair drift).
+   */
+  private getComboWindowAltitudeMultiplier(): number {
+    const scrollMult = this.getAltitudeSpeedMultiplier();
+    return 1 + 0.24 * Math.min(4, Math.max(0, scrollMult - 1));
   }
 
   private getCameraScrollSpeedPx(): number {
@@ -3448,7 +3463,8 @@ export class PlayScene implements Scene {
     if (!this.isFlashSkillBoostActive()) {
       return;
     }
-    const d = TONGUE_COMBO_BOOST_DURATION_SEC;
+    const d = TONGUE_COMBO_BOOST_DURATION_SEC * this.getComboWindowAltitudeMultiplier();
+    this.tongueBoostChainWindowSec = d;
     this.tongueBoostComboExtendUntil = this.runTime + d;
     this.tongueBoostComboResetAt = this.runTime + d;
     this.feedComboFromLand();
