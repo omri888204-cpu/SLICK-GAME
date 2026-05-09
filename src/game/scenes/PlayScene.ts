@@ -238,6 +238,8 @@ const COLLECTIBLE_LINES_HALF_GAP_PX = 13;
 /** Touch-only boost tongue button — sits under Gold/Diamonds (right-aligned). */
 const TONGUE_BOOST_BTN_W = 118;
 const TONGUE_BOOST_BTN_H = 38;
+const BOOST_CIRCLE_DIAMETER = 76;
+const BOOST_CIRCLE_RADIUS = BOOST_CIRCLE_DIAMETER * 0.5;
 /** After pressing TONGUE during boost, combo chain uses this longer gap window (seconds). */
 const TONGUE_BOOST_COMBO_CLIMB_SEC = 8;
 const PLATFORM_SCALE = 2.1;
@@ -2124,7 +2126,7 @@ export class PlayScene implements Scene {
       style: this.createNeonGoldTextStyle(12, 2),
     });
     this.tongueBoostLabel.anchor.set(0.5);
-    this.tongueBoostLabel.position.set(TONGUE_BOOST_BTN_W * 0.5, TONGUE_BOOST_BTN_H * 0.5);
+    this.tongueBoostLabel.position.set(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS);
     this.tongueBoostLabel.eventMode = 'none';
     this.tongueBoostButtonRoot.addChild(this.tongueBoostButtonGfx, this.tongueBoostLabel);
     this.tongueBoostButtonGfx.on('pointerdown', this.handleTongueBoostButtonDown);
@@ -2146,7 +2148,7 @@ export class PlayScene implements Scene {
       style: this.createNeonGoldTextStyle(12, 2),
     });
     this.action360ButtonLabel.anchor.set(0.5);
-    this.action360ButtonLabel.position.set(TONGUE_BOOST_BTN_W * 0.5, TONGUE_BOOST_BTN_H * 0.5);
+    this.action360ButtonLabel.position.set(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS);
     this.action360ButtonLabel.eventMode = 'none';
     this.action360ButtonRoot.addChild(this.action360ButtonGfx, this.action360ButtonLabel);
     this.action360ButtonGfx.on('pointerdown', this.handleAction360ButtonDown);
@@ -2163,16 +2165,16 @@ export class PlayScene implements Scene {
     gfx.clear();
     const accent = UI_NEON_GREEN;
     const boost = pressed ? 1.25 : 1;
-    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).fill({
+    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS).fill({
       color: UI_PANEL_PURPLE,
       alpha: pressed ? 0.9 : 0.78,
     });
-    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).stroke({
+    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS).stroke({
       color: accent,
       alpha: pressed ? 0.98 : 0.85,
       width: pressed ? 2.4 : 2,
     });
-    gfx.roundRect(2, 2, TONGUE_BOOST_BTN_W - 4, TONGUE_BOOST_BTN_H - 4, 8).stroke({
+    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS - 4).stroke({
       color: accent,
       alpha: 0.22 * boost,
       width: 1,
@@ -2488,18 +2490,16 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Positions TONGUE (right) and 360 (left) on the bottom HUD safe zone. */
+  /** Positions circular TONGUE/360 buttons on the far-right middle area. */
   private layoutBoostHudButtons(): void {
-    const tongueRightX = this.width - BOOST_BTN_SCREEN_MARGIN_RIGHT_PX;
-    const by = this.height - UI_SAFE_PAD_BOTTOM - TONGUE_BOOST_BTN_H - 8;
-    const tongueLeftX = tongueRightX - TONGUE_BOOST_BTN_W;
-    const action360RightX = tongueLeftX - BOOST_ACTION_BTN_GAP_PX;
-    this.action360ButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
-    this.action360ButtonRoot.position.set(action360RightX, by);
-    this.action360ButtonGfx.hitArea = new Rectangle(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H);
-    this.tongueBoostButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
-    this.tongueBoostButtonRoot.position.set(tongueRightX, by);
-    this.tongueBoostButtonGfx.hitArea = new Rectangle(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H);
+    const rightX = this.width - BOOST_CIRCLE_DIAMETER - 10;
+    const midY = this.height * 0.5 - BOOST_CIRCLE_DIAMETER * 0.5;
+    this.tongueBoostButtonRoot.pivot.set(0, 0);
+    this.tongueBoostButtonRoot.position.set(rightX, midY - BOOST_CIRCLE_DIAMETER * 0.58);
+    this.tongueBoostButtonGfx.hitArea = new Rectangle(0, 0, BOOST_CIRCLE_DIAMETER, BOOST_CIRCLE_DIAMETER);
+    this.action360ButtonRoot.pivot.set(0, 0);
+    this.action360ButtonRoot.position.set(rightX, midY + BOOST_CIRCLE_DIAMETER * 0.58);
+    this.action360ButtonGfx.hitArea = new Rectangle(0, 0, BOOST_CIRCLE_DIAMETER, BOOST_CIRCLE_DIAMETER);
   }
 
   private redrawTongueBoostButton(pressed: boolean): void {
@@ -2507,16 +2507,16 @@ export class PlayScene implements Scene {
     gfx.clear();
     const gold = UI_NEON_GREEN;
     const boost = pressed ? 1.25 : 1;
-    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).fill({
+    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS).fill({
       color: UI_PANEL_PURPLE,
       alpha: pressed ? 0.9 : 0.78,
     });
-    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).stroke({
+    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS).stroke({
       color: gold,
       alpha: pressed ? 0.98 : 0.85,
       width: pressed ? 2.4 : 2,
     });
-    gfx.roundRect(2, 2, TONGUE_BOOST_BTN_W - 4, TONGUE_BOOST_BTN_H - 4, 8).stroke({
+    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS - 4).stroke({
       color: gold,
       alpha: 0.22 * boost,
       width: 1,
