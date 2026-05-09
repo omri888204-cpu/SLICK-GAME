@@ -107,7 +107,7 @@ type TouchRipple = {
   life: number;
 };
 
-type CollectibleKind = 'coin' | 'diamond' | 'shield';
+type CollectibleKind = 'coin' | 'diamond';
 
 type Collectible = {
   kind: CollectibleKind;
@@ -326,9 +326,9 @@ const LEVEL_UP_BOOST_DURATION_SEC = 4.5;
 const LEVEL_UP_BOOST_TIME_CAP_SEC = 14;
 const LEVEL_UP_BOOST_JUMP_MUL = 1.2;
 const LEVEL_UP_BOOST_SCROLL_MUL = 1.1;
-/** Spawn a shield pickup when both gold and diamond totals cross these thresholds (10 + 5, then 20 + 10, …). */
-const SHIELD_SPAWN_GOLD = 10;
-const SHIELD_SPAWN_DIAMOND = 5;
+/** Spend this much from gold/diamond bank to auto-grant one shield (no world pickup). */
+const SHIELD_BANK_GOLD = 10;
+const SHIELD_BANK_DIAMOND = 5;
 /** Shield break: teleport climb (~15 stair gaps) + upward impulse. */
 const SHIELD_SUPER_LAUNCH_STAIR_COUNT = 15;
 const FLASH_SKILL_BOOST_DURATION_SEC = 10;
@@ -554,9 +554,6 @@ export class PlayScene implements Scene {
   private levelUpBoostTime = 0;
   /** One-use: survive death ice once, then super-launch upward. */
   private playerShieldActive = false;
-  /** Next cumulative gold/diamond totals required to spawn a shield (both must be met). */
-  private nextShieldGoldThreshold = SHIELD_SPAWN_GOLD;
-  private nextShieldDiamondThreshold = SHIELD_SPAWN_DIAMOND;
   async init(app: Application): Promise<void> {
     this.app = app;
     this.width = app.screen.width;
@@ -1397,8 +1394,6 @@ export class PlayScene implements Scene {
     this.jumpArcAssistDuration = 0;
     this.levelUpBoostTime = 0;
     this.playerShieldActive = false;
-    this.nextShieldGoldThreshold = SHIELD_SPAWN_GOLD;
-    this.nextShieldDiamondThreshold = SHIELD_SPAWN_DIAMOND;
     this.tongueBoostComboExtendUntil = -Infinity;
     this.tongueBoostComboResetAt = null;
     this.tongueBoostChainWindowSec = null;
@@ -1737,6 +1732,7 @@ export class PlayScene implements Scene {
         life: 0.45 + Math.random() * 0.2,
       });
     }
+    this.maybePurchaseShieldFromBank();
   }
 
   /** Single source of truth for the bottom of the camera view in world space (death check + hazard art). */
@@ -3845,15 +3841,9 @@ export class PlayScene implements Scene {
     this.collectibleHudShieldText?.position.set(28, shieldRowY);
   }
 
-  /** 1 = shield held or shield pickup on the field; 0 = not yet (need 10 gold + 5 diamonds per tier, then collect). */
+  /** 1 = shield active; 0 = need 10 gold + 5 diamonds in bank (then auto-bought when not already shielded). */
   private getShieldHudStock(): number {
-    if (this.playerShieldActive) {
-      return 1;
-    }
-    if (this.hasActiveShieldPickup()) {
-      return 1;
-    }
-    return 0;
+    return this.playerShieldActive ? 1 : 0;
   }
 
   private refreshCollectibleHudText(): void {
@@ -3923,21 +3913,6 @@ export class PlayScene implements Scene {
       return null;
     }
     const margin = COLLECTIBLES.platformEdgeMarginPx;
-    if (c.kind === 'shield') {
-      /** Same horizontal slot as the paired diamond when wide enough; else center on the stair. */
-      const diaR = COLLECTIBLES.diamondRadius;
-      const innerWx = p.width - 2 * margin - 2 * diaR;
-      const diamondCenterY = p.y - COLLECTIBLES.aboveSurfacePx;
-      const diamondHalfH = COLLECTIBLES.diamondRadius * (1.05 + COLLECTIBLES.diamondPulseScale);
-      const y =
-        diamondCenterY +
-        diamondHalfH +
-        COLLECTIBLES.shieldGapBelowDiamondPx +
-        COLLECTIBLES.shieldRadius;
-      const x =
-        innerWx < 4 ? p.x + p.width * 0.5 : p.x + margin + diaR + c.along * innerWx;
-      return { x, y };
-    }
     const innerW = p.width - 2 * margin - 2 * c.r;
     if (innerW < 4) {
       return null;
@@ -3947,84 +3922,22 @@ export class PlayScene implements Scene {
     return { x, y };
   }
 
-  private findDiamondCollectibleForShieldSpawn(): Collectible | null {
-    let best: Collectible | null = null;
-    let bestPy = Infinity;
-    for (const c of this.collectibles) {
-      if (c.kind !== 'diamond' || c.phase !== 'active') {
-        continue;
-      }
-      const p = this.platforms[c.platformIdx];
-      if (!p) {
-        continue;
-      }
-      if (p.y < bestPy) {
-        bestPy = p.y;
-        best = c;
-      }
-    }
-    return best;
-  }
-
-  private hasActiveShieldPickup(): boolean {
-    return this.collectibles.some((c) => c.kind === 'shield' && c.phase === 'active');
-  }
-
-  private maybeSpawnShieldPowerUp(): void {
-    if (
-      this.goldCount < this.nextShieldGoldThreshold ||
-      this.diamondCount < this.nextShieldDiamondThreshold
-    ) {
+  /** If bank has enough gold+diamonds and no shield yet, spend 10+5 and grant one shield (+ score). */
+  private maybePurchaseShieldFromBank(): void {
+    if (this.playerShieldActive) {
       return;
     }
-    if (!this.spawnShieldPickupUnderNextDiamond()) {
+    if (this.goldCount < SHIELD_BANK_GOLD || this.diamondCount < SHIELD_BANK_DIAMOND) {
       return;
     }
-    this.nextShieldGoldThreshold += SHIELD_SPAWN_GOLD;
-    this.nextShieldDiamondThreshold += SHIELD_SPAWN_DIAMOND;
-  }
-
-  /**
-   * Spawns a shield pickup: prefers under the topmost active diamond; if none (or field full of
-   * coins), uses any free stair slot so milestones at 10g/5d never soft-lock.
-   */
-  private spawnShieldPickupUnderNextDiamond(): boolean {
-    if (this.hasActiveShieldPickup()) {
-      return false;
-    }
-    if (this.collectibles.length >= COLLECTIBLES.maxActive) {
-      return false;
-    }
-    const d = this.findDiamondCollectibleForShieldSpawn();
-    if (d) {
-      this.collectibles.push({
-        kind: 'shield',
-        platformIdx: d.platformIdx,
-        along: d.along,
-        r: COLLECTIBLES.shieldRadius,
-        phase: 'active',
-        collectT: 0,
-        collectStartX: 0,
-        collectStartY: 0,
-      });
-      return true;
-    }
-    const occupied = this.getOccupiedActivePlatformIndices();
-    const slot = this.pickPlatformSpawnSlot(COLLECTIBLES.shieldRadius, occupied);
-    if (!slot) {
-      return false;
-    }
-    this.collectibles.push({
-      kind: 'shield',
-      platformIdx: slot.platformIdx,
-      along: slot.along,
-      r: COLLECTIBLES.shieldRadius,
-      phase: 'active',
-      collectT: 0,
-      collectStartX: 0,
-      collectStartY: 0,
-    });
-    return true;
+    this.goldCount -= SHIELD_BANK_GOLD;
+    this.diamondCount -= SHIELD_BANK_DIAMOND;
+    this.playerShieldActive = true;
+    const add = COLLECTIBLES.shieldPickupPoints;
+    this.score += add * this.getScoreGainMultiplier();
+    this.scoreboard?.onPointsGained(add);
+    this.sfx.play('collect_diamond', 0.72);
+    this.collectibleHudBump = 1;
   }
 
   private spawnCollectibleField(): void {
@@ -4133,26 +4046,18 @@ export class PlayScene implements Scene {
       return;
     }
     const add =
-      c.kind === 'coin'
-        ? COLLECTIBLES.coinPoints
-        : c.kind === 'diamond'
-          ? COLLECTIBLES.diamondPoints
-          : COLLECTIBLES.shieldPickupPoints;
+      c.kind === 'coin' ? COLLECTIBLES.coinPoints : COLLECTIBLES.diamondPoints;
     this.score += add * this.getScoreGainMultiplier();
     this.scoreboard?.onPointsGained(add);
     if (c.kind === 'coin') {
       this.goldCount += 1;
       this.sfx.play('collect_coin', 0.9);
-      this.maybeSpawnShieldPowerUp();
-    } else if (c.kind === 'diamond') {
+    } else {
       this.diamondCount += 1;
       this.sfx.play('collect_diamond', 0.92);
       this.spawnDiamondCollectShine(pos.x, pos.y);
-      this.maybeSpawnShieldPowerUp();
-    } else {
-      this.playerShieldActive = true;
-      this.sfx.play('collect_diamond', 0.72);
     }
+    this.maybePurchaseShieldFromBank();
     this.collectibleHudBump = 1;
     c.phase = 'collecting';
     c.collectT = 0;
@@ -4239,23 +4144,6 @@ export class PlayScene implements Scene {
         this.collectiblesGfx
           .ellipse(cx - rx * 0.32, cy - ry * 0.22, rx * 0.38, ry * 0.24)
           .fill({ color: 0xfff2a0, alpha: alphaMul * 0.65 });
-      } else if (c.kind === 'shield') {
-        const pulse = 0.55 + 0.45 * Math.sin(t * Math.PI * 2 * 2.4 + c.platformIdx * 0.6);
-        const s = baseR * (1.05 + 0.12 * pulse) * (c.phase === 'collecting' ? 1 + 0.35 * c.collectT : 1);
-        const go = COLLECTIBLES.glowOuterPx;
-        this.collectiblesGfx
-          .circle(cx, cy, s + go)
-          .stroke({ width: 3, color: 0x66ccff, alpha: 0.45 * alphaMul });
-        this.collectiblesGfx
-          .circle(cx, cy, s + 2)
-          .stroke({ width: 2.2, color: 0xa8f0ff, alpha: 0.55 * alphaMul });
-        this.collectiblesGfx
-          .roundRect(cx - s * 0.55, cy - s * 0.72, s * 1.1, s * 1.35, s * 0.35)
-          .stroke({ width: 2.4, color: 0x88eeff, alpha: 0.75 * alphaMul });
-        this.collectiblesGfx
-          .roundRect(cx - s * 0.42, cy - s * 0.58, s * 0.84, s * 1.1, s * 0.28)
-          .fill({ color: 0x4060a0, alpha: 0.35 * alphaMul })
-          .stroke({ width: 1.5, color: 0xc8ffff, alpha: 0.85 * alphaMul });
       } else {
         const pulse = Math.sin(t * Math.PI * 2 * COLLECTIBLES.diamondPulseHz + c.platformIdx * 0.45);
         const pulse01 = (pulse + 1) * 0.5;

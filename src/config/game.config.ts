@@ -227,6 +227,7 @@ export const STAIRS = {
 export const COLLECTIBLES = {
   coinPoints: 10,
   diamondPoints: 50,
+  /** Score bonus when a shield is bought from the gold/diamond bank (no world pickup). */
   shieldPickupPoints: 40,
   diamondSpawnChance: 0.24,
   /** One pickup per platform slot; capped by stair pool size. */
@@ -249,10 +250,6 @@ export const COLLECTIBLES = {
   diamondAlphaMax: 1,
   collectDurationSec: 0.4,
   collectRisePx: 80,
-  /** Shield pickup radius (spawned under diamonds after gold/diamond milestones). */
-  shieldRadius: 18,
-  /** Gap between diamond bottom and shield center (world px). */
-  shieldGapBelowDiamondPx: 6,
   /** Soft glow rings (px beyond main shape). */
   glowOuterPx: 6,
   glowMidPx: 3,
