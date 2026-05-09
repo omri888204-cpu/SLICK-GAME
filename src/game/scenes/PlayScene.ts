@@ -556,20 +556,29 @@ export class PlayScene implements Scene {
     app.stage.addChild(this.gameShake);
     app.stage.addChild(this.uiLayer);
     this.gameShake.addChild(this.background);
-    /** View-fixed strip: above parallax bg, under `world` (platforms / player). `uiLayer` stays on `stage` above `gameShake`. */
-    this.gameShake.addChild(this.lavaLayer);
     this.gameShake.addChild(this.world);
     this.world.sortableChildren = true;
     this.world.addChild(
       this.jelly,
       this.platformSpriteLayer,
       this.platformLayer,
+      this.lavaLayer,
       this.rippleLayer,
       this.collectiblesGfx,
       this.tongueRoot,
       this.fxLayer,
       this.player,
     );
+    this.jelly.zIndex = 0;
+    this.platformSpriteLayer.zIndex = 2;
+    this.platformLayer.zIndex = 3;
+    /** Stairs drift behind the death-zone art; player / FX / ripples stay in front. */
+    this.lavaLayer.zIndex = 25;
+    this.rippleLayer.zIndex = 30;
+    this.collectiblesGfx.zIndex = 31;
+    this.tongueRoot.zIndex = 32;
+    this.fxLayer.zIndex = 33;
+    this.player.zIndex = 40;
     this.levelUpFloatText = new Text({
       text: 'LEVEL UP!',
       style: new TextStyle({
@@ -583,6 +592,7 @@ export class PlayScene implements Scene {
     this.levelUpFloatText.anchor.set(0.5);
     this.levelUpFloatText.visible = false;
     this.world.addChild(this.levelUpFloatText);
+    this.levelUpFloatText.zIndex = 45;
     this.tongueRoot.addChild(this.tongueVector);
 
     this.scoreboard = new HyperScoreboard();
@@ -3276,22 +3286,22 @@ export class PlayScene implements Scene {
 
   private drawBottomDeathLine(): void {
     /**
-     * `lavaLayer` is under `gameShake` (not `world`). View bottom in this space is `vh` — same Y as
-     * `getDeathPlaneWorldY()` in world space. Ice uses anchor (0.5, 0.5) so the **horizontal death line**
-     * passes through the **vertical midline** of the bitmap (half strip above / half below → visible).
+     * `lavaLayer` lives in `world` with `zIndex` above platforms so stairs pass **behind** the ice.
+     * Death line = `getDeathPlaneWorldY()`; ice anchor (0.5, 0.5) on that line (vertical center of art).
      */
-    const vh = this.worldHeightFromScreen();
+    const deathY = this.getDeathPlaneWorldY();
     const vw = this.worldWidthFromScreen();
     const padX = 30;
-    const xGs = -padX;
+    const x = this.cameraX - padX;
     const w = vw + padX * 2;
+    const cx = this.cameraX + vw * 0.5;
 
     const crystal = this.deathZoneCrystalSprite;
     if (crystal?.texture) {
       this.deathZoneFallback.visible = false;
       crystal.visible = true;
       crystal.anchor.set(0.5, 0.5);
-      crystal.position.set(vw * 0.5, vh);
+      crystal.position.set(cx, deathY);
       crystal.width = w;
       const sw = Math.max(1, this.deathZoneSourceW);
       const sh = Math.max(1, this.deathZoneSourceH);
@@ -3300,13 +3310,13 @@ export class PlayScene implements Scene {
     }
 
     this.deathZoneFallback.visible = true;
-    const lavaTop = vh - 32;
+    const lavaTop = deathY - 32;
     this.deathZoneFallback.clear();
     this.deathZoneFallback
-      .rect(xGs, lavaTop, w, 32)
+      .rect(x, lavaTop, w, 32)
       .fill({ color: 0xff4b00, alpha: 0.78 });
     this.deathZoneFallback
-      .rect(xGs, vh - 9, w, 9)
+      .rect(x, deathY - 9, w, 9)
       .fill({ color: 0xffa621, alpha: 0.95 });
   }
 
