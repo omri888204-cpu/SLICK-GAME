@@ -13,9 +13,6 @@ import { SlickLogoImage } from '../ui/SlickLogoImage';
 import { loadLogoTextureTransparent } from '../utils/logoTexture';
 import type { Scene } from './Scene';
 
-/** Preloaded for PlayScene death-zone `TilingSprite` — safe if missing (game falls back to vector strip). */
-const ICE_DEATH_PRELOAD_URL = `${import.meta.env.BASE_URL}assets/ice-death.png`;
-
 export class BootScene implements Scene {
   readonly name = 'boot';
 
@@ -35,9 +32,6 @@ export class BootScene implements Scene {
   async init(app: Application): Promise<void> {
     app.stage.addChild(this.container);
 
-    await Assets.load(ICE_DEATH_PRELOAD_URL).catch(() => {
-      /* PlayScene will retry or use vector fallback */
-    });
     let texture;
     try {
       texture = await loadLogoTextureTransparent(slickLogoUrl);
