@@ -344,11 +344,6 @@ const ALTITUDE_WIND_MAX_PARTICLES = 48;
  * 1 = natural proportions when stretched full width.
  */
 const DEATH_ZONE_VISUAL_SCALE = 1.42;
-/**
- * Tiny downward bleed in **screen pixels** (before camera zoom) so the strip covers the canvas bottom
- * after scaling / filtering. Death gameplay still uses `cameraY + worldHeightFromScreen()` in world space.
- */
-const DEATH_ZONE_BOTTOM_BLEED_SCREEN_PX = 10;
 
 type WindParticle = {
   x: number;
@@ -559,14 +554,13 @@ export class PlayScene implements Scene {
     app.stage.addChild(this.gameShake);
     app.stage.addChild(this.uiLayer);
     this.gameShake.addChild(this.background);
-    /** Death strip is parented here (not under `world`) so its Y aligns to the canvas bottom in `gameShake` space. */
-    this.gameShake.addChild(this.lavaLayer);
     this.gameShake.addChild(this.world);
     this.world.sortableChildren = true;
     this.world.addChild(
       this.jelly,
       this.platformSpriteLayer,
       this.platformLayer,
+      this.lavaLayer,
       this.rippleLayer,
       this.collectiblesGfx,
       this.tongueRoot,
@@ -1659,10 +1653,15 @@ export class PlayScene implements Scene {
     const feetY = this.player.body.y + this.player.body.height;
     // Kill plane = bottom edge of the viewed world (`cameraY` moves up at `getCameraScrollSpeedPx()` + player chase).
     // Use feet so there’s no invisible cushion below the viewport bottom (same frame as lava wipe).
-    const deathLineY = this.cameraY + this.worldHeightFromScreen();
+    const deathLineY = this.getDeathPlaneWorldY();
     if (feetY > deathLineY) {
       this.triggerGameOver();
     }
+  }
+
+  /** Single source of truth for the bottom of the camera view in world space (death check + hazard art). */
+  private getDeathPlaneWorldY(): number {
+    return this.cameraY + this.worldHeightFromScreen();
   }
 
   private resetPlayer(): void {
@@ -3262,20 +3261,18 @@ export class PlayScene implements Scene {
   }
 
   private drawBottomDeathLine(): void {
-    const zoom = this.getCameraZoom();
-    /** Viewport size in pre-zoom `gameShake` space (`lavaLayer` is a direct child of `gameShake`). */
+    const deathY = this.getDeathPlaneWorldY();
     const vw = this.worldWidthFromScreen();
-    const vh = this.worldHeightFromScreen();
     const padX = 30;
-    const x = -padX;
+    const x = this.cameraX - padX;
     const w = vw + padX * 2;
-    const bleed = DEATH_ZONE_BOTTOM_BLEED_SCREEN_PX / zoom;
 
     const crystal = this.deathZoneCrystalSprite;
     if (crystal?.texture) {
       this.deathZoneFallback.visible = false;
       crystal.visible = true;
-      crystal.position.set(x, vh + bleed);
+      /* Anchor (0,1): bottom edge of the sprite = kill plane (same Y as `checkFallGameOver`). */
+      crystal.position.set(x, deathY);
       crystal.width = w;
       const sw = Math.max(1, this.deathZoneSourceW);
       const sh = Math.max(1, this.deathZoneSourceH);
@@ -3284,13 +3281,13 @@ export class PlayScene implements Scene {
     }
 
     this.deathZoneFallback.visible = true;
-    const lavaTop = vh - 32 + bleed;
+    const lavaTop = deathY - 32;
     this.deathZoneFallback.clear();
     this.deathZoneFallback
       .rect(x, lavaTop, w, 32)
       .fill({ color: 0xff4b00, alpha: 0.78 });
     this.deathZoneFallback
-      .rect(x, vh - 9 + bleed, w, 9)
+      .rect(x, deathY - 9, w, 9)
       .fill({ color: 0xffa621, alpha: 0.95 });
   }
 
