@@ -237,6 +237,8 @@ const DARK_BG_MAX_CHANNEL = 42;
 
 /** Vertical half-gap between Gold and Diamond lines (stack centered on scoreboard bar midline). */
 const COLLECTIBLE_LINES_HALF_GAP_PX = 13;
+/** Vertical offset from the diamond HUD icon row to the shield row (same column as diamond). */
+const COLLECTIBLE_SHIELD_ICON_BELOW_DIAMOND_PX = 22;
 /** Touch-only boost tongue button — sits under Gold/Diamonds (right-aligned). */
 const TONGUE_BOOST_BTN_W = 118;
 const TONGUE_BOOST_BTN_H = 38;
@@ -421,6 +423,7 @@ export class PlayScene implements Scene {
   private collectibleHudRoot = new Container();
   private collectibleHudGoldIcon = new Graphics();
   private collectibleHudDiamondIcon = new Graphics();
+  private collectibleHudShieldIcon = new Graphics();
   private touchControlsLayer = new Container();
   private touchFeedbackLayer = new Graphics();
   private touchPointers = new Map<number, TouchPointerTrack>();
@@ -1393,6 +1396,7 @@ export class PlayScene implements Scene {
     this.jumpArcAssistDuration = 0;
     this.levelUpBoostTime = 0;
     this.playerShieldActive = false;
+    this.collectibleHudShieldIcon.visible = false;
     this.nextShieldGoldThreshold = SHIELD_SPAWN_GOLD;
     this.nextShieldDiamondThreshold = SHIELD_SPAWN_DIAMOND;
     this.tongueBoostComboExtendUntil = -Infinity;
@@ -2492,9 +2496,11 @@ export class PlayScene implements Scene {
     });
     this.collectibleHudGoldText.anchor.set(0, 0.5);
     this.collectibleHudDiamondText.anchor.set(0, 0.5);
+    this.collectibleHudShieldIcon.visible = false;
     this.collectibleHudRoot.addChild(
       this.collectibleHudGoldIcon,
       this.collectibleHudDiamondIcon,
+      this.collectibleHudShieldIcon,
       this.collectibleHudGoldText,
       this.collectibleHudDiamondText,
     );
@@ -2725,6 +2731,20 @@ export class PlayScene implements Scene {
       .moveTo(2, 0)
       .lineTo(18, 0)
       .stroke({ color: 0xffffff, width: 1, alpha: 0.35 });
+
+    this.collectibleHudShieldIcon.clear();
+    this.collectibleHudShieldIcon
+      .moveTo(10, -7)
+      .lineTo(16, 3)
+      .lineTo(10, 9)
+      .lineTo(4, 3)
+      .closePath()
+      .fill({ color: 0x66ccff, alpha: 0.92 })
+      .stroke({ color: UI_NEON_GREEN, width: 1.5, alpha: 0.82 });
+    this.collectibleHudShieldIcon
+      .roundRect(6.5, -4, 7, 7, 1.5)
+      .fill({ color: 0x4060a0, alpha: 0.45 })
+      .stroke({ color: 0xc8ffff, width: 1, alpha: 0.7 });
   }
 
   private drawHurryBanner(): void {
@@ -3815,6 +3835,7 @@ export class PlayScene implements Scene {
     this.collectibleHudGoldText?.position.set(28, -g);
     this.collectibleHudDiamondIcon.position.set(0, g - 2);
     this.collectibleHudDiamondText?.position.set(28, g);
+    this.collectibleHudShieldIcon.position.set(0, g - 2 + COLLECTIBLE_SHIELD_ICON_BELOW_DIAMOND_PX);
   }
 
   private refreshCollectibleHudText(): void {
@@ -3831,6 +3852,7 @@ export class PlayScene implements Scene {
     this.hudGoldShown += (this.goldCount - this.hudGoldShown) * k;
     this.hudDiamondShown += (this.diamondCount - this.hudDiamondShown) * k;
     this.refreshCollectibleHudText();
+    this.collectibleHudShieldIcon.visible = this.playerShieldActive;
 
     if (this.collectibleHudBump > 0) {
       this.collectibleHudBump = Math.max(0, this.collectibleHudBump - dt * 4.5);
@@ -3882,13 +3904,9 @@ export class PlayScene implements Scene {
     }
     const margin = COLLECTIBLES.platformEdgeMarginPx;
     if (c.kind === 'shield') {
-      /** Same horizontal slot as the paired diamond (`along` is shared). */
+      /** Same horizontal slot as the paired diamond when wide enough; else center on the stair. */
       const diaR = COLLECTIBLES.diamondRadius;
       const innerWx = p.width - 2 * margin - 2 * diaR;
-      if (innerWx < 4) {
-        return null;
-      }
-      const x = p.x + margin + diaR + c.along * innerWx;
       const diamondCenterY = p.y - COLLECTIBLES.aboveSurfacePx;
       const diamondHalfH = COLLECTIBLES.diamondRadius * (1.05 + COLLECTIBLES.diamondPulseScale);
       const y =
@@ -3896,6 +3914,8 @@ export class PlayScene implements Scene {
         diamondHalfH +
         COLLECTIBLES.shieldGapBelowDiamondPx +
         COLLECTIBLES.shieldRadius;
+      const x =
+        innerWx < 4 ? p.x + p.width * 0.5 : p.x + margin + diaR + c.along * innerWx;
       return { x, y };
     }
     const innerW = p.width - 2 * margin - 2 * c.r;
@@ -3944,7 +3964,10 @@ export class PlayScene implements Scene {
     this.nextShieldDiamondThreshold += SHIELD_SPAWN_DIAMOND;
   }
 
-  /** Spawns a shield pickup under the “next” diamond (topmost active diamond stair). */
+  /**
+   * Spawns a shield pickup: prefers under the topmost active diamond; if none (or field full of
+   * coins), uses any free stair slot so milestones at 10g/5d never soft-lock.
+   */
   private spawnShieldPickupUnderNextDiamond(): boolean {
     if (this.hasActiveShieldPickup()) {
       return false;
@@ -3953,13 +3976,28 @@ export class PlayScene implements Scene {
       return false;
     }
     const d = this.findDiamondCollectibleForShieldSpawn();
-    if (!d) {
+    if (d) {
+      this.collectibles.push({
+        kind: 'shield',
+        platformIdx: d.platformIdx,
+        along: d.along,
+        r: COLLECTIBLES.shieldRadius,
+        phase: 'active',
+        collectT: 0,
+        collectStartX: 0,
+        collectStartY: 0,
+      });
+      return true;
+    }
+    const occupied = this.getOccupiedActivePlatformIndices();
+    const slot = this.pickPlatformSpawnSlot(COLLECTIBLES.shieldRadius, occupied);
+    if (!slot) {
       return false;
     }
     this.collectibles.push({
       kind: 'shield',
-      platformIdx: d.platformIdx,
-      along: d.along,
+      platformIdx: slot.platformIdx,
+      along: slot.along,
       r: COLLECTIBLES.shieldRadius,
       phase: 'active',
       collectT: 0,
