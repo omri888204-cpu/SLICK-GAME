@@ -968,6 +968,11 @@ export class PlayScene implements Scene {
     this.clearPlatformSprites();
     const baseY = this.worldMaxY - 96;
     let y = baseY;
+    // `resetRun` clears `cameraX` to 0 before this; spawn must use the same horizontal view as `snapCameraToPlayer`
+    // (world-centered camera), otherwise every stair is laid out for the left edge of the world and disappears on mobile.
+    const viewportW = this.worldWidthFromScreen();
+    const maxCamX = Math.max(0, this.worldWidth - viewportW);
+    const layoutCamX = Math.max(0, Math.min((this.worldWidth - viewportW) * 0.5, maxCamX));
 
     for (let index = 0; index < STAIRS.poolCount; index += 1) {
       const baseWidth = 150 + ((index * 37) % 80);
@@ -982,11 +987,12 @@ export class PlayScene implements Scene {
         stairId: index,
       };
       this.applyResponsivePlatformWidth(platform);
-      platform.x = this.computePlatformSpawnX(index, platform.width);
       if (index === 0) {
-        platform.x = this.worldWidth * 0.5 - platform.width * 0.5;
-        const { minX, maxX } = this.getPlatformSpawnHorizontalRange(platform.width);
-        platform.x = Math.max(minX, Math.min(platform.x, maxX));
+        const ideal = layoutCamX + viewportW * 0.5 - platform.width * 0.5;
+        const { minX, maxX } = this.getPlatformSpawnHorizontalRange(platform.width, layoutCamX);
+        platform.x = Math.max(minX, Math.min(ideal, maxX));
+      } else {
+        platform.x = this.computePlatformSpawnX(index, platform.width, layoutCamX);
       }
       this.platforms.push(platform);
       y -= this.computeStairGapPx(index);
@@ -1060,24 +1066,31 @@ export class PlayScene implements Scene {
    * Safe horizontal span for platform **left edge** X: current camera view minus margins,
    * clamped to world bounds (Phaser-style: between margin and gameWidth - margin - width).
    */
-  private getPlatformSpawnHorizontalRange(platformWidth: number): { minX: number; maxX: number } {
+  private getPlatformSpawnHorizontalRange(
+    platformWidth: number,
+    viewOriginX: number = this.cameraX,
+  ): { minX: number; maxX: number } {
     const marginW = this.getViewportSafeMarginWorld();
     const vw = this.worldWidthFromScreen();
-    const viewLeft = this.cameraX + marginW;
-    const viewRight = this.cameraX + vw - marginW;
+    const viewLeft = viewOriginX + marginW;
+    const viewRight = viewOriginX + vw - marginW;
     const pad = PLATFORM_EDGE_PADDING_PX;
     let minX = Math.max(WORLD_BOUNDS_X + pad, viewLeft);
     let maxX = Math.min(this.worldWidth - pad - platformWidth, viewRight - platformWidth);
     if (maxX <= minX) {
-      const cx = this.cameraX + vw * 0.5 - platformWidth * 0.5;
+      const cx = viewOriginX + vw * 0.5 - platformWidth * 0.5;
       const clamped = Math.max(WORLD_BOUNDS_X + pad, Math.min(cx, this.worldWidth - pad - platformWidth));
       return { minX: clamped, maxX: clamped };
     }
     return { minX, maxX };
   }
 
-  private computePlatformSpawnX(stairId: number, platformWidth: number): number {
-    const { minX, maxX } = this.getPlatformSpawnHorizontalRange(platformWidth);
+  private computePlatformSpawnX(
+    stairId: number,
+    platformWidth: number,
+    viewOriginX: number = this.cameraX,
+  ): number {
+    const { minX, maxX } = this.getPlatformSpawnHorizontalRange(platformWidth, viewOriginX);
     if (maxX <= minX) {
       return minX;
     }
@@ -1125,6 +1138,17 @@ export class PlayScene implements Scene {
     const ideal = this.cameraX + vw * 0.5 - p.width * 0.5;
     const { minX, maxX } = this.getPlatformSpawnHorizontalRange(p.width);
     p.x = Math.max(minX, Math.min(ideal, maxX));
+  }
+
+  /** Align the chameleon to the bottom center of stair 0 (call after that stair’s X/width is final). */
+  private snapPlayerOntoStairZero(): void {
+    const p = this.platforms[0];
+    if (!p) {
+      return;
+    }
+    const b = this.player.body;
+    b.x = Math.round(p.x + p.width * 0.5 - b.width * 0.5);
+    b.y = Math.round(p.y - b.height);
   }
 
   private updatePlatformBodyFromScale(platform: Platform): void {
@@ -1245,6 +1269,7 @@ export class PlayScene implements Scene {
     this.resetPlayer();
     this.snapCameraToPlayer();
     this.centerStairZeroUnderCamera();
+    this.snapPlayerOntoStairZero();
     this.scoreboard?.reset();
     this.hudGoldShown = this.goldCount;
     this.hudDiamondShown = this.diamondCount;
@@ -1546,10 +1571,7 @@ export class PlayScene implements Scene {
   }
 
   private resetPlayer(): void {
-    const spawnX = this.worldWidth * 0.5 - this.player.body.width * 0.5;
-    const spawnY = this.worldMaxY - 100 - this.player.body.height;
-    this.player.body.x = Math.round(spawnX);
-    this.player.body.y = Math.round(spawnY);
+    this.snapPlayerOntoStairZero();
     this.player.body.vx = 0;
     this.player.body.vy = 0;
     this.player.body.grounded = true;
