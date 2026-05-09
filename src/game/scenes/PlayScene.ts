@@ -344,6 +344,12 @@ const ALTITUDE_WIND_MAX_PARTICLES = 48;
  * 1 = natural proportions when stretched full width.
  */
 const DEATH_ZONE_VISUAL_SCALE = 1.42;
+/**
+ * Nudge the crystal strip downward (world px). Anchor stays bottom-aligned to the viewport bottom,
+ * so this hides more ice below the fold and pulls the visible band down — reads like the map swallows
+ * the player at the death line without moving gameplay (`feetY` vs death line).
+ */
+const DEATH_ZONE_VISUAL_OFFSET_Y = 72;
 
 type WindParticle = {
   x: number;
@@ -3258,7 +3264,7 @@ export class PlayScene implements Scene {
     if (crystal?.texture) {
       this.deathZoneFallback.visible = false;
       crystal.visible = true;
-      crystal.position.set(x, viewBottomY);
+      crystal.position.set(x, viewBottomY + DEATH_ZONE_VISUAL_OFFSET_Y);
       crystal.width = w;
       const sw = Math.max(1, this.deathZoneSourceW);
       const sh = Math.max(1, this.deathZoneSourceH);
@@ -3267,13 +3273,13 @@ export class PlayScene implements Scene {
     }
 
     this.deathZoneFallback.visible = true;
-    const lavaTop = viewBottomY - 32;
+    const lavaTop = viewBottomY - 32 + DEATH_ZONE_VISUAL_OFFSET_Y;
     this.deathZoneFallback.clear();
     this.deathZoneFallback
       .rect(x, lavaTop, w, 32)
       .fill({ color: 0xff4b00, alpha: 0.78 });
     this.deathZoneFallback
-      .rect(x, viewBottomY - 9, w, 9)
+      .rect(x, viewBottomY - 9 + DEATH_ZONE_VISUAL_OFFSET_Y, w, 9)
       .fill({ color: 0xffa621, alpha: 0.95 });
   }
 
