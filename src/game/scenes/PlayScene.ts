@@ -337,8 +337,11 @@ const TOUCH_ACTION_RETRIGGER_MS = 110;
 const ALTITUDE_WIND_TINT_COOL = 0x142a38;
 const ALTITUDE_WIND_TINT_MAX_BLEND = 0.32;
 const ALTITUDE_WIND_MAX_PARTICLES = 48;
-/** World-space height for the crystal death-zone tiling strip (bottom-aligned with viewport kill line). */
-const DEATH_ZONE_TILING_HEIGHT_PX = 76;
+/**
+ * Extra scale so the ice strip reads clearly (base height follows texture aspect × viewport width).
+ * 1 = natural proportions when stretched full width.
+ */
+const DEATH_ZONE_VISUAL_SCALE = 1.42;
 
 type WindParticle = {
   x: number;
@@ -372,6 +375,9 @@ export class PlayScene implements Scene {
   private lavaLayer = new Container();
   private deathZoneFallback = new Graphics();
   private deathZoneCrystalSprite: Sprite | null = null;
+  /** Pixel size of death-zone texture (for proportional scaling — avoids squashing to a fixed height). */
+  private deathZoneSourceW = 1;
+  private deathZoneSourceH = 1;
   private gameShake = new Container();
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
@@ -3179,7 +3185,9 @@ export class PlayScene implements Scene {
       crystal.visible = true;
       crystal.position.set(x, viewBottomY);
       crystal.width = w;
-      crystal.height = DEATH_ZONE_TILING_HEIGHT_PX;
+      const sw = Math.max(1, this.deathZoneSourceW);
+      const sh = Math.max(1, this.deathZoneSourceH);
+      crystal.height = (w * sh * DEATH_ZONE_VISUAL_SCALE) / sw;
       return;
     }
 
@@ -3196,8 +3204,12 @@ export class PlayScene implements Scene {
 
   private async loadDeathZoneStrip(): Promise<void> {
     try {
-      const tex = await this.createDeathZoneStripTexture(`${GAME_ASSETS}/death-zone-crystals.png`);
-      const spr = new Sprite(tex);
+      const { texture, w, h } = await this.createDeathZoneStripTexture(
+        `${GAME_ASSETS}/death-zone-crystals.png`,
+      );
+      this.deathZoneSourceW = w;
+      this.deathZoneSourceH = h;
+      const spr = new Sprite(texture);
       spr.anchor.set(0, 1);
       spr.roundPixels = RENDER.pixelArt;
       spr.eventMode = 'none';
@@ -3214,7 +3226,9 @@ export class PlayScene implements Scene {
    * Loads the PNG, removes edge-connected near-black (Photoroom letterbox / leftover bg),
    * then builds a texture — `Sprite` + canvas path avoids TilingSprite solid-black issues in Pixi v8.
    */
-  private async createDeathZoneStripTexture(assetPath: string): Promise<Texture> {
+  private async createDeathZoneStripTexture(
+    assetPath: string,
+  ): Promise<{ texture: Texture; w: number; h: number }> {
     const res = await fetch(assetPath);
     if (!res.ok) {
       throw new Error(`death-zone fetch ${res.status}`);
@@ -3235,7 +3249,10 @@ export class PlayScene implements Scene {
     canvas.height = img.naturalHeight;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx || canvas.width < 2 || canvas.height < 2) {
-      return Assets.load<Texture>(assetPath);
+      const tex = await Assets.load<Texture>(assetPath);
+      const tw = tex.width || tex.source?.width || 1;
+      const th = tex.height || tex.source?.height || 1;
+      return { texture: tex, w: tw, h: th };
     }
 
     ctx.drawImage(img, 0, 0);
@@ -3243,7 +3260,8 @@ export class PlayScene implements Scene {
     this.removeConnectedDarkEdgeBackground(imageData.data, canvas.width, canvas.height);
     ctx.putImageData(imageData, 0, 0);
 
-    return Texture.from(canvas);
+    const texture = Texture.from(canvas);
+    return { texture, w: canvas.width, h: canvas.height };
   }
 
   private tickAltitudePresentation(dt: number): void {
