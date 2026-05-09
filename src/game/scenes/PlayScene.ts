@@ -1140,7 +1140,10 @@ export class PlayScene implements Scene {
     p.x = Math.max(minX, Math.min(ideal, maxX));
   }
 
-  /** Align the chameleon to the bottom center of stair 0 (call after that stair’s X/width is final). */
+  /**
+   * Horizontally center on stair 0 (mobile layout). Vertically use the legacy spawn offset so the feet sit a few
+   * pixels above the deck — exact feet-on-surface made the first physics frames look like a harsh drop/land.
+   */
   private snapPlayerOntoStairZero(): void {
     const p = this.platforms[0];
     if (!p) {
@@ -1148,7 +1151,7 @@ export class PlayScene implements Scene {
     }
     const b = this.player.body;
     b.x = Math.round(p.x + p.width * 0.5 - b.width * 0.5);
-    b.y = Math.round(p.y - b.height);
+    b.y = Math.round(this.worldMaxY - 100 - b.height);
   }
 
   private updatePlatformBodyFromScale(platform: Platform): void {
@@ -1270,6 +1273,7 @@ export class PlayScene implements Scene {
     this.snapCameraToPlayer();
     this.centerStairZeroUnderCamera();
     this.snapPlayerOntoStairZero();
+    this.climbBaselineY = this.player.body.y;
     this.scoreboard?.reset();
     this.hudGoldShown = this.goldCount;
     this.hudDiamondShown = this.diamondCount;
@@ -1581,7 +1585,6 @@ export class PlayScene implements Scene {
     this.grappleReloadingLogged = false;
     this.lastScoredStairId = this.platforms[0]?.stairId ?? 0;
     this.player.update(0, 0, false, null, false);
-    this.climbBaselineY = this.player.body.y;
   }
 
   private landOn(platform: Platform): void {
