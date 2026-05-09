@@ -238,8 +238,6 @@ const COLLECTIBLE_LINES_HALF_GAP_PX = 13;
 /** Touch-only boost tongue button — sits under Gold/Diamonds (right-aligned). */
 const TONGUE_BOOST_BTN_W = 118;
 const TONGUE_BOOST_BTN_H = 38;
-const BOOST_CIRCLE_DIAMETER = 76;
-const BOOST_CIRCLE_RADIUS = BOOST_CIRCLE_DIAMETER * 0.5;
 /** After pressing TONGUE during boost, combo chain uses this longer gap window (seconds). */
 const TONGUE_BOOST_COMBO_CLIMB_SEC = 8;
 const PLATFORM_SCALE = 2.1;
@@ -2125,7 +2123,7 @@ export class PlayScene implements Scene {
       style: this.createNeonGoldTextStyle(12, 2),
     });
     this.tongueBoostLabel.anchor.set(0.5);
-    this.tongueBoostLabel.position.set(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS);
+    this.tongueBoostLabel.position.set(TONGUE_BOOST_BTN_W * 0.5, TONGUE_BOOST_BTN_H * 0.5);
     this.tongueBoostLabel.eventMode = 'none';
     this.tongueBoostButtonRoot.addChild(this.tongueBoostButtonGfx, this.tongueBoostLabel);
     this.tongueBoostButtonGfx.on('pointerdown', this.handleTongueBoostButtonDown);
@@ -2147,7 +2145,7 @@ export class PlayScene implements Scene {
       style: this.createNeonGoldTextStyle(12, 2),
     });
     this.action360ButtonLabel.anchor.set(0.5);
-    this.action360ButtonLabel.position.set(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS);
+    this.action360ButtonLabel.position.set(TONGUE_BOOST_BTN_W * 0.5, TONGUE_BOOST_BTN_H * 0.5);
     this.action360ButtonLabel.eventMode = 'none';
     this.action360ButtonRoot.addChild(this.action360ButtonGfx, this.action360ButtonLabel);
     this.action360ButtonGfx.on('pointerdown', this.handleAction360ButtonDown);
@@ -2164,16 +2162,16 @@ export class PlayScene implements Scene {
     gfx.clear();
     const accent = UI_NEON_GREEN;
     const boost = pressed ? 1.25 : 1;
-    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS).fill({
+    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).fill({
       color: UI_PANEL_PURPLE,
       alpha: pressed ? 0.9 : 0.78,
     });
-    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS).stroke({
+    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).stroke({
       color: accent,
       alpha: pressed ? 0.98 : 0.85,
       width: pressed ? 2.4 : 2,
     });
-    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS - 4).stroke({
+    gfx.roundRect(2, 2, TONGUE_BOOST_BTN_W - 4, TONGUE_BOOST_BTN_H - 4, 8).stroke({
       color: accent,
       alpha: 0.22 * boost,
       width: 1,
@@ -2351,7 +2349,8 @@ export class PlayScene implements Scene {
 
   private layoutAutoScrollHud(): void {
     if (this.timerHudText) {
-      this.timerHudText.position.set(this.width * 0.5, UI_SAFE_PAD_TOP + 10);
+      const timerX = this.width <= MOBILE_NARROW_UI_MAX_W ? this.width * 0.44 : this.width * 0.5;
+      this.timerHudText.position.set(timerX, UI_SAFE_PAD_TOP + 10);
     }
     this.hurryBannerRoot.position.set(-460, UI_SAFE_PAD_TOP + 8);
     this.hurryBannerX = this.hurryBannerRoot.position.x;
@@ -2368,34 +2367,20 @@ export class PlayScene implements Scene {
       this.timerHudText.text = `${minutes}:${seconds}`;
     }
     if (this.hurryBannerText) {
-      const flashing = this.hurryUpTimeLeft > 0;
-      this.hurryBannerRoot.visible = flashing;
-      if (flashing) {
-        const pulse = 0.76 + 0.24 * (0.5 + 0.5 * Math.sin(this.runTime * 14));
-        this.hurryBannerRoot.alpha = pulse;
-      }
+      this.hurryBannerRoot.visible = false;
     }
   }
 
   private updateAutoScrollSpeed(dt: number): void {
     this.hurryUpTimeLeft = Math.max(0, this.hurryUpTimeLeft - dt);
-    if (this.hurryUpTimeLeft > 0) {
-      this.hurryBannerX += HURRY_BANNER_SLIDE_SPEED * dt;
-      if (this.hurryBannerX > this.width + 30) {
-        this.hurryBannerX = -450;
-      }
-      this.hurryBannerRoot.x = this.hurryBannerX;
-    }
     const nextLevel = Math.floor(this.runTime / AUTO_SCROLL_STEP_INTERVAL_SEC);
     if (nextLevel <= this.autoScrollLevel) {
       return;
     }
     this.autoScrollLevel = nextLevel;
     this.autoScrollSpeedPx = AUTO_SCROLL_BASE_SPEED_PX + this.autoScrollLevel * AUTO_SCROLL_SPEED_STEP_PX;
-    this.hurryUpTimeLeft = HURRY_UP_FLASH_SEC;
-    this.hurryBannerX = -450;
-    this.hurryBannerRoot.x = this.hurryBannerX;
-    this.drawHurryBanner();
+    this.hurryUpTimeLeft = 0;
+    this.hurryBannerRoot.visible = false;
     this.refreshAutoScrollHud();
   }
 
@@ -2471,16 +2456,18 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Positions circular TONGUE/360 buttons on the far-right middle area. */
+  /** Positions TONGUE (right) and 360 (left) under the top header. */
   private layoutBoostHudButtons(): void {
-    const rightX = this.width - BOOST_CIRCLE_DIAMETER - 10;
-    const midY = this.height * 0.5 - BOOST_CIRCLE_DIAMETER * 0.5;
-    this.tongueBoostButtonRoot.pivot.set(0, 0);
-    this.tongueBoostButtonRoot.position.set(rightX, midY - BOOST_CIRCLE_DIAMETER * 0.58);
-    this.tongueBoostButtonGfx.hitArea = new Rectangle(0, 0, BOOST_CIRCLE_DIAMETER, BOOST_CIRCLE_DIAMETER);
-    this.action360ButtonRoot.pivot.set(0, 0);
-    this.action360ButtonRoot.position.set(rightX, midY + BOOST_CIRCLE_DIAMETER * 0.58);
-    this.action360ButtonGfx.hitArea = new Rectangle(0, 0, BOOST_CIRCLE_DIAMETER, BOOST_CIRCLE_DIAMETER);
+    const tongueRightX = this.width - BOOST_BTN_SCREEN_MARGIN_RIGHT_PX;
+    const by = UI_SAFE_PAD_TOP + UI_HEADER_H + 8;
+    const tongueLeftX = tongueRightX - TONGUE_BOOST_BTN_W;
+    const action360RightX = tongueLeftX - BOOST_ACTION_BTN_GAP_PX;
+    this.action360ButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
+    this.action360ButtonRoot.position.set(action360RightX, by);
+    this.action360ButtonGfx.hitArea = new Rectangle(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H);
+    this.tongueBoostButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
+    this.tongueBoostButtonRoot.position.set(tongueRightX, by);
+    this.tongueBoostButtonGfx.hitArea = new Rectangle(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H);
   }
 
   private redrawTongueBoostButton(pressed: boolean): void {
@@ -2488,16 +2475,16 @@ export class PlayScene implements Scene {
     gfx.clear();
     const gold = UI_NEON_GREEN;
     const boost = pressed ? 1.25 : 1;
-    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS).fill({
+    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).fill({
       color: UI_PANEL_PURPLE,
       alpha: pressed ? 0.9 : 0.78,
     });
-    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS).stroke({
+    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).stroke({
       color: gold,
       alpha: pressed ? 0.98 : 0.85,
       width: pressed ? 2.4 : 2,
     });
-    gfx.circle(BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS, BOOST_CIRCLE_RADIUS - 4).stroke({
+    gfx.roundRect(2, 2, TONGUE_BOOST_BTN_W - 4, TONGUE_BOOST_BTN_H - 4, 8).stroke({
       color: gold,
       alpha: 0.22 * boost,
       width: 1,
