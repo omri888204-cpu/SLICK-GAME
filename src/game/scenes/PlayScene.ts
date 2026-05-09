@@ -268,16 +268,10 @@ const WORLD_BOUNDS_X = 0;
 const WORLD_BOUNDS_Y = -1000000;
 const WORLD_BOUNDS_W = 1400;
 const WORLD_BOUNDS_H = 1001000;
-const PLATFORM_SPAWN_MIN_X = 100;
-const PLATFORM_SPAWN_MAX_X = 1400 - 100;
+/** Screen-space inset (px) from each side; converted to world px via zoom for spawn + player clamp. */
+const VIEWPORT_SAFE_MARGIN_SCREEN_PX = 40;
 /** When true, stairs spawn in a band around the player (world X) so they stay on-screen on mobile. */
 const MOBILE_NARROW_UI_MAX_W = 520;
-/**
- * Horizontal spawn band = this fraction of visible world width, centered on the player.
- * (e.g. 0.75 → new stairs stay within ~75% of viewport width around the chameleon.)
- */
-const MOBILE_PLATFORM_SPAWN_VIEWPORT_FRAC = 0.72;
-const MOBILE_PLATFORM_SPAWN_MIN_HALF_BAND_PX = 200;
 const STAIR_GAP_MIN_PX = 250;
 const STAIR_GAP_MAX_PX = 350;
 const BACKGROUND_HORIZONTAL_PAD_PX = 1200;
@@ -654,6 +648,7 @@ export class PlayScene implements Scene {
       mult >= COMBO.beastModeMinMultiplier,
     );
     this.physics.applyWorldBounds(this.player.body, this.worldWidth);
+    this.clampPlayerToCameraViewport();
     this.tickAltitudePresentation(dt);
     this.drawDynamicWorld();
     this.updateScreenShake(dt);
@@ -749,6 +744,7 @@ export class PlayScene implements Scene {
     }
 
     this.updateCamera(dt);
+    this.clampPlayerToCameraViewport();
     this.recycleStairsOffscreen();
     this.syncPlatformSpritesFromPlatforms();
     this.checkFallGameOver();
@@ -975,21 +971,22 @@ export class PlayScene implements Scene {
 
     for (let index = 0; index < STAIRS.poolCount; index += 1) {
       const baseWidth = 150 + ((index * 37) % 80);
-      const width = baseWidth * PLATFORM_SCALE;
-      const x = this.computePlatformSpawnX(index, width);
       const platform: Platform = {
-        x,
+        x: 0,
         y,
-        width,
+        width: 0,
         height: STAIRS.platformHeight,
         baseWidth,
         driftDir: Math.random() < 0.5 ? -1 : 1,
         driftVx: 0,
         stairId: index,
       };
-      this.updatePlatformBodyFromScale(platform);
+      this.applyResponsivePlatformWidth(platform);
+      platform.x = this.computePlatformSpawnX(index, platform.width);
       if (index === 0) {
         platform.x = this.worldWidth * 0.5 - platform.width * 0.5;
+        const { minX, maxX } = this.getPlatformSpawnHorizontalRange(platform.width);
+        platform.x = Math.max(minX, Math.min(platform.x, maxX));
       }
       this.platforms.push(platform);
       y -= this.computeStairGapPx(index);
@@ -1024,10 +1021,9 @@ export class PlayScene implements Scene {
       p.stairId = this.nextStairId;
       p.y = spawnY;
       p.baseWidth = 150 + ((this.nextStairId * 37) % 80);
-      p.width = p.baseWidth * PLATFORM_SCALE;
       p.driftDir = Math.random() < 0.5 ? -1 : 1;
       p.driftVx = 0;
-      this.updatePlatformBodyFromScale(p);
+      this.applyResponsivePlatformWidth(p);
       p.x = this.computePlatformSpawnX(this.nextStairId, p.width);
       spawnY -= this.computeStairGapPx(this.nextStairId);
     }
@@ -1039,55 +1035,96 @@ export class PlayScene implements Scene {
     return STAIR_GAP_MIN_PX + unit * (STAIR_GAP_MAX_PX - STAIR_GAP_MIN_PX);
   }
 
+  /** Left/right screen margin expressed in world pixels (matches visible “safe zone”). */
+  private getViewportSafeMarginWorld(): number {
+    return VIEWPORT_SAFE_MARGIN_SCREEN_PX / this.getCameraZoom();
+  }
+
+  /** Slightly narrower platforms on small screens so they don’t fill the whole view. */
+  private getPlatformResponsiveWidthMul(): number {
+    if (this.width <= 380) {
+      return 0.78;
+    }
+    if (this.width <= MOBILE_NARROW_UI_MAX_W) {
+      return 0.88;
+    }
+    return 1;
+  }
+
+  private applyResponsivePlatformWidth(platform: Platform): void {
+    platform.width = platform.baseWidth * PLATFORM_SCALE * this.getPlatformResponsiveWidthMul();
+    this.updatePlatformBodyFromScale(platform);
+  }
+
   /**
-   * World-space range for platform **center** X. On narrow screens, keep stairs near the player
-   * so they don’t spawn at the far edges of the 1400px world (invisible / awkward on mobile).
+   * Safe horizontal span for platform **left edge** X: current camera view minus margins,
+   * clamped to world bounds (Phaser-style: between margin and gameWidth - margin - width).
    */
-  private getPlatformSpawnCenterRange(platformWidth: number): { minCenterX: number; maxCenterX: number } {
-    const halfW = platformWidth * 0.5;
-    const minEdge = WORLD_BOUNDS_X + PLATFORM_EDGE_PADDING_PX + halfW;
-    const maxEdge = this.worldWidth - PLATFORM_EDGE_PADDING_PX - halfW;
-    if (maxEdge <= minEdge) {
-      const c = this.worldWidth * 0.5;
-      return { minCenterX: c, maxCenterX: c };
+  private getPlatformSpawnHorizontalRange(platformWidth: number): { minX: number; maxX: number } {
+    const marginW = this.getViewportSafeMarginWorld();
+    const vw = this.worldWidthFromScreen();
+    const viewLeft = this.cameraX + marginW;
+    const viewRight = this.cameraX + vw - marginW;
+    const pad = PLATFORM_EDGE_PADDING_PX;
+    let minX = Math.max(WORLD_BOUNDS_X + pad, viewLeft);
+    let maxX = Math.min(this.worldWidth - pad - platformWidth, viewRight - platformWidth);
+    if (maxX <= minX) {
+      const cx = this.cameraX + vw * 0.5 - platformWidth * 0.5;
+      const clamped = Math.max(WORLD_BOUNDS_X + pad, Math.min(cx, this.worldWidth - pad - platformWidth));
+      return { minX: clamped, maxX: clamped };
     }
-
-    const useCenterBand = this.width <= MOBILE_NARROW_UI_MAX_W;
-    if (!useCenterBand) {
-      return { minCenterX: PLATFORM_SPAWN_MIN_X, maxCenterX: PLATFORM_SPAWN_MAX_X };
-    }
-
-    const cx = this.player.body.x + this.player.body.width * 0.5;
-    const halfBand = Math.max(
-      MOBILE_PLATFORM_SPAWN_MIN_HALF_BAND_PX,
-      this.worldWidthFromScreen() * 0.5 * MOBILE_PLATFORM_SPAWN_VIEWPORT_FRAC,
-    );
-    let minC = cx - halfBand;
-    let maxC = cx + halfBand;
-
-    minC = Math.max(minEdge, minC);
-    maxC = Math.min(maxEdge, maxC);
-    if (maxC <= minC) {
-      const mid = Math.max(minEdge, Math.min(cx, maxEdge));
-      return { minCenterX: mid, maxCenterX: mid };
-    }
-
-    return { minCenterX: minC, maxCenterX: maxC };
+    return { minX, maxX };
   }
 
   private computePlatformSpawnX(stairId: number, platformWidth: number): number {
-    const { minCenterX, maxCenterX } = this.getPlatformSpawnCenterRange(platformWidth);
-    const minX = Math.max(WORLD_BOUNDS_X + PLATFORM_EDGE_PADDING_PX, minCenterX - platformWidth * 0.5);
-    const maxX = Math.min(
-      this.worldWidth - platformWidth - PLATFORM_EDGE_PADDING_PX,
-      maxCenterX - platformWidth * 0.5,
-    );
+    const { minX, maxX } = this.getPlatformSpawnHorizontalRange(platformWidth);
     if (maxX <= minX) {
       return minX;
     }
     const raw = Math.sin((stairId + 1) * 12.9898) * 43758.5453;
     const unit = raw - Math.floor(raw);
     return minX + unit * (maxX - minX);
+  }
+
+  /** Keep chameleon inside the visible viewport (with safe margins), not only full world width. */
+  private clampPlayerToCameraViewport(): void {
+    const body = this.player.body;
+    const marginW = this.getViewportSafeMarginWorld();
+    const vw = this.worldWidthFromScreen();
+    const viewLeft = this.cameraX + marginW;
+    const viewRight = this.cameraX + vw - marginW - body.width;
+    const worldMin = 0;
+    const worldMax = this.worldWidth - body.width;
+    const left = Math.max(worldMin, viewLeft);
+    const right = Math.min(worldMax, viewRight);
+    if (right < left) {
+      body.x = Math.max(worldMin, Math.min(this.cameraX + vw * 0.5 - body.width * 0.5, worldMax));
+      return;
+    }
+    if (body.x < left) {
+      body.x = left;
+      if (body.vx < 0) {
+        body.vx = 0;
+      }
+    } else if (body.x > right) {
+      body.x = right;
+      if (body.vx > 0) {
+        body.vx = 0;
+      }
+    }
+  }
+
+  /** After camera snap, keep the starting stair centered in the safe view band. */
+  private centerStairZeroUnderCamera(): void {
+    const p = this.platforms[0];
+    if (!p) {
+      return;
+    }
+    this.applyResponsivePlatformWidth(p);
+    const vw = this.worldWidthFromScreen();
+    const ideal = this.cameraX + vw * 0.5 - p.width * 0.5;
+    const { minX, maxX } = this.getPlatformSpawnHorizontalRange(p.width);
+    p.x = Math.max(minX, Math.min(ideal, maxX));
   }
 
   private updatePlatformBodyFromScale(platform: Platform): void {
@@ -1207,6 +1244,7 @@ export class PlayScene implements Scene {
     this.spawnCollectibleField();
     this.resetPlayer();
     this.snapCameraToPlayer();
+    this.centerStairZeroUnderCamera();
     this.scoreboard?.reset();
     this.hudGoldShown = this.goldCount;
     this.hudDiamondShown = this.diamondCount;
@@ -1907,7 +1945,7 @@ export class PlayScene implements Scene {
         LEVEL_PLATFORM_MIN_BASE_WIDTH,
         p.baseWidth * widthRatio,
       );
-      p.width = targetBaseWidth * PLATFORM_SCALE;
+      p.width = targetBaseWidth * PLATFORM_SCALE * this.getPlatformResponsiveWidthMul();
       p.driftVx = 0;
       if (p.x < edgePad) {
         p.x = edgePad;
