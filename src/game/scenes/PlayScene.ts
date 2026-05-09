@@ -344,6 +344,12 @@ const ALTITUDE_WIND_MAX_PARTICLES = 48;
  * 1 = natural proportions when stretched full width.
  */
 const DEATH_ZONE_VISUAL_SCALE = 1.42;
+const ICE_DEATH_ASSET = `${GAME_ASSETS}/ice-death.png`;
+/** Full-world hazard strip draws above platforms + player when overlapping (Pixi `zIndex`). */
+const DEATH_ZONE_TILE_Z_INDEX = 100;
+const PLAYER_BELOW_DEATH_ICE_Z_INDEX = 90;
+/** Horizontal churn scroll for `TilingSprite` ice (`tilePosition.x`). */
+const DEATH_ZONE_TILE_SCROLL_PX_PER_FRAME = 1;
 
 type WindParticle = {
   x: number;
@@ -373,13 +379,11 @@ export class PlayScene implements Scene {
   private platformLayer = new Graphics();
   private rippleLayer = new Graphics();
   private collectiblesGfx = new Graphics();
-  /** Bottom hazard strip (crystal tiling + optional vector fallback). */
+  /** Bottom hazard strip (ice `TilingSprite` + optional vector fallback). */
   private lavaLayer = new Container();
   private deathZoneFallback = new Graphics();
-  private deathZoneCrystalSprite: Sprite | null = null;
-  /** Pixel size of death-zone texture (for proportional scaling — avoids squashing to a fixed height). */
-  private deathZoneSourceW = 1;
-  private deathZoneSourceH = 1;
+  /** Full-world ice hazard (`ice-death.png`), scrolled on X for churn. */
+  private deathZoneIceTile: TilingSprite | null = null;
   private gameShake = new Container();
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
@@ -544,7 +548,7 @@ export class PlayScene implements Scene {
       this.loadPlatformSprite(),
       this.player.load(),
       this.sfx.load(),
-      this.loadDeathZoneStrip(),
+      this.loadIceDeathZone(),
     ]);
 
     /** `Texture.WHITE` tiles as 1×1px — GPU filtering leaves visible grid/stripe seams when scrolling. */
@@ -567,6 +571,7 @@ export class PlayScene implements Scene {
       this.fxLayer,
       this.player,
     );
+    this.player.zIndex = PLAYER_BELOW_DEATH_ICE_Z_INDEX;
     this.levelUpFloatText = new Text({
       text: 'LEVEL UP!',
       style: new TextStyle({
@@ -1651,10 +1656,16 @@ export class PlayScene implements Scene {
 
   private checkFallGameOver(): void {
     const feetY = this.player.body.y + this.player.body.height;
-    // Kill plane = bottom edge of the viewed world (`cameraY` moves up at `getCameraScrollSpeedPx()` + player chase).
-    // Use feet so there’s no invisible cushion below the viewport bottom (same frame as lava wipe).
-    const deathLineY = this.getDeathPlaneWorldY();
-    if (feetY > deathLineY) {
+    const deathPlaneY = this.getDeathPlaneWorldY();
+    const tile = this.deathZoneIceTile;
+    if (tile?.texture && tile.visible && tile.height > 2) {
+      const iceTopY = deathPlaneY - tile.height;
+      if (feetY >= iceTopY) {
+        this.triggerGameOver();
+      }
+      return;
+    }
+    if (feetY > deathPlaneY) {
       this.triggerGameOver();
     }
   }
@@ -3261,97 +3272,66 @@ export class PlayScene implements Scene {
   }
 
   private drawBottomDeathLine(): void {
-    const deathY = this.getDeathPlaneWorldY();
+    const cameraTopY = this.cameraY;
+    const viewH = this.worldHeightFromScreen();
+    const deathPlaneY = this.getDeathPlaneWorldY();
     const vw = this.worldWidthFromScreen();
     const padX = 30;
     const x = this.cameraX - padX;
     const w = vw + padX * 2;
 
-    const crystal = this.deathZoneCrystalSprite;
-    if (crystal?.texture) {
+    const tile = this.deathZoneIceTile;
+    if (tile?.texture) {
       this.deathZoneFallback.visible = false;
-      crystal.visible = true;
-      /* Anchor (0,1): bottom edge of the sprite = kill plane (same Y as `checkFallGameOver`). */
-      crystal.position.set(x, deathY);
-      crystal.width = w;
-      const sw = Math.max(1, this.deathZoneSourceW);
-      const sh = Math.max(1, this.deathZoneSourceH);
-      crystal.height = (w * sh * DEATH_ZONE_VISUAL_SCALE) / sw;
+      tile.visible = true;
+      const h = tile.height;
+      /*
+       * Same as Phaser-style: camera.scrollY + camera.height - sprite.height/2 — here `cameraTopY` is the
+       * top of the view in world space, so center Y = top + viewH - h/2 (bottom of strip = death plane).
+       */
+      tile.position.set(this.worldWidth * 0.5, cameraTopY + viewH - h * 0.5);
+      tile.tilePosition.x += DEATH_ZONE_TILE_SCROLL_PX_PER_FRAME;
+      const srcW = tile.texture.width || tile.texture.source?.width || 1;
+      if (srcW > 0.5) {
+        tile.tilePosition.x %= srcW;
+      }
       return;
     }
 
     this.deathZoneFallback.visible = true;
-    const lavaTop = deathY - 32;
+    const lavaTop = deathPlaneY - 32;
     this.deathZoneFallback.clear();
     this.deathZoneFallback
       .rect(x, lavaTop, w, 32)
       .fill({ color: 0xff4b00, alpha: 0.78 });
     this.deathZoneFallback
-      .rect(x, deathY - 9, w, 9)
+      .rect(x, deathPlaneY - 9, w, 9)
       .fill({ color: 0xffa621, alpha: 0.95 });
   }
 
-  private async loadDeathZoneStrip(): Promise<void> {
+  private async loadIceDeathZone(): Promise<void> {
     try {
-      const { texture, w, h } = await this.createDeathZoneStripTexture(
-        `${GAME_ASSETS}/death-zone-crystals.png`,
-      );
-      this.deathZoneSourceW = w;
-      this.deathZoneSourceH = h;
-      const spr = new Sprite(texture);
-      spr.anchor.set(0, 1);
-      /* Bottom strip: allow subpixel placement so it can sit flush with the canvas edge. */
-      spr.roundPixels = false;
-      spr.eventMode = 'none';
-      spr.tint = 0xffffff;
-      this.deathZoneCrystalSprite = spr;
-      this.lavaLayer.addChild(spr);
+      const texture = await Assets.load<Texture>(ICE_DEATH_ASSET);
+      const tw = texture.width || texture.source?.width || 1;
+      const th = texture.height || texture.source?.height || 1;
+      const tileW = this.worldWidth;
+      const tileH = Math.max(8, (tileW * th * DEATH_ZONE_VISUAL_SCALE) / tw);
+      const tile = new TilingSprite(texture);
+      tile.width = tileW;
+      tile.height = tileH;
+      tile.anchor.set(0.5, 0.5);
+      tile.position.set(tileW * 0.5, 0);
+      tile.eventMode = 'none';
+      tile.roundPixels = RENDER.pixelArt;
+      tile.zIndex = DEATH_ZONE_TILE_Z_INDEX;
+      this.deathZoneIceTile = tile;
+      this.lavaLayer.zIndex = DEATH_ZONE_TILE_Z_INDEX;
+      this.lavaLayer.addChild(tile);
       this.deathZoneFallback.visible = false;
     } catch {
+      this.deathZoneIceTile = null;
       this.deathZoneFallback.visible = true;
     }
-  }
-
-  /**
-   * Loads the PNG, removes edge-connected near-black (Photoroom letterbox / leftover bg),
-   * then builds a texture — `Sprite` + canvas path avoids TilingSprite solid-black issues in Pixi v8.
-   */
-  private async createDeathZoneStripTexture(
-    assetPath: string,
-  ): Promise<{ texture: Texture; w: number; h: number }> {
-    const res = await fetch(assetPath);
-    if (!res.ok) {
-      throw new Error(`death-zone fetch ${res.status}`);
-    }
-    const blob = await res.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    const img = new Image();
-    img.decoding = 'async';
-    img.src = blobUrl;
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error('death-zone decode'));
-    });
-    URL.revokeObjectURL(blobUrl);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx || canvas.width < 2 || canvas.height < 2) {
-      const tex = await Assets.load<Texture>(assetPath);
-      const tw = tex.width || tex.source?.width || 1;
-      const th = tex.height || tex.source?.height || 1;
-      return { texture: tex, w: tw, h: th };
-    }
-
-    ctx.drawImage(img, 0, 0);
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    this.removeConnectedDarkEdgeBackground(imageData.data, canvas.width, canvas.height);
-    ctx.putImageData(imageData, 0, 0);
-
-    const texture = Texture.from(canvas);
-    return { texture, w: canvas.width, h: canvas.height };
   }
 
   private tickAltitudePresentation(dt: number): void {
