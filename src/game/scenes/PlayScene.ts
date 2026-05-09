@@ -2284,6 +2284,29 @@ export class PlayScene implements Scene {
     });
   }
 
+  /** Compact gold style for leaderboard rows — fits narrow panels without clipping. */
+  private createLeaderboardRowTextStyle(wordWrapWidth: number): TextStyle {
+    const narrow = this.width <= MOBILE_NARROW_UI_MAX_W;
+    return new TextStyle({
+      fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+      fontSize: narrow ? 11 : 13,
+      fontWeight: '800',
+      fill: '#FFD700',
+      stroke: { color: '#5a3d00', width: narrow ? 1.2 : 1.6 },
+      letterSpacing: narrow ? 0.2 : 0.4,
+      wordWrap: true,
+      wordWrapWidth: Math.max(40, wordWrapWidth),
+      breakWords: true,
+      dropShadow: {
+        color: '#ffd700',
+        alpha: 0.55,
+        blur: 4,
+        angle: Math.PI / 4,
+        distance: 0,
+      },
+    });
+  }
+
   private drawTopHeaderPanel(): void {
     const w = this.width;
     const y = UI_SAFE_PAD_TOP;
@@ -2571,18 +2594,20 @@ export class PlayScene implements Scene {
         alpha: 0.35,
       });
       const entry = data[i];
-      const placeLabel = i === 0 ? 'CROWN #1' : `#${i + 1}`;
+      const placeLabel = i === 0 ? '#1 ★' : `#${i + 1}`;
       const line = entry
-        ? `${placeLabel}  ${entry.nickname.toUpperCase()}  -  ${entry.score}m`
+        ? `${placeLabel} ${entry.nickname.toUpperCase()} · ${entry.score}m`
         : loading
-          ? `${placeLabel}  ...`
-          : `${placeLabel}  ---`;
+          ? `${placeLabel} …`
+          : `${placeLabel} —`;
+      const padX = 10;
+      const innerW = rowW - padX * 2;
       const rowText = new Text({
         text: line,
-        style: this.createNeonGoldTextStyle(18, 2),
+        style: this.createLeaderboardRowTextStyle(innerW),
       });
       rowText.anchor.set(0, 0.5);
-      rowText.position.set(rowX + 14, y + (rowH - 8) * 0.5);
+      rowText.position.set(rowX + padX, y + (rowH - 8) * 0.5);
       this.leaderboardRows.push(rowText);
       this.leaderboardOverlay.addChild(rowText);
     }
