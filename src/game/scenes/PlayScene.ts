@@ -257,6 +257,7 @@ const UI_BG_BLACK = 0x000000;
 const UI_PANEL_PURPLE = 0x2e004b;
 const UI_NEON_GREEN = 0x39ff14;
 const UI_GOLD = 0xffd700;
+const UI_HEADER_H = 92;
 const UI_SAFE_PAD_TOP = 10;
 const UI_SAFE_PAD_BOTTOM = 12;
 const HURRY_BANNER_H = 46;
@@ -360,6 +361,7 @@ export class PlayScene implements Scene {
   private gameShake = new Container();
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
+  private headerPanel = new Graphics();
   private tongueRoot = new Container();
   private tongueVector = new Graphics();
   private tongueArmature: PixiArmatureDisplay | null = null;
@@ -519,6 +521,7 @@ export class PlayScene implements Scene {
     this.setupAction360Button(app);
     this.setupClimbHud(app);
     this.setupAutoScrollHud();
+    this.drawTopHeaderPanel();
     if (this.scoreboard) {
       this.scoreboard.visible = false;
     }
@@ -759,6 +762,7 @@ export class PlayScene implements Scene {
     this.layoutCollectibleHud();
     this.layoutClimbHud();
     this.layoutAutoScrollHud();
+    this.drawTopHeaderPanel();
     this.input?.onResize();
 
     // Mobile browser chrome toggles height in small steps; resetting the whole run felt like “stuck” stairs.
@@ -766,6 +770,7 @@ export class PlayScene implements Scene {
       prevW > 0 && this.platforms.length > 0 && dw <= 36 && dh <= 96;
     if (minorViewportJitter) {
       this.drawStaticWorld();
+      this.drawTopHeaderPanel();
       this.clampEntitiesToWorldBounds();
       this.syncPlatformSpritesFromPlatforms();
       this.drawDynamicWorld();
@@ -774,6 +779,7 @@ export class PlayScene implements Scene {
 
     this.resetRun();
     this.drawStaticWorld();
+    this.drawTopHeaderPanel();
     this.drawDynamicWorld();
   }
 
@@ -2238,6 +2244,30 @@ export class PlayScene implements Scene {
         distance: 0,
       },
     });
+  }
+
+  private drawTopHeaderPanel(): void {
+    const w = this.width;
+    const y = UI_SAFE_PAD_TOP;
+    const r = 18;
+    this.headerPanel.clear();
+    this.headerPanel.roundRect(12, y, w - 24, UI_HEADER_H, r).fill({
+      color: UI_PANEL_PURPLE,
+      alpha: 0.42,
+    });
+    this.headerPanel.roundRect(12, y, w - 24, UI_HEADER_H, r).stroke({
+      color: UI_NEON_GREEN,
+      width: 2,
+      alpha: 0.66,
+    });
+    this.headerPanel.roundRect(15, y + 3, w - 30, UI_HEADER_H - 6, r - 3).fill({
+      color: 0x6f33a6,
+      alpha: 0.12,
+    });
+    if (!this.uiLayer.children.includes(this.headerPanel)) {
+      this.headerPanel.zIndex = 1000;
+      this.uiLayer.addChild(this.headerPanel);
+    }
   }
 
   private drawCollectibleIcons(): void {
