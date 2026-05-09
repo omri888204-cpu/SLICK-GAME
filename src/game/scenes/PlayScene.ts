@@ -298,8 +298,6 @@ const LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL = 0.005;
 const LEVEL_PLATFORM_MIN_BASE_WIDTH = 72;
 const LEVEL_MILESTONE_STEP = 10;
 const FLASH_SKILL_BOOST_DURATION_SEC = 10;
-const FLASH_SKILL_BOOST_COOLDOWN_SEC = 10;
-const FLASH_REARM_STAIRS_REQUIRED = 10;
 const FLASH_TONGUE_COOLDOWN_SPEEDUP = 2;
 const FLASH_BOOST_STAIR_COUNT = 4;
 const FLASH_TONGUE_RAY_WIDTH_MULTIPLIER = 2.4;
@@ -478,9 +476,6 @@ export class PlayScene implements Scene {
   private currentBackgroundColor = 0x000000;
   private levelUpFloatText?: Text;
   private flashSkillBoostTime = 0;
-  private flashSkillBoostCooldownTime = 0;
-  private flashSkillBoostRearmStairId = 0;
-  private wasBeastModeActiveLastFrame = false;
   private action360State: Action360State | null = null;
   private action360Sparks: Action360Spark[] = [];
   private jumpArcAssistTime = 0;
@@ -1262,9 +1257,6 @@ export class PlayScene implements Scene {
     this.action360Sparks = [];
     this.player.rotation = 0;
     this.flashSkillBoostTime = 0;
-    this.flashSkillBoostCooldownTime = 0;
-    this.flashSkillBoostRearmStairId = 0;
-    this.wasBeastModeActiveLastFrame = false;
     this.windParticles = [];
     this.windSpawnAcc = 0;
     this.syncBoostHudButtonsVisibility();
@@ -1294,35 +1286,22 @@ export class PlayScene implements Scene {
 
   private updateFlashSkillBoost(dt: number): void {
     const wasBoostActive = this.flashSkillBoostTime > 0;
-    this.flashSkillBoostCooldownTime = Math.max(0, this.flashSkillBoostCooldownTime - dt);
     const beastModeActiveNow = this.getComboMultiplier() >= COMBO.beastModeMinMultiplier;
-    if (
-      beastModeActiveNow &&
-      !this.wasBeastModeActiveLastFrame &&
-      this.flashSkillBoostCooldownTime <= 0 &&
-      this.canRearmBoost()
-    ) {
+    // Sustain tongue / 360 Flash for the whole time beast combo (×6+) is active — not a short timer that
+    // expires while the chain is still going, and no stair-gated rearm that could feel “dead” deep in a run.
+    if (beastModeActiveNow) {
       this.flashSkillBoostTime = FLASH_SKILL_BOOST_DURATION_SEC;
-      this.flashSkillBoostCooldownTime = FLASH_SKILL_BOOST_COOLDOWN_SEC;
     } else if (this.flashSkillBoostTime > 0) {
       this.flashSkillBoostTime = Math.max(0, this.flashSkillBoostTime - dt);
     }
-    this.wasBeastModeActiveLastFrame = beastModeActiveNow;
     if (wasBoostActive && this.flashSkillBoostTime <= 0) {
       this.resetBoostAbilitiesToNormal();
-      this.comboChain = 0;
-      this.lastChainTime = -1e9;
-      this.flashSkillBoostRearmStairId = this.lastScoredStairId + FLASH_REARM_STAIRS_REQUIRED;
     }
     this.syncBoostHudButtonsVisibility();
   }
 
   private isFlashSkillBoostActive(): boolean {
     return this.flashSkillBoostTime > 0;
-  }
-
-  private canRearmBoost(): boolean {
-    return this.lastScoredStairId >= this.flashSkillBoostRearmStairId;
   }
 
   private resetBoostAbilitiesToNormal(): void {
@@ -1528,7 +1507,6 @@ export class PlayScene implements Scene {
     }
     this.grapple = null;
     this.flashSkillBoostTime = 0;
-    this.wasBeastModeActiveLastFrame = false;
     this.syncBoostHudButtonsVisibility();
   }
 
