@@ -353,6 +353,10 @@ const FLASH_SKILL_BOOST_DURATION_SEC = 10;
 const FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS = 4000;
 /** Extra combo-window / Flash-duration multiplier once deep (stacks with climb + scroll ease caps). */
 const COMBO_DEEP_RUN_EXTRA_ALTITUDE_EASE = 1.75;
+/** Stronger baseline / Flash jumps once deep (HUD m, same threshold as combo peg). */
+const DEEP_RUN_JUMP_MULTIPLIER = 1.42;
+/** Tongue pull / lateral snap vs base grapple tuning (`GRAPPLE_VERTICAL_BOOST_VY`, horizontal lerp). */
+const DEEP_RUN_GRAPPLE_PULL_SPEED_MULT = 4.25;
 const FLASH_TONGUE_COOLDOWN_SPEEDUP = 2;
 const FLASH_BOOST_STAIR_COUNT = 4;
 const FLASH_TONGUE_RAY_WIDTH_MULTIPLIER = 2.4;
@@ -705,13 +709,17 @@ export class PlayScene implements Scene {
     this.updateTouchFollowAxis();
     this.input?.smoothTouchJoystickAxis(dt, this.player.body.grounded);
 
+    const deepPullMul = this.getDeepRunGrapplePullMul();
+    const pullVyCap = GRAPPLE_VERTICAL_BOOST_VY * deepPullMul;
+    const pullHLerp = GRAPPLE_PULL_HORIZONTAL_LERP_PER_SEC * deepPullMul;
+
     if (!this.action360State && this.grapple?.phase === 'extend') {
       this.grapple.extendT += dt;
       if (this.grapple.extendT >= GRAPPLE.extendSec) {
         this.grapple.phase = 'pull';
         this.grapple.pullStartX = this.player.body.x + this.player.body.width * 0.5;
         this.grapple.pullStartY = this.player.body.y + this.player.body.height * 0.5;
-        this.player.body.vy = Math.min(this.player.body.vy, GRAPPLE_VERTICAL_BOOST_VY);
+        this.player.body.vy = Math.min(this.player.body.vy, pullVyCap);
         this.player.body.grounded = false;
         this.sfx.play('tongue_hit', 0.95);
       }
@@ -726,9 +734,9 @@ export class PlayScene implements Scene {
         const pullTargetY = hookPlatform.y - body.height - GRAPPLE_STOP_ABOVE_PLATFORM_PX;
         const hookCenterX = hookPlatform.x + hookPlatform.width * 0.5;
         const targetBodyX = hookCenterX - body.width * 0.5;
-        body.x += (targetBodyX - body.x) * Math.min(1, dt * GRAPPLE_PULL_HORIZONTAL_LERP_PER_SEC);
+        body.x += (targetBodyX - body.x) * Math.min(1, dt * pullHLerp);
         body.vx *= Math.max(0, 1 - 12 * dt);
-        body.vy = Math.min(body.vy, GRAPPLE_VERTICAL_BOOST_VY);
+        body.vy = Math.min(body.vy, pullVyCap);
         if (body.y <= pullTargetY) {
           body.y = pullTargetY;
           body.vy = 0;
@@ -1095,6 +1103,9 @@ export class PlayScene implements Scene {
       this.player.body.vy = maxBoostJumpVy;
     } else if (this.levelUpBoostTime > 0) {
       this.player.body.vy *= LEVEL_UP_BOOST_JUMP_MUL;
+    }
+    if (this.getHudClimbMeters() >= FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS) {
+      this.player.body.vy *= DEEP_RUN_JUMP_MULTIPLIER;
     }
     if (fromRightSwipe) {
       const body = this.player.body;
@@ -1482,8 +1493,12 @@ export class PlayScene implements Scene {
       return;
     }
     if (this.player.body.vy < 0) {
+      const deepJumpMul =
+        this.getHudClimbMeters() >= FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS
+          ? DEEP_RUN_JUMP_MULTIPLIER
+          : 1;
       const normalJumpVy =
-        -(PHYSICS.baseJump + Math.abs(this.player.body.vx) * PHYSICS.speedJumpBonus);
+        -(PHYSICS.baseJump + Math.abs(this.player.body.vx) * PHYSICS.speedJumpBonus) * deepJumpMul;
       // If boost expired mid-air, clamp remaining upward speed back to normal jump ceiling.
       this.player.body.vy = Math.max(this.player.body.vy, normalJumpVy);
     }
@@ -2315,6 +2330,13 @@ export class PlayScene implements Scene {
   /** Same climb units as HUD “m” (approx). */
   private getHudClimbMeters(): number {
     return this.getClimbHeightPx() / 12;
+  }
+
+  /** Faster tongue pull + lateral snap in deep runs (same HUD threshold as combo peg). */
+  private getDeepRunGrapplePullMul(): number {
+    return this.getHudClimbMeters() >= FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS
+      ? DEEP_RUN_GRAPPLE_PULL_SPEED_MULT
+      : 1;
   }
 
   /**
