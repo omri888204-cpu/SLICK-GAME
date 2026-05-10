@@ -154,6 +154,11 @@ const SFX_LOCAL: Record<SfxId, string> = {
   player_land: `${import.meta.env.BASE_URL}audio/player_land.mp3`,
 };
 
+/** City skyline layers — three parallax bands stacked above the sky background. */
+const CITY_BACK_URL = `${GAME_ASSETS}/back.png`;
+const CITY_MIDDLE_URL = `${GAME_ASSETS}/middle.png`;
+const CITY_FRONT_URL = `${GAME_ASSETS}/foreground-empty.png`;
+
 /** DragonBones export: `*_ske.json`, `*_tex.json`, `*_tex.png` in `public/assets/`. */
 const TONGUE_DB_SKE = `${GAME_ASSETS}/tongue_ske.json`;
 const TONGUE_DB_TEX_JSON = `${GAME_ASSETS}/tongue_tex.json`;
@@ -255,6 +260,21 @@ const CAMERA_ZOOM = 0.5;
 const MOBILE_CAMERA_ZOOM = 0.42;
 const BACKGROUND_PARALLAX_X = 0.2;
 const BACKGROUND_PARALLAX_Y = 0.14;
+/**
+ * City parallax skyline (`back` → `middle` → `front`).
+ *
+ * Each layer is a {@link TilingSprite} locked to the **game width** and tiled vertically
+ * across the full viewport height. `parallaxY` is the multiplier on `cameraY`: a small
+ * value (e.g. `0.015`) keeps the layer almost still as the player climbs, while a larger
+ * value couples the layer more tightly to the climb. `autoDriftPxPerSec` is an optional
+ * constant downward drift so the back bands feel alive even when the player is idle.
+ */
+const CITY_BACK_PARALLAX_Y = 0.015;
+const CITY_MIDDLE_PARALLAX_Y = 0.05;
+const CITY_FRONT_PARALLAX_Y = 0.18;
+const CITY_BACK_AUTO_DRIFT_PX = 5;
+const CITY_MIDDLE_AUTO_DRIFT_PX = 2;
+const CITY_FRONT_AUTO_DRIFT_PX = 0;
 const CAMERA_PLAYER_SCREEN_Y_RATIO = 0.62;
 const AUTO_SCROLL_BASE_SPEED_PX = 120;
 const HURRY_UP_FLASH_SEC = 2.6;
@@ -405,6 +425,11 @@ export class PlayScene implements Scene {
     width: 1,
     height: 1,
   });
+  private cityBack: TilingSprite | null = null;
+  private cityMiddle: TilingSprite | null = null;
+  private cityFront: TilingSprite | null = null;
+  /** Wall-clock seconds used to drive the continuous horizontal scroll on city layers. */
+  private cityScrollElapsed = 0;
   private jelly = new Graphics();
   private fxLayer = new Graphics();
   private platformSpriteLayer = new Container();
@@ -594,6 +619,7 @@ export class PlayScene implements Scene {
       this.player.load(),
       this.sfx.load(),
       this.loadDeathZoneStrip(),
+      this.loadCityLayers(),
     ]);
 
     /** `Texture.WHITE` tiles as 1×1px — GPU filtering leaves visible grid/stripe seams when scrolling. */
@@ -603,6 +629,15 @@ export class PlayScene implements Scene {
     app.stage.addChild(this.gameShake);
     app.stage.addChild(this.uiLayer);
     this.gameShake.addChild(this.background);
+    if (this.cityBack) {
+      this.gameShake.addChild(this.cityBack);
+    }
+    if (this.cityMiddle) {
+      this.gameShake.addChild(this.cityMiddle);
+    }
+    if (this.cityFront) {
+      this.gameShake.addChild(this.cityFront);
+    }
     this.gameShake.addChild(this.world);
     this.world.sortableChildren = true;
     this.world.addChild(
@@ -693,6 +728,7 @@ export class PlayScene implements Scene {
       return;
     }
     this.runTime += dt;
+    this.cityScrollElapsed += dt;
     if (this.levelUpBoostTime > 0) {
       this.levelUpBoostTime = Math.max(0, this.levelUpBoostTime - dt);
     }
@@ -1868,6 +1904,84 @@ export class PlayScene implements Scene {
     const tx = -this.cameraX * BACKGROUND_PARALLAX_X * parallaxBoost;
     const ty = -this.cameraY * BACKGROUND_PARALLAX_Y * parallaxBoost;
     this.background.tilePosition.set(Math.round(tx), Math.round(ty));
+    this.layoutCityLayers();
+  }
+
+  /** Loads the three skyline textures and turns them into `TilingSprite`s parented under `gameShake`. */
+  private async loadCityLayers(): Promise<void> {
+    try {
+      const [backTex, midTex, frontTex] = (await Promise.all([
+        Assets.load(CITY_BACK_URL),
+        Assets.load(CITY_MIDDLE_URL),
+        Assets.load(CITY_FRONT_URL),
+      ])) as Texture[];
+      const make = (tex: Texture): TilingSprite => {
+        const sprite = new TilingSprite({ texture: tex, width: 1, height: 1 });
+        sprite.eventMode = 'none';
+        return sprite;
+      };
+      this.cityBack = make(backTex);
+      this.cityMiddle = make(midTex);
+      this.cityFront = make(frontTex);
+    } catch {
+      this.cityBack = null;
+      this.cityMiddle = null;
+      this.cityFront = null;
+    }
+  }
+
+  /**
+   * Fits, tiles and scrolls the three skyline layers for a portrait viewport.
+   *
+   * Each layer is locked to the game width with a uniform `tileScale` so a single texture
+   * tile exactly spans the viewport horizontally; the sprite height covers the full
+   * viewport so the texture repeats infinitely on the Y axis. `tilePosition.y` carries
+   * both the camera-coupled parallax (`-cameraY * parallaxY` — climbing the tower scrolls
+   * each band downward) and an optional constant drift so the back bands keep moving even
+   * when the player is idle.
+   */
+  private layoutCityLayers(): void {
+    if (!this.cityBack || !this.cityMiddle || !this.cityFront) {
+      return;
+    }
+    const viewportW = this.worldWidthFromScreen();
+    const viewportH = this.worldHeightFromScreen();
+
+    const layers: Array<{
+      sprite: TilingSprite;
+      parallaxY: number;
+      autoDriftPxPerSec: number;
+    }> = [
+      {
+        sprite: this.cityBack,
+        parallaxY: CITY_BACK_PARALLAX_Y,
+        autoDriftPxPerSec: CITY_BACK_AUTO_DRIFT_PX,
+      },
+      {
+        sprite: this.cityMiddle,
+        parallaxY: CITY_MIDDLE_PARALLAX_Y,
+        autoDriftPxPerSec: CITY_MIDDLE_AUTO_DRIFT_PX,
+      },
+      {
+        sprite: this.cityFront,
+        parallaxY: CITY_FRONT_PARALLAX_Y,
+        autoDriftPxPerSec: CITY_FRONT_AUTO_DRIFT_PX,
+      },
+    ];
+
+    for (const { sprite, parallaxY, autoDriftPxPerSec } of layers) {
+      const texW = sprite.texture.width;
+      if (texW <= 0) {
+        continue;
+      }
+      const scale = viewportW / texW;
+      sprite.tileScale.set(scale);
+      sprite.width = viewportW;
+      sprite.height = viewportH;
+      sprite.position.set(0, 0);
+      const scrollY = -this.cameraY * parallaxY + this.cityScrollElapsed * autoDriftPxPerSec;
+      sprite.tilePosition.set(0, scrollY);
+    }
   }
 
   private installRepeatFriendlyBackgroundTexture(): void {
@@ -2474,6 +2588,7 @@ export class PlayScene implements Scene {
     );
     this.background.width = this.worldWidth + BACKGROUND_HORIZONTAL_PAD_PX * 2;
     this.background.height = this.worldHeight + BACKGROUND_VERTICAL_PAD_PX * 2;
+    this.layoutCityLayers();
   }
 
   private drawDynamicWorld(): void {
