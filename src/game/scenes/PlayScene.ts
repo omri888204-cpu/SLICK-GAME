@@ -263,6 +263,13 @@ const SCROLL_SPEED_WARMUP_METERS = 300;
 const SCROLL_SPEED_STEP_METERS = 200;
 /** Per milestone delta (3× legacy 0.05 → faster difficulty ramp). */
 const SCROLL_SPEED_STEP_DELTA = 0.15;
+/** Combo / tongue timing: extra chain-window mult from climb height (HUD m), independent of scroll warmup. */
+const COMBO_CLIMB_EASE_METERS_STEP = 160;
+const COMBO_CLIMB_EASE_PER_STEP = 0.12;
+const COMBO_CLIMB_EASE_MAX = 1.25;
+/** Extra combo ease from post-warmup scroll-speed tier (stacks with climb ease). */
+const COMBO_SCROLL_EASE_COEF = 0.34;
+const COMBO_SCROLL_EASE_MAX_STEPS = 6;
 /** Start subtle sustained camera shake once altitude scroll mult ≥ this × base (see `getAltitudeSpeedMultiplier`). */
 const ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD = 3;
 const SPEED_TIER_SHAKE_SEC = 0.2;
@@ -2310,12 +2317,22 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Widen combo / boost timing as altitude scroll mult rises — faster world = more time to chain and
-   * to use TONGUE boost (same mult source as camera / stair drift).
+   * Widen combo / tongue timing as you climb: direct climb-height ease plus post-warmup scroll tier
+   * (faster world still gets more chain window so boosts stay achievable).
    */
   private getComboWindowAltitudeMultiplier(): number {
+    const m = Math.max(0, this.getHudClimbMeters());
+    const climbSteps = Math.floor(m / COMBO_CLIMB_EASE_METERS_STEP);
+    const climbEase = Math.min(COMBO_CLIMB_EASE_MAX, COMBO_CLIMB_EASE_PER_STEP * climbSteps);
+
     const scrollMult = this.getAltitudeSpeedMultiplier();
-    return 1 + 0.24 * Math.min(4, Math.max(0, scrollMult - 1));
+    const scrollSteps = Math.min(
+      COMBO_SCROLL_EASE_MAX_STEPS,
+      Math.max(0, scrollMult - 1),
+    );
+    const scrollEase = COMBO_SCROLL_EASE_COEF * scrollSteps;
+
+    return 1 + climbEase + scrollEase;
   }
 
   private getLevelUpBoostScrollMul(): number {
