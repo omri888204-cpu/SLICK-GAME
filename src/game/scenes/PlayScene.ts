@@ -346,6 +346,13 @@ const SHIELD_LAUNCH_MAX_FEET_ABOVE_TOP_PX = 28;
 /** After teleport, recycle passes so low stairs repack above the new camera. */
 const SHIELD_LAUNCH_RECYCLE_PASSES = 28;
 const FLASH_SKILL_BOOST_DURATION_SEC = 10;
+/**
+ * HUD climb (m): while ×6+ beast combo, Flash skill (tongue / 360 window) stays pegged — deep-run relief,
+ * especially on touch where scroll + cadence punish drop-offs.
+ */
+const FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS = 4000;
+/** Extra combo-window / Flash-duration multiplier once deep (stacks with climb + scroll ease caps). */
+const COMBO_DEEP_RUN_EXTRA_ALTITUDE_EASE = 1.75;
 const FLASH_TONGUE_COOLDOWN_SPEEDUP = 2;
 const FLASH_BOOST_STAIR_COUNT = 4;
 const FLASH_TONGUE_RAY_WIDTH_MULTIPLIER = 2.4;
@@ -1452,6 +1459,13 @@ export class PlayScene implements Scene {
     }
     this.beastComboAtLeastSixPrev = beastModeActiveNow;
 
+    const deepRun =
+      this.getHudClimbMeters() >= FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS && beastModeActiveNow;
+    if (deepRun) {
+      const peg = FLASH_SKILL_BOOST_DURATION_SEC * this.getComboWindowAltitudeMultiplier();
+      this.flashSkillBoostTime = Math.max(this.flashSkillBoostTime, peg);
+    }
+
     if (wasBoostActive && this.flashSkillBoostTime <= 0) {
       this.resetBoostAbilitiesToNormal();
     }
@@ -2332,7 +2346,9 @@ export class PlayScene implements Scene {
     );
     const scrollEase = COMBO_SCROLL_EASE_COEF * scrollSteps;
 
-    return 1 + climbEase + scrollEase;
+    const deepEase =
+      m >= FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS ? COMBO_DEEP_RUN_EXTRA_ALTITUDE_EASE : 0;
+    return 1 + climbEase + scrollEase + deepEase;
   }
 
   private getLevelUpBoostScrollMul(): number {
