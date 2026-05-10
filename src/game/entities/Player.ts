@@ -28,20 +28,20 @@ const IDLE_FRAMES = 6;
 const RUN_FRAMES = 8;
 const JUMP_FRAMES = 8;
 
-/** Display scale of each cell. Character art occupies ~25×28 inside the cell, so a 2.6× scale
- * renders the visible figure at ~65×73 (30% larger than the initial 2× sizing). */
-const SPRITE_SCALE = 2.6;
+/** Display scale of each cell. Character art occupies ~25×28 inside the cell, so a 3.12× scale
+ * renders the visible figure at ~78×87 (20% larger than the previous 2.6× sizing). */
+const SPRITE_SCALE = 3.12;
 const SPRITE_DISPLAY_WIDTH = FRAME_W * SPRITE_SCALE;
 
 /**
  * Vertical offset of the avatar rig relative to the body center.
  *
  * The character art sits inside the 40-px cell at source rows 5..33, so its feet are
- * `(33 - 20) * SPRITE_SCALE ≈ 33.8` px below the sprite center. With `groundedSink = 4`,
- * an idle player's rig lands at `BASE_AVATAR_Y + groundedSink ≈ -15`, putting the feet
+ * `(33 - 20) * SPRITE_SCALE ≈ 40.6` px below the sprite center. With `groundedSink = 4`,
+ * an idle player's rig lands at `BASE_AVATAR_Y + groundedSink ≈ -22`, putting the feet
  * at ~`19` px below body center — exactly the hitbox bottom (body.height / 2).
  */
-const BASE_AVATAR_Y = -19;
+const BASE_AVATAR_Y = -26;
 
 const PLAYER_SCALE = 0.3981312;
 const PLAYER_BODY_WIDTH = 70 * PLAYER_SCALE;
