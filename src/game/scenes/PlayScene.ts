@@ -559,10 +559,11 @@ export class PlayScene implements Scene {
   private jumpArcTargetCenterX = 0;
   /** Level-up reward: faster scroll + stronger jumps for a few seconds. */
   private levelUpBoostTime = 0;
-  /** One-use: survive death ice once, then super-launch upward. */
-  private playerShieldActive = false;
-  /** Times we spent 10g+5d for a shield this run (HUD “shield” column = this, not 0/1). */
-  private shieldsPurchasedThisRun = 0;
+  /**
+   * Shield charges: each fall into the death zone consumes one (then super-launch).
+   * Bank auto-fills charges while gold ≥ 10 and diamonds ≥ 5 (see `maybePurchaseShieldFromBank`).
+   */
+  private shieldStock = 0;
   async init(app: Application): Promise<void> {
     this.app = app;
     this.width = app.screen.width;
@@ -752,6 +753,7 @@ export class PlayScene implements Scene {
       this.updateDiamondShineSparks(dt);
       this.updateAction360Sparks(dt);
       this.updateCollectibles(dt);
+      this.maybePurchaseShieldFromBank();
       this.updateCollectibleHudSmooth(dt);
       const mult = this.getComboMultiplier();
       this.player.update(
@@ -760,7 +762,7 @@ export class PlayScene implements Scene {
         this.highestY < -650,
         this.grapple,
         mult >= COMBO.beastModeMinMultiplier,
-        this.playerShieldActive,
+        this.shieldStock > 0,
       );
     this.physics.applyWorldBounds(this.player.body, this.worldWidth);
     this.clampPlayerToCameraViewport();
@@ -876,6 +878,7 @@ export class PlayScene implements Scene {
     this.updateDiamondShineSparks(dt);
     this.updateAction360Sparks(dt);
     this.updateCollectibles(dt);
+    this.maybePurchaseShieldFromBank();
     this.updateCollectibleHudSmooth(dt);
     const mult = this.getComboMultiplier();
     const boostVisualActive = this.isFlashSkillBoostActive();
@@ -885,7 +888,7 @@ export class PlayScene implements Scene {
       this.highestY < -650,
       this.grapple,
       boostVisualActive,
-      this.playerShieldActive,
+      this.shieldStock > 0,
     );
     this.tickAltitudePresentation(dt);
     this.drawDynamicWorld();
@@ -1402,8 +1405,7 @@ export class PlayScene implements Scene {
     this.jumpArcAssistTime = 0;
     this.jumpArcAssistDuration = 0;
     this.levelUpBoostTime = 0;
-    this.playerShieldActive = false;
-    this.shieldsPurchasedThisRun = 0;
+    this.shieldStock = 0;
     this.tongueBoostComboExtendUntil = -Infinity;
     this.tongueBoostComboResetAt = null;
     this.tongueBoostChainWindowSec = null;
@@ -1707,8 +1709,8 @@ export class PlayScene implements Scene {
     if (feetY <= deathLineY) {
       return;
     }
-    if (this.playerShieldActive) {
-      this.playerShieldActive = false;
+    if (this.shieldStock > 0) {
+      this.shieldStock -= 1;
       this.performShieldSuperLaunch();
       return;
     }
@@ -1755,7 +1757,6 @@ export class PlayScene implements Scene {
         life: 0.45 + Math.random() * 0.2,
       });
     }
-    this.maybePurchaseShieldFromBank();
   }
 
   /** Single source of truth for the bottom of the camera view in world space (death check + hazard art). */
@@ -3864,9 +3865,9 @@ export class PlayScene implements Scene {
     this.collectibleHudShieldText?.position.set(28, shieldRowY);
   }
 
-  /** Total shields bought from the bank this run (each costs 10 gold + 5 diamonds). */
+  /** Current shield charges (each fall consumes one; bank refills when 10g+5d available). */
   private getShieldHudStock(): number {
-    return this.shieldsPurchasedThisRun;
+    return this.shieldStock;
   }
 
   private refreshCollectibleHudText(): void {
@@ -3945,26 +3946,30 @@ export class PlayScene implements Scene {
     return { x, y };
   }
 
-  /** If bank has enough gold+diamonds and no shield yet, spend 10+5 and grant one shield (+ score). */
+  /** While bank has 10+ gold and 5+ diamonds, spend and add shield charges (capped). No refill at end of fall launch. */
   private maybePurchaseShieldFromBank(): void {
-    if (this.playerShieldActive) {
-      return;
+    const maxStock = 99;
+    let gained = 0;
+    while (
+      this.shieldStock < maxStock &&
+      this.goldCount >= SHIELD_BANK_GOLD &&
+      this.diamondCount >= SHIELD_BANK_DIAMOND
+    ) {
+      this.goldCount -= SHIELD_BANK_GOLD;
+      this.diamondCount -= SHIELD_BANK_DIAMOND;
+      this.shieldStock += 1;
+      gained += 1;
+      const add = COLLECTIBLES.shieldPickupPoints;
+      this.score += add * this.getScoreGainMultiplier();
+      this.scoreboard?.onPointsGained(add);
     }
-    if (this.goldCount < SHIELD_BANK_GOLD || this.diamondCount < SHIELD_BANK_DIAMOND) {
-      return;
+    if (gained > 0) {
+      this.sfx.play('collect_diamond', 0.72);
+      this.collectibleHudBump = 1;
+      this.hudGoldShown = this.goldCount;
+      this.hudDiamondShown = this.diamondCount;
+      this.refreshCollectibleHudText();
     }
-    this.goldCount -= SHIELD_BANK_GOLD;
-    this.diamondCount -= SHIELD_BANK_DIAMOND;
-    this.playerShieldActive = true;
-    this.shieldsPurchasedThisRun += 1;
-    const add = COLLECTIBLES.shieldPickupPoints;
-    this.score += add * this.getScoreGainMultiplier();
-    this.scoreboard?.onPointsGained(add);
-    this.sfx.play('collect_diamond', 0.72);
-    this.collectibleHudBump = 1;
-    this.hudGoldShown = this.goldCount;
-    this.hudDiamondShown = this.diamondCount;
-    this.refreshCollectibleHudText();
   }
 
   private spawnCollectibleField(): void {
@@ -4084,7 +4089,6 @@ export class PlayScene implements Scene {
       this.sfx.play('collect_diamond', 0.92);
       this.spawnDiamondCollectShine(pos.x, pos.y);
     }
-    this.maybePurchaseShieldFromBank();
     this.hudGoldShown = this.goldCount;
     this.hudDiamondShown = this.diamondCount;
     this.collectibleHudBump = 1;
