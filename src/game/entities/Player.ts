@@ -1,8 +1,7 @@
-import { Assets, Container, Graphics, Sprite, Texture } from 'pixi.js';
+import { Assets, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
 import { ALIVE, GRAPPLE, RENDER, WALK } from '../../config/game.config';
 import type { ActiveGrapple, Direction } from '../types';
 import type { PlayerBody } from '../systems/Physics';
-import chameleonHeroUrl from '../../assets/sprites/chameleon_hero.png';
 
 export enum PlayerState {
   Idle,
@@ -13,16 +12,47 @@ export enum PlayerState {
   SuperJump,
 }
 
+/**
+ * Spritesheet layout — `public/assets/character_spritesheet.png` is an 800×280 sheet
+ * arranged as 8 columns × 7 rows of 100×40 frames. The user-facing spec describes
+ * 48×48 frames but the asset itself uses 100×40 cells; what matters for animation is
+ * that the row mapping below matches their intent (idle = row 0, run = row 1, jump = row 2).
+ */
+const SPRITESHEET_URL = `${import.meta.env.BASE_URL}assets/character_spritesheet.png`;
+const FRAME_W = 100;
+const FRAME_H = 40;
+const IDLE_ROW = 0;
+const RUN_ROW = 1;
+const JUMP_ROW = 2;
+const IDLE_FRAMES = 6;
+const RUN_FRAMES = 8;
+const JUMP_FRAMES = 8;
+
+/** Display scale of each cell. Character art occupies ~25×28 inside the cell, so a 2× scale
+ * renders the visible figure at ~50×56 — close to the previous chameleon footprint. */
+const SPRITE_SCALE = 2;
+const SPRITE_DISPLAY_WIDTH = FRAME_W * SPRITE_SCALE;
+
+/**
+ * Vertical offset of the avatar rig relative to the body center.
+ *
+ * The character art sits inside the 40-px cell at source rows 5..33, so its feet are
+ * `(33 - 20) * SPRITE_SCALE = 26` px below the sprite center. With `groundedSink = 4`,
+ * an idle player's rig lands at `BASE_AVATAR_Y + groundedSink = -7`, putting the feet
+ * at `19` px below body center — exactly the hitbox bottom (body.height / 2).
+ */
+const BASE_AVATAR_Y = -11;
+
 const PLAYER_SCALE = 0.3981312;
-const PLAYER_JUMP_WIDTH = 150 * PLAYER_SCALE;
 const PLAYER_BODY_WIDTH = 70 * PLAYER_SCALE;
 const PLAYER_BODY_HEIGHT = 96 * PLAYER_SCALE;
 
-type ChameleonTextures = {
-  jumpLeft: Texture;
-  jumpRight: Texture;
-  runLeft: Texture[];
-  runRight: Texture[];
+const IDLE_FPS = 8;
+
+type CharacterTextures = {
+  idle: Texture[];
+  run: Texture[];
+  jump: Texture[];
 };
 
 export class Player extends Container {
@@ -45,10 +75,10 @@ export class Player extends Container {
   private avatarRig?: Container;
   private bodySprite?: Sprite;
   private silhouette?: Sprite;
-  private textures?: ChameleonTextures;
-  private spriteAspectScale = 1;
+  private textures?: CharacterTextures;
   private distanceTraveled = 0;
   private idleTime = 0;
+  private airTime = 0;
   private walkBlend = 0;
   private jumpPulseMs = 0;
   private jumpAnticipationMs = 0;
@@ -82,37 +112,50 @@ export class Player extends Container {
   }
 
   async load(): Promise<void> {
-    const hero = await this.createHeroTexture(chameleonHeroUrl);
-    this.textures = {
-      jumpLeft: hero,
-      jumpRight: hero,
-      runLeft: [hero, hero, hero],
-      runRight: [hero, hero, hero],
+    const sheet = (await Assets.load(SPRITESHEET_URL)) as Texture;
+    const source = sheet.source;
+
+    const sliceRow = (row: number, count: number): Texture[] => {
+      const frames: Texture[] = [];
+      for (let i = 0; i < count; i += 1) {
+        frames.push(
+          new Texture({
+            source,
+            frame: new Rectangle(i * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H),
+          }),
+        );
+      }
+      return frames;
     };
 
-    this.silhouette = new Sprite(hero);
+    this.textures = {
+      idle: sliceRow(IDLE_ROW, IDLE_FRAMES),
+      run: sliceRow(RUN_ROW, RUN_FRAMES),
+      jump: sliceRow(JUMP_ROW, JUMP_FRAMES),
+    };
+
+    const initialFrame = this.textures.idle[0];
+
+    this.silhouette = new Sprite(initialFrame);
     this.silhouette.roundPixels = RENDER.pixelArt;
     this.silhouette.anchor.set(0.5);
     this.silhouette.tint = 0xf4ead2;
-    this.silhouette.alpha = 0.26;
-    this.silhouette.width = PLAYER_JUMP_WIDTH + 5;
+    this.silhouette.alpha = 0.22;
+    this.silhouette.width = SPRITE_DISPLAY_WIDTH + 5;
     this.silhouette.scale.y = this.silhouette.scale.x;
-    this.silhouette.position.set(0, -8);
+    this.silhouette.position.set(0, BASE_AVATAR_Y);
 
     this.avatarRig = new Container();
     this.avatarRig.sortableChildren = true;
 
-    this.bodySprite = new Sprite(hero);
+    this.bodySprite = new Sprite(initialFrame);
     this.bodySprite.roundPixels = RENDER.pixelArt;
     this.bodySprite.anchor.set(0.5);
-    this.bodySprite.width = PLAYER_JUMP_WIDTH;
+    this.bodySprite.width = SPRITE_DISPLAY_WIDTH;
     this.bodySprite.scale.y = this.bodySprite.scale.x;
     this.bodySprite.position.set(0, 0);
 
-    this.spriteAspectScale = this.bodySprite.scale.y / this.bodySprite.scale.x;
-
-    this.avatarRig.position.set(0, -8);
-
+    this.avatarRig.position.set(0, BASE_AVATAR_Y);
     this.avatarRig.addChild(this.bodySprite);
 
     this.addChildAt(this.silhouette, 1);
@@ -135,6 +178,12 @@ export class Player extends Container {
     this.landingPulseMs = Math.max(0, this.landingPulseMs - dt * 1000);
     this.grappleLaunchMs = Math.max(0, this.grappleLaunchMs - dt * 1000);
     this.idleTime += dt;
+
+    if (this.body.grounded) {
+      this.airTime = 0;
+    } else {
+      this.airTime += dt;
+    }
 
     if (grapple) {
       const cx = this.body.x + this.body.width * 0.5;
@@ -161,6 +210,7 @@ export class Player extends Container {
   onJump(): void {
     this.jumpPulseMs = ALIVE.jumpPulseMs;
     this.jumpAnticipationMs = ALIVE.jumpAnticipationMs;
+    this.airTime = 0;
   }
 
   onLand(impactVy: number): void {
@@ -217,13 +267,10 @@ export class Player extends Container {
     }
 
     const texture = this.pickBodyTexture();
-    const texAspect =
-      texture.width > 1 && texture.height > 1 ? texture.height / texture.width : this.spriteAspectScale;
     const pullingGrapple =
       this.state === PlayerState.Grapple &&
       this.grappleClip !== null &&
       this.grappleClip.phase === 'pull';
-    const bodyAspect = texAspect;
     const walkPhase = Math.sin(this.distanceTraveled * WALK.bobFrequency);
     const stridePhase = Math.cos(this.distanceTraveled * WALK.bobFrequency);
     const idleBreath = Math.sin(this.idleTime * ALIVE.idleBreathSpeed);
@@ -242,7 +289,7 @@ export class Player extends Container {
       idleBreath * ALIVE.idleBreathScale * 0.5 * idleBlend;
     const jumpPulse =
       Math.sin((1 - this.jumpPulseMs / ALIVE.jumpPulseMs) * Math.PI) * 8;
-    const width = PLAYER_JUMP_WIDTH + jumpPulse;
+    const width = SPRITE_DISPLAY_WIDTH + jumpPulse;
     const jumpAnticipation = this.getPulse(ALIVE.jumpAnticipationMs, this.jumpAnticipationMs);
     const landingPulse = this.getPulse(ALIVE.landingPulseMs, this.landingPulseMs);
     const grappleLaunch = this.getPulse(320, this.grappleLaunchMs);
@@ -277,8 +324,11 @@ export class Player extends Container {
     const magX = spriteBaseScale * squash;
     const flip = this.direction < 0 ? -1 : 1;
     this.bodySprite.scale.x = flip * magX;
-    this.bodySprite.scale.y = magX * bodyAspect * stretch;
-    this.avatarRig.position.set(walkSway, -8 + groundedSink + walkBob + idleOffset * idleBlend);
+    this.bodySprite.scale.y = magX * stretch;
+    this.avatarRig.position.set(
+      walkSway,
+      BASE_AVATAR_Y + groundedSink + walkBob + idleOffset * idleBlend,
+    );
     this.avatarRig.rotation =
       walkPhase * WALK.tiltAmplitude * this.walkBlend +
       this.direction * 0.025 * this.walkBlend +
@@ -302,7 +352,7 @@ export class Player extends Container {
     const silhouetteBaseScale = Math.abs(this.silhouette.scale.x);
     const silMag = silhouetteBaseScale * squash;
     this.silhouette.scale.x = flip * silMag;
-    this.silhouette.scale.y = silMag * texAspect * stretch;
+    this.silhouette.scale.y = silMag * stretch;
     this.silhouette.position.copyFrom(this.avatarRig.position);
     this.silhouette.rotation = this.avatarRig.rotation;
     this.silhouette.skew.x = this.avatarRig.skew.x;
@@ -336,26 +386,56 @@ export class Player extends Container {
     this.feet.clear();
   }
 
-  /** Grapple: jump textures for the body; tongue is drawn in `PlayScene` (vector). */
+  /** Selects an animation frame based on player state, velocity, and elapsed time. */
   private pickBodyTexture(): Texture {
     if (!this.textures) {
       return Texture.EMPTY;
     }
 
     if (this.state === PlayerState.Grapple) {
-      return this.direction === 1 ? this.textures.jumpLeft : this.textures.jumpRight;
+      const jump = this.textures.jump;
+      const phaseT =
+        this.grappleClip?.phase === 'pull'
+          ? 0.55
+          : 0.2 + 0.35 * this.grappleAnimT;
+      return jump[Math.min(jump.length - 1, Math.floor(phaseT * jump.length))];
     }
 
-    const isRunning = this.state === PlayerState.Walk && this.body.grounded;
-    const runFrames = this.direction === 1 ? this.textures.runLeft : this.textures.runRight;
-
-    if (isRunning && runFrames.length > 0) {
-      const frameIndex =
-        Math.floor(this.distanceTraveled / WALK.runFrameDistance) % runFrames.length;
-      return runFrames[frameIndex];
+    if (!this.body.grounded) {
+      const jump = this.textures.jump;
+      const t = Player.airborneFrameT(this.body.vy, this.airTime);
+      return jump[Math.min(jump.length - 1, Math.floor(t * jump.length))];
     }
 
-    return this.direction === 1 ? this.textures.jumpLeft : this.textures.jumpRight;
+    if (this.state === PlayerState.Walk) {
+      const run = this.textures.run;
+      const idx = Math.floor(this.distanceTraveled / WALK.runFrameDistance) % run.length;
+      return run[idx];
+    }
+
+    const idle = this.textures.idle;
+    return idle[Math.floor(this.idleTime * IDLE_FPS) % idle.length];
+  }
+
+  /**
+   * Maps vertical velocity (and a short airtime kicker) into a 0..1 progress through
+   * the jump cycle: anticipation → ascent → apex → descent.
+   */
+  private static airborneFrameT(vy: number, airTime: number): number {
+    const launchKick = Math.min(1, airTime / 0.08);
+
+    if (vy < -600) {
+      return 0.05 + 0.15 * launchKick;
+    }
+    if (vy < 0) {
+      const a = vy / -600;
+      return 0.25 + (1 - a) * 0.15;
+    }
+    if (vy < 400) {
+      return 0.45 + (vy / 400) * 0.25;
+    }
+
+    return Math.min(0.99, 0.7 + Math.min(1, (vy - 400) / 800) * 0.29);
   }
 
   private getPulse(durationMs: number, remainingMs: number): number {
@@ -364,152 +444,5 @@ export class Player extends Container {
     }
 
     return Math.sin((1 - remainingMs / durationMs) * Math.PI);
-  }
-
-  private async createHeroTexture(url: string): Promise<Texture> {
-    await Assets.load(url);
-    const image = new Image();
-    image.src = url;
-    await image.decode();
-
-    const canvas = document.createElement('canvas');
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
-
-    const context = canvas.getContext('2d');
-    if (!context) {
-      return Assets.get(url) as Texture;
-    }
-
-    context.drawImage(image, 0, 0);
-    Player.keyBlackMatteNearEdges(context, canvas.width, canvas.height);
-    const trimmed = Player.trimTransparentCanvas(canvas);
-    return Texture.from(trimmed);
-  }
-
-  /**
-   * Keys out dark matte **only near the image bounds** so interior black outlines stay visible.
-   * Then flood from corners through very dark pixels to clear any inner “islands” of backdrop.
-   */
-  private static keyBlackMatteNearEdges(ctx: CanvasRenderingContext2D, w: number, h: number): void {
-    const img = ctx.getImageData(0, 0, w, h);
-    const d = img.data;
-    const edgePx = 14;
-    const edgeThresh = 48;
-    for (let y = 0; y < h; y += 1) {
-      for (let x = 0; x < w; x += 1) {
-        const distEdge = Math.min(x, y, w - 1 - x, h - 1 - y);
-        if (distEdge > edgePx) {
-          continue;
-        }
-        const i = (y * w + x) * 4;
-        if (Math.max(d[i], d[i + 1], d[i + 2]) <= edgeThresh) {
-          d[i + 3] = 0;
-        }
-      }
-    }
-
-    const floodThresh = 22;
-    const visited = new Uint8Array(w * h);
-    const qx = new Int32Array(w * h);
-    const qy = new Int32Array(w * h);
-    let qt = 0;
-
-    const isDark = (x: number, y: number): boolean => {
-      const i = (y * w + x) * 4;
-      return Math.max(d[i], d[i + 1], d[i + 2]) <= floodThresh;
-    };
-
-    const push = (x: number, y: number): void => {
-      if (x < 0 || y < 0 || x >= w || y >= h) {
-        return;
-      }
-      const p = y * w + x;
-      if (visited[p] !== 0) {
-        return;
-      }
-      visited[p] = 1;
-      if (!isDark(x, y)) {
-        return;
-      }
-      qx[qt] = x;
-      qy[qt] = y;
-      qt += 1;
-    };
-
-    const cornerDepth = Math.min(80, Math.floor(Math.min(w, h) * 0.12));
-    for (let k = 0; k < cornerDepth; k += 1) {
-      push(k, k);
-      push(w - 1 - k, k);
-      push(k, h - 1 - k);
-      push(w - 1 - k, h - 1 - k);
-    }
-
-    let qh = 0;
-    while (qh < qt) {
-      const x = qx[qh];
-      const y = qy[qh];
-      qh += 1;
-      const i = (y * w + x) * 4;
-      d[i + 3] = 0;
-      push(x - 1, y);
-      push(x + 1, y);
-      push(x, y - 1);
-      push(x, y + 1);
-    }
-
-    ctx.putImageData(img, 0, 0);
-  }
-
-  /** Tight crop around non-transparent pixels so the sprite scales to the character, not the old canvas. */
-  private static trimTransparentCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
-    const w = source.width;
-    const h = source.height;
-    const ctx = source.getContext('2d');
-    if (!ctx || w < 1 || h < 1) {
-      return source;
-    }
-    const { data } = ctx.getImageData(0, 0, w, h);
-    let minX = w;
-    let minY = h;
-    let maxX = 0;
-    let maxY = 0;
-    for (let y = 0; y < h; y += 1) {
-      for (let x = 0; x < w; x += 1) {
-        if (data[(y * w + x) * 4 + 3] > 12) {
-          if (x < minX) {
-            minX = x;
-          }
-          if (y < minY) {
-            minY = y;
-          }
-          if (x > maxX) {
-            maxX = x;
-          }
-          if (y > maxY) {
-            maxY = y;
-          }
-        }
-      }
-    }
-    if (maxX < minX) {
-      return source;
-    }
-    const pad = 2;
-    minX = Math.max(0, minX - pad);
-    minY = Math.max(0, minY - pad);
-    maxX = Math.min(w - 1, maxX + pad);
-    maxY = Math.min(h - 1, maxY + pad);
-    const cw = maxX - minX + 1;
-    const ch = maxY - minY + 1;
-    const out = document.createElement('canvas');
-    out.width = cw;
-    out.height = ch;
-    const octx = out.getContext('2d');
-    if (!octx) {
-      return source;
-    }
-    octx.drawImage(source, minX, minY, cw, ch, 0, 0, cw, ch);
-    return out;
   }
 }
