@@ -28,7 +28,13 @@ import { fetchTopLeaderboard, saveScore, type LeaderboardEntry } from '../servic
 import { getSavedNickname } from '../services/playerProfile';
 import { InputManager } from '../systems/InputManager';
 import { Physics } from '../systems/Physics';
-import type { ActiveGrapple, Platform, Ripple } from '../types';
+import type {
+  ActiveGrapple,
+  MushroomEnemy,
+  MushroomEnemyState,
+  Platform,
+  Ripple,
+} from '../types';
 import crystalPlatformUrl from '../../assets/sprites/crystal-platform.png';
 import slimePlatformUrl from '../../assets/sprites/slime-platform.png';
 import volcanoPlatformUrl from '../../assets/sprites/volcano-platform.png';
@@ -155,6 +161,34 @@ const SFX_LOCAL: Record<SfxId, string> = {
 
 /** Static city backdrop — one camera-locked image, no tiling / parallax / motion. */
 const BACKGROUND_URL = `${GAME_ASSETS}/back.png`;
+
+/**
+ * Mushroom enemy spritesheets.
+ *
+ * Each strip is a single 64-px tall row of 80×64 frames; the asset pack splits idle / run /
+ * attack into separate files (rather than one combined sheet). Frame counts come from
+ * `width / 80`: idle = 7, run = 8, attack = 10.
+ */
+const MUSHROOM_IDLE_URL = `${GAME_ASSETS}/Mushroom-Idle.png`;
+const MUSHROOM_RUN_URL = `${GAME_ASSETS}/Mushroom-Run.png`;
+const MUSHROOM_ATTACK_URL = `${GAME_ASSETS}/Mushroom-Attack.png`;
+const MUSHROOM_FRAME_W = 80;
+const MUSHROOM_FRAME_H = 64;
+const MUSHROOM_IDLE_FRAME_COUNT = 7;
+const MUSHROOM_RUN_FRAME_COUNT = 8;
+const MUSHROOM_ATTACK_FRAME_COUNT = 10;
+const MUSHROOM_ANIM_FPS = 10;
+const MUSHROOM_WALK_SPEED_PX = 60;
+const MUSHROOM_SPRITE_SCALE = 2.4;
+/** Tight collision box around the mushroom body (smaller than the visible sprite). */
+const MUSHROOM_HITBOX_W = 46;
+const MUSHROOM_HITBOX_H = 60;
+const MUSHROOM_EDGE_MARGIN = 0.06;
+const MUSHROOM_EDGE_PAUSE_SEC = 0.32;
+const MUSHROOM_ATTACK_RANGE_PX = 220;
+/** First platform index that may carry an enemy. Skips the starting platform (index 0). */
+const MUSHROOM_PLATFORM_START_INDEX = 2;
+const MUSHROOM_PLATFORM_STRIDE = 3;
 
 /** DragonBones export: `*_ske.json`, `*_tex.json`, `*_tex.png` in `public/assets/`. */
 const TONGUE_DB_SKE = `${GAME_ASSETS}/tongue_ske.json`;
@@ -505,6 +539,17 @@ export class PlayScene implements Scene {
   private collectibles: Collectible[] = [];
   private goldCount = 0;
   private diamondCount = 0;
+  /**
+   * Mushroom enemies live in their own world-space container so they sort above platforms but
+   * below the player. The `mushroomEnemies` / `mushroomEnemySprites` arrays are kept in
+   * lockstep — index `i` of one mirrors index `i` of the other.
+   */
+  private mushroomEnemies: MushroomEnemy[] = [];
+  private mushroomEnemySprites: Sprite[] = [];
+  private mushroomEnemyLayer = new Container();
+  private mushroomIdleTextures: Texture[] = [];
+  private mushroomRunTextures: Texture[] = [];
+  private mushroomAttackTextures: Texture[] = [];
   /** Displayed counts (lerp toward real counts for smooth HUD). */
   private hudGoldShown = 0;
   private hudDiamondShown = 0;
@@ -591,6 +636,7 @@ export class PlayScene implements Scene {
       this.sfx.load(),
       this.loadDeathZoneStrip(),
       this.loadBackgroundTexture(),
+      this.loadMushroomTextures(),
     ]);
 
     this.uiLayer.sortableChildren = true;
@@ -603,6 +649,7 @@ export class PlayScene implements Scene {
       this.jelly,
       this.platformSpriteLayer,
       this.platformLayer,
+      this.mushroomEnemyLayer,
       this.lavaLayer,
       this.rippleLayer,
       this.collectiblesGfx,
@@ -613,6 +660,9 @@ export class PlayScene implements Scene {
     this.jelly.zIndex = 0;
     this.platformSpriteLayer.zIndex = 2;
     this.platformLayer.zIndex = 3;
+    /** Above platforms, below FX/player so jumps visually pass in front of enemies. */
+    this.mushroomEnemyLayer.zIndex = 4;
+    this.mushroomEnemyLayer.sortableChildren = false;
     /** Stairs drift behind the death-zone art; player / FX / ripples stay in front. */
     this.lavaLayer.zIndex = 25;
     this.rippleLayer.zIndex = 30;
@@ -894,6 +944,7 @@ export class PlayScene implements Scene {
     this.updateDiamondShineSparks(dt);
     this.updateAction360Sparks(dt);
     this.updateCollectibles(dt);
+    this.updateMushroomEnemies(dt);
     this.maybePurchaseShieldFromBank();
     this.updateCollectibleHudSmooth(dt);
     const mult = this.getComboMultiplier();
@@ -1434,6 +1485,7 @@ export class PlayScene implements Scene {
     }
     this.createPlatforms();
     this.spawnCollectibleField();
+    this.spawnMushroomEnemies();
     this.resetPlayer();
     this.snapCameraToPlayer();
     this.centerStairZeroUnderCamera();
@@ -4427,6 +4479,196 @@ export class PlayScene implements Scene {
 
     this.platformSprites = [];
     this.platformSpriteLayer.removeChildren();
+  }
+
+  /**
+   * Load and slice the three mushroom strips (idle / run / attack) into per-frame textures.
+   * Each strip is a single 64-px tall row of 80×80 frames placed left-to-right; we reuse the
+   * same `TextureSource` and just hand each frame a unique source rectangle.
+   */
+  private async loadMushroomTextures(): Promise<void> {
+    try {
+      const [idleSheet, runSheet, attackSheet] = (await Promise.all([
+        Assets.load(MUSHROOM_IDLE_URL),
+        Assets.load(MUSHROOM_RUN_URL),
+        Assets.load(MUSHROOM_ATTACK_URL),
+      ])) as Texture[];
+
+      const slice = (sheet: Texture, count: number): Texture[] => {
+        const out: Texture[] = [];
+        const source = sheet.source;
+        for (let i = 0; i < count; i += 1) {
+          out.push(
+            new Texture({
+              source,
+              frame: new Rectangle(
+                i * MUSHROOM_FRAME_W,
+                0,
+                MUSHROOM_FRAME_W,
+                MUSHROOM_FRAME_H,
+              ),
+            }),
+          );
+        }
+        return out;
+      };
+
+      this.mushroomIdleTextures = slice(idleSheet, MUSHROOM_IDLE_FRAME_COUNT);
+      this.mushroomRunTextures = slice(runSheet, MUSHROOM_RUN_FRAME_COUNT);
+      this.mushroomAttackTextures = slice(attackSheet, MUSHROOM_ATTACK_FRAME_COUNT);
+    } catch {
+      this.mushroomIdleTextures = [];
+      this.mushroomRunTextures = [];
+      this.mushroomAttackTextures = [];
+    }
+  }
+
+  private pickMushroomFrames(state: MushroomEnemyState): Texture[] {
+    if (state === 'idle' && this.mushroomIdleTextures.length > 0) {
+      return this.mushroomIdleTextures;
+    }
+    if (state === 'attack' && this.mushroomAttackTextures.length > 0) {
+      return this.mushroomAttackTextures;
+    }
+    return this.mushroomRunTextures;
+  }
+
+  /**
+   * (Re)spawn the enemy roster from scratch. Mushrooms are bound to fixed platform indices
+   * (every Nth slot starting at `MUSHROOM_PLATFORM_START_INDEX`) so the recycled stair pool
+   * automatically carries enemies with it as the player climbs.
+   */
+  private spawnMushroomEnemies(): void {
+    for (const sprite of this.mushroomEnemySprites) {
+      sprite.destroy();
+    }
+    this.mushroomEnemySprites = [];
+    this.mushroomEnemies = [];
+    this.mushroomEnemyLayer.removeChildren();
+
+    if (this.mushroomRunTextures.length === 0) {
+      return;
+    }
+
+    for (
+      let i = MUSHROOM_PLATFORM_START_INDEX;
+      i < this.platforms.length;
+      i += MUSHROOM_PLATFORM_STRIDE
+    ) {
+      const enemy: MushroomEnemy = {
+        platformIdx: i,
+        along: 0.3 + Math.random() * 0.4,
+        direction: Math.random() < 0.5 ? -1 : 1,
+        state: 'run',
+        animTime: Math.random() * 0.6,
+        edgePauseLeft: 0,
+      };
+      this.mushroomEnemies.push(enemy);
+
+      const sprite = new Sprite(this.mushroomRunTextures[0]);
+      sprite.anchor.set(0.5, 1);
+      sprite.roundPixels = RENDER.pixelArt;
+      sprite.scale.set(MUSHROOM_SPRITE_SCALE);
+      sprite.eventMode = 'none';
+      this.mushroomEnemyLayer.addChild(sprite);
+      this.mushroomEnemySprites.push(sprite);
+    }
+  }
+
+  /**
+   * Per-frame enemy tick: drives the simple walk / edge-flip AI, picks the right animation
+   * frame, syncs the sprite to its platform, and tests AABB overlap with the player. Any
+   * overlap ends the run via `triggerGameOver()`.
+   */
+  private updateMushroomEnemies(dt: number): void {
+    if (this.mushroomEnemies.length === 0 || this.gameOver) {
+      return;
+    }
+
+    const pb = this.player.body;
+    const playerCx = pb.x + pb.width * 0.5;
+    const playerGrounded = pb.grounded;
+
+    for (let i = 0; i < this.mushroomEnemies.length; i += 1) {
+      const enemy = this.mushroomEnemies[i];
+      const platform = this.platforms[enemy.platformIdx];
+      const sprite = this.mushroomEnemySprites[i];
+      if (!platform || !sprite) {
+        continue;
+      }
+
+      enemy.animTime += dt;
+      if (enemy.edgePauseLeft > 0) {
+        enemy.edgePauseLeft = Math.max(0, enemy.edgePauseLeft - dt);
+      }
+
+      const onSamePlatform =
+        playerGrounded && this.currentGroundPlatform === platform;
+      const enemyCx = platform.x + enemy.along * platform.width;
+      const closeToPlayer =
+        onSamePlatform && Math.abs(enemyCx - playerCx) < MUSHROOM_ATTACK_RANGE_PX;
+
+      let nextState: MushroomEnemyState;
+      if (closeToPlayer) {
+        nextState = 'attack';
+      } else if (enemy.edgePauseLeft > 0) {
+        nextState = 'idle';
+      } else {
+        nextState = 'run';
+      }
+      if (nextState !== enemy.state) {
+        enemy.state = nextState;
+        enemy.animTime = 0;
+      }
+
+      if (enemy.state === 'run') {
+        const widthPx = Math.max(1, platform.width);
+        const alongDelta = (MUSHROOM_WALK_SPEED_PX * dt) / widthPx;
+        enemy.along += alongDelta * enemy.direction;
+        if (enemy.along <= MUSHROOM_EDGE_MARGIN) {
+          enemy.along = MUSHROOM_EDGE_MARGIN;
+          enemy.direction = 1;
+          enemy.edgePauseLeft = MUSHROOM_EDGE_PAUSE_SEC;
+        } else if (enemy.along >= 1 - MUSHROOM_EDGE_MARGIN) {
+          enemy.along = 1 - MUSHROOM_EDGE_MARGIN;
+          enemy.direction = -1;
+          enemy.edgePauseLeft = MUSHROOM_EDGE_PAUSE_SEC;
+        }
+      }
+
+      const frames = this.pickMushroomFrames(enemy.state);
+      if (frames.length > 0) {
+        const idx = Math.floor(enemy.animTime * MUSHROOM_ANIM_FPS) % frames.length;
+        sprite.texture = frames[idx];
+      }
+
+      const wx = platform.x + enemy.along * platform.width;
+      const wy = platform.y;
+      sprite.position.set(wx, wy + 2);
+      sprite.scale.x = MUSHROOM_SPRITE_SCALE * enemy.direction;
+      sprite.scale.y = MUSHROOM_SPRITE_SCALE;
+
+      if (this.mushroomHitsPlayer(wx, wy)) {
+        this.triggerGameOver();
+        return;
+      }
+    }
+  }
+
+  /** AABB hit between a tight mushroom hitbox (centered on `wx`, anchored above `wy`) and the player body. */
+  private mushroomHitsPlayer(wx: number, wy: number): boolean {
+    const halfW = MUSHROOM_HITBOX_W * 0.5;
+    const ex1 = wx - halfW;
+    const ex2 = wx + halfW;
+    const ey1 = wy - MUSHROOM_HITBOX_H;
+    const ey2 = wy;
+    const pb = this.player.body;
+    return (
+      ex1 < pb.x + pb.width &&
+      ex2 > pb.x &&
+      ey1 < pb.y + pb.height &&
+      ey2 > pb.y
+    );
   }
 
   private async createCheckerTransparentTexture(url: string): Promise<Texture> {
