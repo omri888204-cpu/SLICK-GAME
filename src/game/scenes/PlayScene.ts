@@ -212,6 +212,7 @@ const HEALTH_HUD_X_PX = 18;
 const HEALTH_HUD_Y_OFFSET_PX = 6;
 const HEALTH_BAR_WIDTH_PX = 160;
 const HEALTH_BAR_HEIGHT_PX = 16;
+const HEALTH_BAR_UNDER_TIMER_GAP_PX = 8;
 
 /** DragonBones export: `*_ske.json`, `*_tex.json`, `*_tex.png` in `public/assets/`. */
 const TONGUE_DB_SKE = `${GAME_ASSETS}/tongue_ske.json`;
@@ -502,6 +503,7 @@ export class PlayScene implements Scene {
   private healthHudRoot = new Container();
   private healthBarBack = new Graphics();
   private healthBarFill = new Graphics();
+  private healthBarLabel?: Text;
   private paused = false;
   private pauseOverlay = new Container();
   private pauseBackdrop = new Graphics();
@@ -3468,15 +3470,31 @@ export class PlayScene implements Scene {
     this.healthHudRoot.eventMode = 'none';
     this.healthBarBack.eventMode = 'none';
     this.healthBarFill.eventMode = 'none';
-    this.healthHudRoot.addChild(this.healthBarBack, this.healthBarFill);
+    this.healthBarLabel = new Text({
+      text: 'HP',
+      style: this.createNeonGoldTextStyle(14, 2),
+    });
+    this.healthBarLabel.anchor.set(0, 0.5);
+    this.healthBarLabel.eventMode = 'none';
+    this.healthHudRoot.addChild(this.healthBarBack, this.healthBarFill, this.healthBarLabel);
     this.uiLayer.addChild(this.healthHudRoot);
     this.layoutHealthHud();
     this.refreshHealthHud();
   }
 
   private layoutHealthHud(): void {
-    const baseY = UI_SAFE_PAD_TOP + UI_HEADER_H + HEALTH_HUD_Y_OFFSET_PX;
-    this.healthHudRoot.position.set(HEALTH_HUD_X_PX, baseY);
+    if (this.healthBarLabel) {
+      this.healthBarLabel.position.set(8, HEALTH_BAR_HEIGHT_PX * 0.5);
+    }
+    if (this.timerHudText) {
+      const timerBottomY = this.timerHudText.position.y + this.timerHudText.height;
+      const barX = this.timerHudText.position.x - HEALTH_BAR_WIDTH_PX * 0.5;
+      const barY = timerBottomY + HEALTH_BAR_UNDER_TIMER_GAP_PX;
+      this.healthHudRoot.position.set(barX, barY);
+      return;
+    }
+    const fallbackY = UI_SAFE_PAD_TOP + UI_HEADER_H + HEALTH_HUD_Y_OFFSET_PX;
+    this.healthHudRoot.position.set(HEALTH_HUD_X_PX, fallbackY);
   }
 
   /** Repaint health bar fill based on `playerHealth / PLAYER_MAX_HEALTH`. */
