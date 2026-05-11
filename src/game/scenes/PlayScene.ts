@@ -201,6 +201,18 @@ const PLAYER_ATTACK_REACH_PX = 110;
 /** Vertical generosity applied to the attack hitbox (tops/bottoms) — slightly forgiving. */
 const PLAYER_ATTACK_VERT_PAD_PX = 16;
 
+/** Player health / damage configuration. Falls still bypass invuln & go straight to game over. */
+const PLAYER_MAX_HEALTH = 3;
+/** Seconds of i-frames granted after a hit (no further mushroom damage during this window). */
+const PLAYER_INVULN_SEC = 1.5;
+/** Blink frequency while invulnerable. Higher = faster strobe. */
+const PLAYER_HURT_BLINK_HZ = 12;
+/** Top-left placement for the health HUD (below the header panel). */
+const HEALTH_HUD_X_PX = 18;
+const HEALTH_HUD_Y_OFFSET_PX = 6;
+const HEALTH_BAR_WIDTH_PX = 160;
+const HEALTH_BAR_HEIGHT_PX = 16;
+
 /** DragonBones export: `*_ske.json`, `*_tex.json`, `*_tex.png` in `public/assets/`. */
 const TONGUE_DB_SKE = `${GAME_ASSETS}/tongue_ske.json`;
 const TONGUE_DB_TEX_JSON = `${GAME_ASSETS}/tongue_tex.json`;
@@ -470,6 +482,26 @@ export class PlayScene implements Scene {
   private attackBtnRoot = new Container();
   private attackBtn = new Graphics();
   private attackBtnIcon = new Graphics();
+  /**
+   * Player health & i-frame state.
+   *
+   * `playerHealth` is decremented by mushroom contact (capped at 0 = game over). Falls
+   * into the death plane still bypass this and trigger an immediate game over via the
+   * existing `checkFallGameOver` → `triggerGameOver` flow. `playerInvulnTime` counts
+   * down each frame; while it is positive the player can absorb further hits without
+   * losing HP, and the sprite strobes via `playerInvulnBlinkPhase`.
+   */
+  private playerHealth = PLAYER_MAX_HEALTH;
+  /**
+   * No heal mechanics exist right now, so HP should never increase during a run.
+   * This guard prevents accidental restores from unrelated state flows.
+   */
+  private playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
+  private playerInvulnTime = 0;
+  private playerInvulnBlinkPhase = 0;
+  private healthHudRoot = new Container();
+  private healthBarBack = new Graphics();
+  private healthBarFill = new Graphics();
   private paused = false;
   private pauseOverlay = new Container();
   private pauseBackdrop = new Graphics();
@@ -721,6 +753,7 @@ export class PlayScene implements Scene {
     this.setupPauseUi();
     this.setupHeaderPauseButton();
     this.setupAttackButton();
+    this.setupHealthHud();
     this.setupSpeedTierPulseOverlay();
     this.drawTopHeaderPanel();
     this.layoutHeaderPauseButton();
@@ -741,6 +774,7 @@ export class PlayScene implements Scene {
     // Use real frame delta on mobile — capping to 1/30s made slow frames *lose* time so drifting
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
+    this.enforceHealthInvariant();
     if (this.gameOver) {
       this.updateScreenShake(dt);
       this.refreshGameOverScoreText();
@@ -835,6 +869,7 @@ export class PlayScene implements Scene {
       this.updateDiamondShineSparks(dt);
       this.updateAction360Sparks(dt);
       this.updateCollectibles(dt);
+      this.tickPlayerInvuln(dt);
       this.maybePurchaseShieldFromBank();
       this.updateCollectibleHudSmooth(dt);
       const mult = this.getComboMultiplier();
@@ -960,6 +995,7 @@ export class PlayScene implements Scene {
     this.updateDiamondShineSparks(dt);
     this.updateAction360Sparks(dt);
     this.updateCollectibles(dt);
+    this.tickPlayerInvuln(dt);
     this.updateMushroomEnemies(dt);
     if (this.input?.consumeAttack()) {
       this.playerAttack();
@@ -1006,6 +1042,7 @@ export class PlayScene implements Scene {
     this.layoutGameOverUi();
     this.layoutHeaderPauseButton();
     this.layoutAttackButton();
+    this.layoutHealthHud();
     this.layoutPauseOverlay();
     this.redrawSpeedPulseOverlay();
     this.drawTopHeaderPanel();
@@ -1019,6 +1056,7 @@ export class PlayScene implements Scene {
       this.drawTopHeaderPanel();
       this.layoutHeaderPauseButton();
       this.layoutAttackButton();
+      this.layoutHealthHud();
       this.layoutPauseOverlay();
       this.redrawSpeedPulseOverlay();
       this.clampEntitiesToWorldBounds();
@@ -1475,6 +1513,7 @@ export class PlayScene implements Scene {
     this.pauseOverlay.visible = false;
     this.headerPauseRoot.visible = true;
     this.attackBtnRoot.visible = true;
+    this.healthHudRoot.visible = true;
     this.beastParticles = [];
     this.beastParticleSpawnAcc = 0;
     this.shakeTime = 0;
@@ -1500,6 +1539,12 @@ export class PlayScene implements Scene {
     this.jumpArcAssistDuration = 0;
     this.levelUpBoostTime = 0;
     this.shieldStock = 0;
+    this.playerHealth = PLAYER_MAX_HEALTH;
+    this.playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
+    this.playerInvulnTime = 0;
+    this.playerInvulnBlinkPhase = 0;
+    this.player.alpha = 1;
+    this.refreshHealthHud();
     this.tongueBoostComboExtendUntil = -Infinity;
     this.tongueBoostComboResetAt = null;
     this.tongueBoostChainWindowSec = null;
@@ -1545,6 +1590,13 @@ export class PlayScene implements Scene {
     if (deepRun) {
       const peg = FLASH_SKILL_BOOST_DURATION_SEC * this.getComboWindowAltitudeMultiplier();
       this.flashSkillBoostTime = Math.max(this.flashSkillBoostTime, peg);
+    }
+
+    // Requested behavior: while Combo/Flash boost is active, HP is fully restored.
+    if (this.flashSkillBoostTime > 0 && this.playerHealth < PLAYER_MAX_HEALTH) {
+      this.playerHealth = PLAYER_MAX_HEALTH;
+      this.playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
+      this.refreshHealthHud();
     }
 
     if (wasBoostActive && this.flashSkillBoostTime <= 0) {
@@ -1813,11 +1865,6 @@ export class PlayScene implements Scene {
     const feetY = this.player.body.y + this.player.body.height;
     const deathLineY = this.getDeathPlaneWorldY();
     if (feetY <= deathLineY) {
-      return;
-    }
-    if (this.shieldStock > 0) {
-      this.shieldStock -= 1;
-      this.performShieldSuperLaunch();
       return;
     }
     this.triggerGameOver();
@@ -3414,6 +3461,105 @@ export class PlayScene implements Scene {
     this.mushroomEnemySprites.splice(index, 1);
   }
 
+  /** Build a top-left health bar HUD that shrinks as HP is lost. */
+  private setupHealthHud(): void {
+    this.healthHudRoot.zIndex = 1004;
+    this.healthHudRoot.sortableChildren = false;
+    this.healthHudRoot.eventMode = 'none';
+    this.healthBarBack.eventMode = 'none';
+    this.healthBarFill.eventMode = 'none';
+    this.healthHudRoot.addChild(this.healthBarBack, this.healthBarFill);
+    this.uiLayer.addChild(this.healthHudRoot);
+    this.layoutHealthHud();
+    this.refreshHealthHud();
+  }
+
+  private layoutHealthHud(): void {
+    const baseY = UI_SAFE_PAD_TOP + UI_HEADER_H + HEALTH_HUD_Y_OFFSET_PX;
+    this.healthHudRoot.position.set(HEALTH_HUD_X_PX, baseY);
+  }
+
+  /** Repaint health bar fill based on `playerHealth / PLAYER_MAX_HEALTH`. */
+  private refreshHealthHud(): void {
+    const ratio = Math.max(0, Math.min(1, this.playerHealth / PLAYER_MAX_HEALTH));
+    this.healthBarBack.clear();
+    this.healthBarBack.roundRect(0, 0, HEALTH_BAR_WIDTH_PX, HEALTH_BAR_HEIGHT_PX, 8).fill({
+      color: 0x12121a,
+      alpha: 0.92,
+    });
+    this.healthBarBack.roundRect(0, 0, HEALTH_BAR_WIDTH_PX, HEALTH_BAR_HEIGHT_PX, 8).stroke({
+      color: 0xffffff,
+      width: 2,
+      alpha: 0.6,
+    });
+
+    this.healthBarFill.clear();
+    const fillW = Math.max(0, HEALTH_BAR_WIDTH_PX * ratio);
+    if (fillW > 0) {
+      const color = ratio > 0.66 ? 0x39d353 : ratio > 0.33 ? 0xf2cc60 : 0xff4d4d;
+      this.healthBarFill.roundRect(0, 0, fillW, HEALTH_BAR_HEIGHT_PX, 8).fill({
+        color,
+        alpha: 0.96,
+      });
+    }
+  }
+
+  /**
+   * Defensive clamp: in the current design HP may go down from damage but should not
+   * increase until `resetRun()` starts a fresh attempt.
+   */
+  private enforceHealthInvariant(): void {
+    if (this.playerHealth > this.playerHealthCeilingThisRun) {
+      this.playerHealth = this.playerHealthCeilingThisRun;
+      this.refreshHealthHud();
+    }
+  }
+
+  /**
+   * Apply one point of mushroom damage. Returns `true` when the hit landed (so the caller
+   * can stop scanning further enemies this frame), or `false` when the player is currently
+   * invulnerable. Triggers the game-over flow only when health drops to zero.
+   */
+  private damagePlayer(): boolean {
+    if (this.gameOver) {
+      return false;
+    }
+    if (this.playerInvulnTime > 0) {
+      return false;
+    }
+    this.playerHealth = Math.max(0, this.playerHealth - 1);
+    this.playerHealthCeilingThisRun = this.playerHealth;
+    this.playerInvulnTime = PLAYER_INVULN_SEC;
+    this.playerInvulnBlinkPhase = 0;
+    this.refreshHealthHud();
+    this.shakeTime = Math.max(this.shakeTime, 0.22);
+    if (this.playerHealth <= 0) {
+      this.triggerGameOver();
+    }
+    return true;
+  }
+
+  /**
+   * Per-frame upkeep for the invulnerability window. While `playerInvulnTime > 0` the
+   * player sprite strobes (alpha pulsing) so the hit-recovery state is obvious; once it
+   * hits zero we restore full opacity.
+   */
+  private tickPlayerInvuln(dt: number): void {
+    if (this.playerInvulnTime <= 0) {
+      if (this.player.alpha !== 1) {
+        this.player.alpha = 1;
+      }
+      return;
+    }
+    this.playerInvulnTime = Math.max(0, this.playerInvulnTime - dt);
+    this.playerInvulnBlinkPhase += dt * PLAYER_HURT_BLINK_HZ * Math.PI * 2;
+    const strobe = 0.5 + 0.5 * Math.cos(this.playerInvulnBlinkPhase);
+    this.player.alpha = 0.32 + 0.58 * strobe;
+    if (this.playerInvulnTime === 0) {
+      this.player.alpha = 1;
+    }
+  }
+
   private setupSpeedTierPulseOverlay(): void {
     this.speedPulseGfx.eventMode = 'none';
     this.speedPulseGfx.visible = false;
@@ -3571,6 +3717,7 @@ export class PlayScene implements Scene {
     this.pauseOverlay.visible = false;
     this.headerPauseRoot.visible = false;
     this.attackBtnRoot.visible = false;
+    this.healthHudRoot.visible = false;
     this.finalMetersAtDeath = Math.max(0, Math.floor(-this.highestY / 12));
     this.refreshGameOverScoreText();
     this.gameOverOverlay.visible = true;
@@ -4829,8 +4976,11 @@ export class PlayScene implements Scene {
       sprite.scale.y = MUSHROOM_SPRITE_SCALE;
 
       if (this.mushroomHitsPlayer(wx, wy)) {
-        this.triggerGameOver();
-        return;
+        if (this.damagePlayer()) {
+          // Stop scanning this frame — `damagePlayer` already updated invuln/UI; subsequent
+          // overlaps in the same frame would be wasted (one hit per swing window is enough).
+          return;
+        }
       }
     }
   }
