@@ -213,6 +213,21 @@ const HEALTH_HUD_Y_OFFSET_PX = 6;
 const HEALTH_BAR_WIDTH_PX = 160;
 const HEALTH_BAR_HEIGHT_PX = 16;
 const HEALTH_BAR_UNDER_TIMER_GAP_PX = 8;
+/** Rope “bead” bridge look for low altitude (HUD meters). Physics stays the same AABB. */
+const BEAD_BRIDGE_MAX_METERS = 1000;
+/** Approximate stair span for the first phase — used with optional width variation. */
+const SPRING_PHASE_STAIR_COUNT = 72;
+
+const BEAD_BRIDGE_PALETTES: ReadonlyArray<{
+  body: number;
+  shadow: number;
+  hi: number;
+}> = [
+  { body: 0xc17c5b, shadow: 0x5a3a28, hi: 0xe8c4a8 },
+  { body: 0x9a8a78, shadow: 0x4a4038, hi: 0xd8d0c4 },
+  { body: 0xc99a7a, shadow: 0x6a4838, hi: 0xf0d0b8 },
+  { body: 0xa89c62, shadow: 0x485028, hi: 0xd8e8a0 },
+];
 
 /** DragonBones export: `*_ske.json`, `*_tex.json`, `*_tex.png` in `public/assets/`. */
 const TONGUE_DB_SKE = `${GAME_ASSETS}/tongue_ske.json`;
@@ -431,12 +446,6 @@ const LS_TOUCH_GLOBAL_STEERING = 'sky_climber_touch_global_steering';
 
 /** Blend toward this cool color on background as altitude speed mult rises (0..1). */
 const ALTITUDE_WIND_MAX_PARTICLES = 48;
-/**
- * Extra scale so the ice strip reads clearly (base height follows texture aspect × viewport width).
- * 1 = natural proportions when stretched full width.
- */
-const DEATH_ZONE_VISUAL_SCALE = 1.42;
-
 type WindParticle = {
   x: number;
   y: number;
@@ -465,13 +474,9 @@ export class PlayScene implements Scene {
   private platformLayer = new Graphics();
   private rippleLayer = new Graphics();
   private collectiblesGfx = new Graphics();
-  /** Bottom hazard strip (crystal sprite + optional vector fallback). */
+  /** Bottom hazard strip (vector lava fallback; crystal/ice asset removed). */
   private lavaLayer = new Container();
   private deathZoneFallback = new Graphics();
-  private deathZoneCrystalSprite: Sprite | null = null;
-  /** Pixel size of death-zone texture (for proportional scaling). */
-  private deathZoneSourceW = 1;
-  private deathZoneSourceH = 1;
   private gameShake = new Container();
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
@@ -609,7 +614,11 @@ export class PlayScene implements Scene {
   private platformTextureSlime?: Texture;
   private platformTextureVolcano?: Texture;
   private platformTextureStorm?: Texture;
-  private platformSprites: Sprite[] = [];
+  private platformSprites: Container[] = [];
+  private platformSpriteModes: Array<'legacy' | 'bead'> = [];
+  private platformSpriteCols: number[] = [];
+  /** Rebuild bead-rope art when width/height/count palette changes. */
+  private beadBridgeLayoutSig: number[] = [];
   private platforms: Platform[] = [];
   /** Stair the player is standing on (kinematic carry uses `driftVx`). */
   private currentGroundPlatform: Platform | null = null;
@@ -1291,6 +1300,7 @@ export class PlayScene implements Scene {
     );
 
     for (const p of toRecycle) {
+      const platformIdx = this.platforms.indexOf(p);
       this.nextStairId += 1;
       p.stairId = this.nextStairId;
       p.y = spawnY;
@@ -1326,8 +1336,36 @@ export class PlayScene implements Scene {
   }
 
   private applyResponsivePlatformWidth(platform: Platform): void {
-    platform.width = platform.baseWidth * PLATFORM_SCALE * this.getPlatformResponsiveWidthMul();
+    const springPhaseMul = this.getSpringPhasePlatformWidthMul(platform.stairId);
+    platform.width =
+      platform.baseWidth *
+      PLATFORM_SCALE *
+      this.getPlatformResponsiveWidthMul() *
+      springPhaseMul;
     this.updatePlatformBodyFromScale(platform);
+  }
+
+  /**
+   * In the first Spring phase, widen some stairs so early gameplay uses both narrow and
+   * noticeably wide layouts (requested "use all", including wider stairs).
+   */
+  private getSpringPhasePlatformWidthMul(stairId: number): number {
+    if (stairId > SPRING_PHASE_STAIR_COUNT) {
+      return 1;
+    }
+    // Deterministic pseudo-random by stair id: stable across frames/rebuilds.
+    const raw = Math.sin((stairId + 11) * 31.719) * 43758.5453;
+    const unit = raw - Math.floor(raw);
+    if (unit < 0.22) {
+      return 0.88;
+    }
+    if (unit < 0.52) {
+      return 1;
+    }
+    if (unit < 0.8) {
+      return 1.18;
+    }
+    return 1.32;
   }
 
   /**
@@ -1467,21 +1505,20 @@ export class PlayScene implements Scene {
       artMul = STAIRS.compactPlatformArtScale;
     }
 
+    const useBeadBridge = climbM <= BEAD_BRIDGE_MAX_METERS;
+
     for (let i = 0; i < this.platforms.length; i += 1) {
       const platform = this.platforms[i];
-      const sprite = this.platformSprites[i];
-      if (!sprite) {
+      const root = this.platformSprites[i];
+      if (!root) {
         continue;
       }
 
-      if (sprite.texture !== tex) {
-        sprite.texture = tex;
+      if (useBeadBridge) {
+        this.syncBeadBridgePlatformSprite(i, root, platform);
+      } else {
+        this.syncLegacyPlatformSprite(i, root, platform, tex, artMul);
       }
-
-      sprite.roundPixels = RENDER.pixelArt;
-      sprite.width = platform.width * artMul;
-      sprite.scale.y = Math.abs(sprite.scale.x);
-      sprite.position.set(platform.x + platform.width / 2, platform.y + platform.height / 2 + 6);
     }
   }
 
@@ -3830,28 +3867,14 @@ export class PlayScene implements Scene {
 
   private drawBottomDeathLine(): void {
     /**
-     * `lavaLayer` lives in `world` with `zIndex` above platforms so stairs pass **behind** the ice.
-     * Death line = `getDeathPlaneWorldY()`; ice anchor (0.5, 0.5) on that line (vertical center of art).
+     * `lavaLayer` lives in `world` with `zIndex` above platforms so stairs pass **behind** the hazard art.
+     * Death line = `getDeathPlaneWorldY()`.
      */
     const deathY = this.getDeathPlaneWorldY();
     const vw = this.worldWidthFromScreen();
     const padX = 30;
     const x = this.cameraX - padX;
     const w = vw + padX * 2;
-    const cx = this.cameraX + vw * 0.5;
-
-    const crystal = this.deathZoneCrystalSprite;
-    if (crystal?.texture) {
-      this.deathZoneFallback.visible = false;
-      crystal.visible = true;
-      crystal.anchor.set(0.5, 0.5);
-      crystal.position.set(cx, deathY);
-      crystal.width = w;
-      const sw = Math.max(1, this.deathZoneSourceW);
-      const sh = Math.max(1, this.deathZoneSourceH);
-      crystal.height = (w * sh * DEATH_ZONE_VISUAL_SCALE) / sw;
-      return;
-    }
 
     this.deathZoneFallback.visible = true;
     const lavaTop = deathY - 32;
@@ -3864,67 +3887,9 @@ export class PlayScene implements Scene {
       .fill({ color: 0xffa621, alpha: 0.95 });
   }
 
+  /** Crystal strip removed from repo — keep hook for init ordering; hazard is vector-only. */
   private async loadDeathZoneStrip(): Promise<void> {
-    try {
-      const { texture, w, h } = await this.createDeathZoneStripTexture(
-        `${GAME_ASSETS}/death-zone-crystals.png`,
-      );
-      this.deathZoneSourceW = w;
-      this.deathZoneSourceH = h;
-      const spr = new Sprite(texture);
-      spr.anchor.set(0.5, 0.5);
-      spr.roundPixels = false;
-      spr.eventMode = 'none';
-      spr.tint = 0xffffff;
-      this.deathZoneCrystalSprite = spr;
-      this.lavaLayer.addChild(spr);
-      this.deathZoneFallback.visible = false;
-    } catch {
-      this.deathZoneCrystalSprite = null;
-      this.deathZoneFallback.visible = true;
-    }
-  }
-
-  /**
-   * Loads the PNG, removes edge-connected near-black (Photoroom letterbox / leftover bg),
-   * then builds a texture — `Sprite` + canvas path avoids TilingSprite solid-black issues in Pixi v8.
-   */
-  private async createDeathZoneStripTexture(
-    assetPath: string,
-  ): Promise<{ texture: Texture; w: number; h: number }> {
-    const res = await fetch(assetPath);
-    if (!res.ok) {
-      throw new Error(`death-zone fetch ${res.status}`);
-    }
-    const blob = await res.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    const img = new Image();
-    img.decoding = 'async';
-    img.src = blobUrl;
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error('death-zone decode'));
-    });
-    URL.revokeObjectURL(blobUrl);
-
-    const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx || canvas.width < 2 || canvas.height < 2) {
-      const tex = await Assets.load<Texture>(assetPath);
-      const tw = tex.width || tex.source?.width || 1;
-      const th = tex.height || tex.source?.height || 1;
-      return { texture: tex, w: tw, h: th };
-    }
-
-    ctx.drawImage(img, 0, 0);
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    this.removeConnectedDarkEdgeBackground(imageData.data, canvas.width, canvas.height);
-    ctx.putImageData(imageData, 0, 0);
-
-    const texture = Texture.from(canvas);
-    return { texture, w: canvas.width, h: canvas.height };
+    this.deathZoneFallback.visible = true;
   }
 
   private tickAltitudePresentation(dt: number): void {
@@ -4805,25 +4770,146 @@ export class PlayScene implements Scene {
     }
 
     for (const platform of this.platforms) {
-      const sprite = new Sprite(this.platformTexture);
-      sprite.anchor.set(0.5);
-      sprite.roundPixels = RENDER.pixelArt;
-      sprite.width = platform.width;
-      sprite.scale.y = Math.abs(sprite.scale.x);
-      sprite.position.set(platform.x + platform.width / 2, platform.y + platform.height / 2 + 6);
-      sprite.alpha = 0.98;
-      this.platformSpriteLayer.addChild(sprite);
-      this.platformSprites.push(sprite);
+      const root = new Container();
+      root.eventMode = 'none';
+      root.position.set(platform.x, platform.y);
+      root.alpha = 0.98;
+      this.platformSpriteLayer.addChild(root);
+      this.platformSprites.push(root);
+      this.platformSpriteModes.push('legacy');
+      this.platformSpriteCols.push(-1);
+      this.beadBridgeLayoutSig.push(-1);
     }
   }
 
   private clearPlatformSprites(): void {
-    for (const sprite of this.platformSprites) {
-      sprite.destroy();
+    for (const root of this.platformSprites) {
+      root.destroy({ children: true });
     }
 
     this.platformSprites = [];
+    this.platformSpriteModes = [];
+    this.platformSpriteCols = [];
+    this.beadBridgeLayoutSig = [];
     this.platformSpriteLayer.removeChildren();
+  }
+
+  private syncLegacyPlatformSprite(
+    index: number,
+    root: Container,
+    platform: Platform,
+    tex: Texture,
+    artMul: number,
+  ): void {
+    let sprite = root.children[0] as Sprite | undefined;
+    if (this.platformSpriteModes[index] !== 'legacy' || !(sprite instanceof Sprite)) {
+      root.removeChildren().forEach((child) => child.destroy());
+      sprite = new Sprite(tex);
+      sprite.anchor.set(0.5);
+      root.addChild(sprite);
+      this.platformSpriteModes[index] = 'legacy';
+      this.platformSpriteCols[index] = -1;
+    } else if (sprite.texture !== tex) {
+      sprite.texture = tex;
+    }
+    if (!sprite) {
+      return;
+    }
+    sprite.roundPixels = RENDER.pixelArt;
+    sprite.width = platform.width * artMul;
+    sprite.scale.y = Math.abs(sprite.scale.x);
+    sprite.position.set(platform.width * 0.5, platform.height * 0.5 + 6);
+    root.position.set(platform.x, platform.y);
+    root.alpha = 0.98;
+  }
+
+  /**
+   * Rope “bead” bridge along the stair top: round segments + sagging cord (visual only).
+   * Physics stays the full `platform` AABB.
+   */
+  private syncBeadBridgePlatformSprite(
+    index: number,
+    root: Container,
+    platform: Platform,
+  ): void {
+    const sid = Math.max(0, platform.stairId);
+    const w = platform.width;
+    const h = platform.height;
+    const beadR = Math.max(5.5, Math.min(h * 0.4, w * 0.09));
+    const margin = beadR * 1.15;
+    const span = Math.max(w - margin * 2, beadR * 3.5);
+    const step = beadR * 2.05;
+    const n = Math.max(5, Math.min(16, Math.floor(span / step)));
+    const sag = beadR * (0.58 + (sid % 6) * 0.045);
+    const cy = h * 0.5 + 4;
+    const palIdx = sid % BEAD_BRIDGE_PALETTES.length;
+    const layoutSig =
+      Math.round(w * 10) +
+      Math.round(h * 10) * 10_000 +
+      n * 100_000_000 +
+      palIdx * 2_000_000_000 +
+      Math.round(beadR * 50) * 10_000_000_000 +
+      Math.round(sag * 40) * 1_000_000_000_000;
+
+    const first = root.children[0];
+    const needRebuild =
+      this.platformSpriteModes[index] !== 'bead' ||
+      this.beadBridgeLayoutSig[index] !== layoutSig ||
+      !(first instanceof Graphics) ||
+      first.label !== 'bead-bridge';
+
+    if (needRebuild) {
+      root.removeChildren().forEach((c) => c.destroy());
+      const g = new Graphics();
+      g.label = 'bead-bridge';
+      g.roundPixels = RENDER.pixelArt;
+      const pal = BEAD_BRIDGE_PALETTES[palIdx] ?? BEAD_BRIDGE_PALETTES[0];
+      const xs: number[] = [];
+      const ys: number[] = [];
+      const x0 = margin;
+      for (let i = 0; i < n; i += 1) {
+        const t = n <= 1 ? 0.5 : i / (n - 1);
+        const x = x0 + t * span;
+        const sagY = sag * 4 * t * (1 - t);
+        xs.push(x);
+        ys.push(cy + sagY);
+      }
+
+      if (xs.length >= 2) {
+        g.moveTo(xs[0], ys[0]);
+        for (let i = 1; i < xs.length; i += 1) {
+          g.lineTo(xs[i], ys[i]);
+        }
+        g.stroke({
+          width: Math.max(1.25, beadR * 0.16),
+          color: 0x000000,
+          alpha: 1,
+        });
+      }
+
+      const outlineW = Math.max(1.15, beadR * 0.14);
+      for (let i = 0; i < n; i += 1) {
+        const x = xs[i];
+        const y = ys[i];
+        g.circle(x, y + beadR * 0.1, beadR * 0.9).fill({ color: pal.shadow, alpha: 1 });
+        g.circle(x, y, beadR)
+          .fill({ color: pal.body, alpha: 1 })
+          .stroke({ width: outlineW, color: 0x000000, alpha: 1 });
+        g.circle(x - beadR * 0.22, y - beadR * 0.28, beadR * 0.3).fill({
+          color: pal.hi,
+          alpha: 0.95,
+        });
+      }
+
+      root.addChild(g);
+      this.platformSpriteModes[index] = 'bead';
+      this.platformSpriteCols[index] = n;
+      this.beadBridgeLayoutSig[index] = layoutSig;
+    }
+
+    root.scale.set(1);
+    root.position.set(platform.x, platform.y);
+    root.alpha = 0.98;
   }
 
   /**
