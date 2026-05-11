@@ -10,6 +10,7 @@ import {
   Text,
   TextStyle,
   Texture,
+  TilingSprite,
   type Ticker,
 } from 'pixi.js';
 import { PixiFactory, type PixiArmatureDisplay } from 'pixi-dragonbones-runtime';
@@ -113,6 +114,12 @@ type TouchRipple = {
   life: number;
 };
 
+type MushroomDeathEffect = {
+  sprite: Sprite;
+  phase: 'die' | 'blood';
+  timeInPhase: number;
+};
+
 type CollectibleKind = 'coin' | 'diamond';
 
 type Collectible = {
@@ -160,8 +167,51 @@ const SFX_LOCAL: Record<SfxId, string> = {
   player_land: `${import.meta.env.BASE_URL}audio/player_land.mp3`,
 };
 
-/** Static city backdrop — one camera-locked image, no tiling / parallax / motion. */
-const BACKGROUND_URL = `${GAME_ASSETS}/back.png`;
+/**
+ * Parallax tiling backgrounds: **draw back → front** = farthest sky first, closest details last.
+ * Each row: preferred `.jpg` then `.png` under `public/assets/`. Speeds are fractions of **camera**
+ * motion on `tilePosition` (layer 0 = 100% = matches scroll feel with world).
+ */
+type Bg7ParallaxLayerSpec = {
+  readonly candidates: readonly string[];
+  readonly speed: number;
+};
+
+const BG7_PARALLAX_LAYERS: readonly Bg7ParallaxLayerSpec[] = [
+  {
+    candidates: [
+      `${GAME_ASSETS}/bg_7_0003_layer_3.jpg`,
+      `${GAME_ASSETS}/bg_7_0003_layer_3.png`,
+    ],
+    speed: 0.1,
+  },
+  {
+    candidates: [
+      `${GAME_ASSETS}/bg_7_0002_layer_2.jpg`,
+      `${GAME_ASSETS}/bg_7_0002_layer_2.png`,
+    ],
+    speed: 0.3,
+  },
+  {
+    candidates: [
+      `${GAME_ASSETS}/bg_7_0001_layer_1.jpg`,
+      `${GAME_ASSETS}/bg_7_0001_layer_1.png`,
+    ],
+    speed: 0.6,
+  },
+  {
+    candidates: [
+      `${GAME_ASSETS}/bg_7_0000_layer_0.jpg`,
+      `${GAME_ASSETS}/bg_7_0000_layer_0.png`,
+    ],
+    speed: 1.0,
+  },
+] as const;
+
+const BG7_FALLBACK_CANDIDATES = [
+  `${GAME_ASSETS}/bg_7.jpg`,
+  `${GAME_ASSETS}/bg_7.png`,
+] as const;
 
 /**
  * Mushroom enemy spritesheets.
@@ -173,6 +223,16 @@ const BACKGROUND_URL = `${GAME_ASSETS}/back.png`;
 const MUSHROOM_IDLE_URL = `${GAME_ASSETS}/Mushroom-Idle.png`;
 const MUSHROOM_RUN_URL = `${GAME_ASSETS}/Mushroom-Run.png`;
 const MUSHROOM_ATTACK_URL = `${GAME_ASSETS}/Mushroom-Attack.png`;
+/** Horizontal strip: same frame size as idle/run/attack; plays before `blood.png` burst. */
+const MUSHROOM_DIE_URL = `${GAME_ASSETS}/Mushroom-Die.png`;
+const MUSHROOM_DIE_FRAME_COUNT = 16;
+/** 6×6 sheet, first 22 frames = splatter sequence (see `public/assets/blood.png`). */
+const BLOOD_SHEET_URL = `${GAME_ASSETS}/blood.png`;
+const BLOOD_SHEET_COLS = 6;
+const BLOOD_EFFECT_FRAME_COUNT = 22;
+const MUSHROOM_DEATH_DIE_FPS = 18;
+const MUSHROOM_DEATH_BLOOD_FPS = 22;
+const MUSHROOM_DEATH_BLOOD_SCALE = 2.65;
 const MUSHROOM_FRAME_W = 80;
 const MUSHROOM_FRAME_H = 64;
 const MUSHROOM_IDLE_FRAME_COUNT = 7;
@@ -210,9 +270,44 @@ const PLAYER_HURT_BLINK_HZ = 12;
 /** Top-left placement for the health HUD (below the header panel). */
 const HEALTH_HUD_X_PX = 18;
 const HEALTH_HUD_Y_OFFSET_PX = 6;
-const HEALTH_BAR_WIDTH_PX = 160;
-const HEALTH_BAR_HEIGHT_PX = 16;
+/** Vertical gap between timer text and heart HUD. */
 const HEALTH_BAR_UNDER_TIMER_GAP_PX = 8;
+/** `public/assets/heart_counter-Sheet.png` — 192×992, 31 rows × 192×32 (see `heartHudSteadyFrameIndices`). */
+const HEART_COUNTER_SHEET_URL = `${GAME_ASSETS}/heart_counter-Sheet.png`;
+const HEART_COUNTER_FRAME_W = 192;
+const HEART_COUNTER_FRAME_H = 32;
+const HEART_COUNTER_FRAME_COUNT = 31;
+const HEART_HUD_DISPLAY_WIDTH_PX = 160;
+const HEART_HUD_SCALE = HEART_HUD_DISPLAY_WIDTH_PX / HEART_COUNTER_FRAME_W;
+const HEART_HUD_PULSE_HZ = 2.8;
+const HEART_HUD_HIT_FLASH_SEC = 0.16;
+
+/** Map run HP (0..`PLAYER_MAX_HEALTH`) to the sheet’s 0..10 segment bar so full HP reads as a full meter. */
+function heartHudSegmentsFromPlayerHealth(health: number): number {
+  if (health <= 0) {
+    return 0;
+  }
+  return Math.max(1, Math.min(10, Math.round((health / PLAYER_MAX_HEALTH) * 10)));
+}
+
+function heartHudSteadyFrameIndices(segmentL: number): [number, number] {
+  if (segmentL <= 0) {
+    return [HEART_COUNTER_FRAME_COUNT - 1, HEART_COUNTER_FRAME_COUNT - 1];
+  }
+  if (segmentL >= 10) {
+    return [0, 1];
+  }
+  const start = 3 * (10 - segmentL);
+  return [start, start + 1];
+}
+
+/** “Pink slot” frame when dropping from `fromL` filled segments to `fromL - 1`. */
+function heartHudTransitionFrameIndex(fromL: number): number {
+  if (fromL <= 0 || fromL > 10) {
+    return HEART_COUNTER_FRAME_COUNT - 1;
+  }
+  return 2 + (10 - fromL) * 3;
+}
 /** Rope “bead” bridge look for low altitude (HUD meters). Physics stays the same AABB. */
 const BEAD_BRIDGE_MAX_METERS = 1000;
 /** Approximate stair span for the first phase — used with optional width variation. */
@@ -464,10 +559,13 @@ export class PlayScene implements Scene {
   private physics = new Physics();
   private world = new Container();
   /**
-   * Single static backdrop image, camera-locked (sibling of `world` inside `gameShake`),
-   * resized each frame to fill the viewport exactly.
+   * Camera-locked backdrop (sibling of `world` inside `gameShake`): multi-layer `bg_7` art,
+   * rotated 90° and scaled with `contain` so the entire bitmap stays visible.
    */
-  private background = new Sprite();
+  private backgroundRoot = new Container();
+  private readonly bgBackdropFill = new Graphics();
+  /** Back → front: matches `BG7_PARALLAX_LAYERS` order (sky … flowers). */
+  private bgParallaxLayers: { tile: TilingSprite; speed: number }[] = [];
   private jelly = new Graphics();
   private fxLayer = new Graphics();
   private platformSpriteLayer = new Container();
@@ -506,9 +604,14 @@ export class PlayScene implements Scene {
   private playerInvulnTime = 0;
   private playerInvulnBlinkPhase = 0;
   private healthHudRoot = new Container();
-  private healthBarBack = new Graphics();
-  private healthBarFill = new Graphics();
-  private healthBarLabel?: Text;
+  private heartCounterTextures: Texture[] = [];
+  private heartHudSprite = new Sprite();
+  /** Filled segment count (0..10) shown after transitions; matches `heartHudSegmentsFromPlayerHealth`. */
+  private heartHudSegmentL = heartHudSegmentsFromPlayerHealth(PLAYER_MAX_HEALTH);
+  private heartHudTransTime = 0;
+  private heartHudTransFromL = heartHudSegmentsFromPlayerHealth(PLAYER_MAX_HEALTH);
+  /** Pulse phase independent of `runTime` (paused runs freeze `runTime`). */
+  private heartHudPulseAcc = 0;
   private paused = false;
   private pauseOverlay = new Container();
   private pauseBackdrop = new Graphics();
@@ -601,9 +704,14 @@ export class PlayScene implements Scene {
   private mushroomEnemies: MushroomEnemy[] = [];
   private mushroomEnemySprites: Sprite[] = [];
   private mushroomEnemyLayer = new Container();
+  /** One-shot die → blood VFX at enemy world position (above living mushrooms). */
+  private mushroomDeathFxLayer = new Container();
+  private mushroomDeathEffects: MushroomDeathEffect[] = [];
   private mushroomIdleTextures: Texture[] = [];
   private mushroomRunTextures: Texture[] = [];
   private mushroomAttackTextures: Texture[] = [];
+  private mushroomDieTextures: Texture[] = [];
+  private bloodEffectTextures: Texture[] = [];
   /** Displayed counts (lerp toward real counts for smooth HUD). */
   private hudGoldShown = 0;
   private hudDiamondShown = 0;
@@ -695,12 +803,14 @@ export class PlayScene implements Scene {
       this.loadDeathZoneStrip(),
       this.loadBackgroundTexture(),
       this.loadMushroomTextures(),
+      this.loadHeartCounterSheet(),
     ]);
 
     this.uiLayer.sortableChildren = true;
     app.stage.addChild(this.gameShake);
     app.stage.addChild(this.uiLayer);
-    this.gameShake.addChild(this.background);
+    this.bgBackdropFill.eventMode = 'none';
+    this.gameShake.addChild(this.backgroundRoot);
     this.gameShake.addChild(this.world);
     this.world.sortableChildren = true;
     this.world.addChild(
@@ -708,6 +818,7 @@ export class PlayScene implements Scene {
       this.platformSpriteLayer,
       this.platformLayer,
       this.mushroomEnemyLayer,
+      this.mushroomDeathFxLayer,
       this.lavaLayer,
       this.rippleLayer,
       this.collectiblesGfx,
@@ -721,6 +832,8 @@ export class PlayScene implements Scene {
     /** Above platforms, below FX/player so jumps visually pass in front of enemies. */
     this.mushroomEnemyLayer.zIndex = 4;
     this.mushroomEnemyLayer.sortableChildren = false;
+    this.mushroomDeathFxLayer.zIndex = 4.5;
+    this.mushroomDeathFxLayer.sortableChildren = false;
     /** Stairs drift behind the death-zone art; player / FX / ripples stay in front. */
     this.lavaLayer.zIndex = 25;
     this.rippleLayer.zIndex = 30;
@@ -785,6 +898,7 @@ export class PlayScene implements Scene {
     // Use real frame delta on mobile — capping to 1/30s made slow frames *lose* time so drifting
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
+    this.tickHeartHud(dt);
     this.enforceHealthInvariant();
     if (this.gameOver) {
       this.updateScreenShake(dt);
@@ -1008,6 +1122,7 @@ export class PlayScene implements Scene {
     this.updateCollectibles(dt);
     this.tickPlayerInvuln(dt);
     this.updateMushroomEnemies(dt);
+    this.updateMushroomDeathEffects(dt);
     if (this.input?.consumeAttack()) {
       this.playerAttack();
     }
@@ -1381,8 +1496,8 @@ export class PlayScene implements Scene {
     const viewLeft = viewOriginX + marginW;
     const viewRight = viewOriginX + vw - marginW;
     const pad = PLATFORM_EDGE_PADDING_PX;
-    let minX = Math.max(WORLD_BOUNDS_X + pad, viewLeft);
-    let maxX = Math.min(this.worldWidth - pad - platformWidth, viewRight - platformWidth);
+    const minX = Math.max(WORLD_BOUNDS_X + pad, viewLeft);
+    const maxX = Math.min(this.worldWidth - pad - platformWidth, viewRight - platformWidth);
     if (maxX <= minX) {
       const cx = viewOriginX + vw * 0.5 - platformWidth * 0.5;
       const clamped = Math.max(WORLD_BOUNDS_X + pad, Math.min(cx, this.worldWidth - pad - platformWidth));
@@ -1583,10 +1698,15 @@ export class PlayScene implements Scene {
     this.playerInvulnTime = 0;
     this.playerInvulnBlinkPhase = 0;
     this.player.alpha = 1;
+    this.heartHudTransTime = 0;
+    this.heartHudPulseAcc = 0;
+    this.heartHudSegmentL = heartHudSegmentsFromPlayerHealth(this.playerHealth);
+    this.heartHudTransFromL = this.heartHudSegmentL;
     this.refreshHealthHud();
     this.tongueBoostComboExtendUntil = -Infinity;
     this.tongueBoostComboResetAt = null;
     this.tongueBoostChainWindowSec = null;
+    this.clearMushroomDeathEffects();
     this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
     if (this.levelUpFloatText) {
       this.levelUpFloatText.visible = false;
@@ -2015,28 +2135,104 @@ export class PlayScene implements Scene {
     this.layoutBackground();
   }
 
-  /** Loads `back.png` and assigns it to the static background sprite. */
+  private prepareTextureForInfiniteTile(tex: Texture): void {
+    tex.source.style.addressModeU = 'repeat';
+    tex.source.style.addressModeV = 'repeat';
+  }
+
+  private async loadTextureFromCandidates(candidates: readonly string[]): Promise<Texture> {
+    for (const url of candidates) {
+      try {
+        return (await Assets.load(url)) as Texture;
+      } catch {
+        /* try next extension */
+      }
+    }
+    throw new Error(`No texture loaded for: ${candidates.join(' | ')}`);
+  }
+
+  /**
+   * Builds `TilingSprite` layers (farthest → nearest). All layers must load, else one fallback
+   * tiling sheet. Textures use **repeat** wrap for seamless `tilePosition` scrolling.
+   */
   private async loadBackgroundTexture(): Promise<void> {
+    for (const { tile } of this.bgParallaxLayers) {
+      this.backgroundRoot.removeChild(tile);
+      tile.destroy({ texture: false });
+    }
+    this.bgParallaxLayers = [];
+
+    const pushTilingLayer = (tex: Texture, speed: number, vw: number, vh: number): void => {
+      this.prepareTextureForInfiniteTile(tex);
+      const tile = new TilingSprite({
+        texture: tex,
+        width: vw,
+        height: vh,
+      });
+      tile.eventMode = 'none';
+      tile.roundPixels = false;
+      this.backgroundRoot.addChild(tile);
+      this.bgParallaxLayers.push({ tile, speed });
+    };
+
+    const vw = Math.max(1, this.worldWidthFromScreen());
+    const vh = Math.max(1, this.worldHeightFromScreen());
+
     try {
-      const tex = (await Assets.load(BACKGROUND_URL)) as Texture;
-      this.background.texture = tex;
-      this.background.anchor.set(0, 0);
-      this.background.eventMode = 'none';
+      for (const spec of BG7_PARALLAX_LAYERS) {
+        const tex = await this.loadTextureFromCandidates(spec.candidates);
+        pushTilingLayer(tex, spec.speed, vw, vh);
+      }
     } catch {
-      this.background.texture = Texture.EMPTY;
+      try {
+        const tex = await this.loadTextureFromCandidates(BG7_FALLBACK_CANDIDATES);
+        pushTilingLayer(tex, 0.45, vw, vh);
+      } catch {
+        /* leave empty — solid stage color shows through */
+      }
+    }
+
+    if (!this.backgroundRoot.children.includes(this.bgBackdropFill)) {
+      this.backgroundRoot.addChildAt(this.bgBackdropFill, 0);
+    } else {
+      this.backgroundRoot.setChildIndex(this.bgBackdropFill, 0);
+    }
+  }
+
+  /** Slices `heart_counter-Sheet.png` into row frames for the animated HP HUD. */
+  private async loadHeartCounterSheet(): Promise<void> {
+    const sheet = (await Assets.load(HEART_COUNTER_SHEET_URL)) as Texture;
+    const source = sheet.source;
+    this.heartCounterTextures = [];
+    for (let i = 0; i < HEART_COUNTER_FRAME_COUNT; i += 1) {
+      this.heartCounterTextures.push(
+        new Texture({
+          source,
+          frame: new Rectangle(0, i * HEART_COUNTER_FRAME_H, HEART_COUNTER_FRAME_W, HEART_COUNTER_FRAME_H),
+        }),
+      );
     }
   }
 
   /**
-   * Sizes the static background to exactly cover the viewport (Phaser's `setDisplaySize`
-   * equivalent) and pins it to the camera by leaving its position at `(0, 0)` inside
-   * `gameShake` — `gameShake` is not offset by the world camera, so the sprite never moves
-   * as the player climbs. Equivalent to `setScrollFactor(0)`.
+   * Letterbox under tiles + each `TilingSprite` sized to the logical canvas. Parallax: each
+   * layer’s `tilePosition` tracks **camera** at its speed (10% / 30% / 60% / 100%) so depth reads
+   * as the world scrolls. Textures tile infinitely via repeat wrap.
    */
   private layoutBackground(): void {
-    this.background.position.set(0, 0);
-    this.background.width = this.worldWidthFromScreen();
-    this.background.height = this.worldHeightFromScreen();
+    const vw = this.worldWidthFromScreen();
+    const vh = this.worldHeightFromScreen();
+    this.backgroundRoot.position.set(0, 0);
+
+    this.bgBackdropFill.clear();
+    this.bgBackdropFill.rect(0, 0, vw, vh).fill({ color: this.currentBackgroundColor, alpha: 1 });
+
+    for (const { tile, speed } of this.bgParallaxLayers) {
+      tile.position.set(0, 0);
+      tile.width = vw;
+      tile.height = vh;
+      tile.tilePosition.set(-this.cameraX * speed, -this.cameraY * speed);
+    }
   }
 
   private updateScreenShake(dt: number): void {
@@ -3491,6 +3687,15 @@ export class PlayScene implements Scene {
    * of the run — the slot will be repopulated on the next `resetRun()` only.
    */
   private destroyMushroomEnemy(index: number): void {
+    const enemy = this.mushroomEnemies[index];
+    if (enemy) {
+      const platform = this.platforms[enemy.platformIdx];
+      if (platform) {
+        const wx = platform.x + enemy.along * platform.width;
+        const wy = platform.y;
+        this.spawnMushroomDeathEffect(wx, wy + 2, enemy.direction);
+      }
+    }
     const sprite = this.mushroomEnemySprites[index];
     if (sprite) {
       this.mushroomEnemyLayer.removeChild(sprite);
@@ -3500,63 +3705,131 @@ export class PlayScene implements Scene {
     this.mushroomEnemySprites.splice(index, 1);
   }
 
-  /** Build a top-left health bar HUD that shrinks as HP is lost. */
+  private clearMushroomDeathEffects(): void {
+    for (const e of this.mushroomDeathEffects) {
+      e.sprite.destroy();
+    }
+    this.mushroomDeathEffects = [];
+  }
+
+  /** Mushroom-Die strip, then `blood.png` burst at the same world anchor as the live sprite. */
+  private spawnMushroomDeathEffect(wx: number, wy: number, direction: number): void {
+    if (this.mushroomDieTextures.length === 0) {
+      return;
+    }
+    const s = new Sprite(this.mushroomDieTextures[0]);
+    s.anchor.set(0.5, 1);
+    s.roundPixels = RENDER.pixelArt;
+    s.eventMode = 'none';
+    s.position.set(wx, wy);
+    const flip = direction < 0 ? -1 : 1;
+    s.scale.set(MUSHROOM_SPRITE_SCALE * flip, MUSHROOM_SPRITE_SCALE);
+    this.mushroomDeathFxLayer.addChild(s);
+    this.mushroomDeathEffects.push({ sprite: s, phase: 'die', timeInPhase: 0 });
+  }
+
+  private updateMushroomDeathEffects(dt: number): void {
+    if (this.mushroomDeathEffects.length === 0) {
+      return;
+    }
+    const dieFrameDur = 1 / MUSHROOM_DEATH_DIE_FPS;
+    const bloodFrameDur = 1 / MUSHROOM_DEATH_BLOOD_FPS;
+    const dieEnd = this.mushroomDieTextures.length * dieFrameDur;
+    const bloodEnd = this.bloodEffectTextures.length * bloodFrameDur;
+
+    for (let i = this.mushroomDeathEffects.length - 1; i >= 0; i -= 1) {
+      const e = this.mushroomDeathEffects[i];
+      e.timeInPhase += dt;
+
+      if (e.phase === 'die') {
+        const f = Math.min(
+          this.mushroomDieTextures.length - 1,
+          Math.floor(e.timeInPhase / dieFrameDur),
+        );
+        e.sprite.texture = this.mushroomDieTextures[f];
+        if (e.timeInPhase >= dieEnd) {
+          if (this.bloodEffectTextures.length > 0) {
+            e.phase = 'blood';
+            e.timeInPhase = 0;
+            e.sprite.texture = this.bloodEffectTextures[0];
+            e.sprite.anchor.set(0.5, 0.5);
+            e.sprite.position.set(
+              e.sprite.position.x,
+              e.sprite.position.y - MUSHROOM_HITBOX_H * 0.48,
+            );
+            e.sprite.scale.set(MUSHROOM_DEATH_BLOOD_SCALE, MUSHROOM_DEATH_BLOOD_SCALE);
+          } else {
+            e.sprite.destroy();
+            this.mushroomDeathEffects.splice(i, 1);
+          }
+        }
+      } else {
+        const f = Math.min(
+          this.bloodEffectTextures.length - 1,
+          Math.floor(e.timeInPhase / bloodFrameDur),
+        );
+        e.sprite.texture = this.bloodEffectTextures[f];
+        if (e.timeInPhase >= bloodEnd) {
+          e.sprite.destroy();
+          this.mushroomDeathEffects.splice(i, 1);
+        }
+      }
+    }
+  }
+
+  /** Top HUD: animated `heart_counter-Sheet` (pulse + hit flash). */
   private setupHealthHud(): void {
     this.healthHudRoot.zIndex = 1004;
     this.healthHudRoot.sortableChildren = false;
     this.healthHudRoot.eventMode = 'none';
-    this.healthBarBack.eventMode = 'none';
-    this.healthBarFill.eventMode = 'none';
-    this.healthBarLabel = new Text({
-      text: 'HP',
-      style: this.createNeonGoldTextStyle(14, 2),
-    });
-    this.healthBarLabel.anchor.set(0, 0.5);
-    this.healthBarLabel.eventMode = 'none';
-    this.healthHudRoot.addChild(this.healthBarBack, this.healthBarFill, this.healthBarLabel);
+    this.heartHudSprite.eventMode = 'none';
+    this.heartHudSprite.roundPixels = RENDER.pixelArt;
+    this.heartHudSprite.texture = this.heartCounterTextures[0] ?? Texture.EMPTY;
+    this.heartHudSprite.scale.set(HEART_HUD_SCALE);
+    this.healthHudRoot.addChild(this.heartHudSprite);
     this.uiLayer.addChild(this.healthHudRoot);
     this.layoutHealthHud();
     this.refreshHealthHud();
   }
 
   private layoutHealthHud(): void {
-    if (this.healthBarLabel) {
-      this.healthBarLabel.position.set(8, HEALTH_BAR_HEIGHT_PX * 0.5);
-    }
     if (this.timerHudText) {
       const timerBottomY = this.timerHudText.position.y + this.timerHudText.height;
-      const barX = this.timerHudText.position.x - HEALTH_BAR_WIDTH_PX * 0.5;
+      const heartX = this.timerHudText.position.x - HEART_HUD_DISPLAY_WIDTH_PX * 0.5;
       const barY = timerBottomY + HEALTH_BAR_UNDER_TIMER_GAP_PX;
-      this.healthHudRoot.position.set(barX, barY);
+      this.healthHudRoot.position.set(heartX, barY);
       return;
     }
     const fallbackY = UI_SAFE_PAD_TOP + UI_HEADER_H + HEALTH_HUD_Y_OFFSET_PX;
     this.healthHudRoot.position.set(HEALTH_HUD_X_PX, fallbackY);
   }
 
-  /** Repaint health bar fill based on `playerHealth / PLAYER_MAX_HEALTH`. */
+  /** Sync segment level / hit-flash when `playerHealth` changes; frame cycling runs in `tickHeartHud`. */
   private refreshHealthHud(): void {
-    const ratio = Math.max(0, Math.min(1, this.playerHealth / PLAYER_MAX_HEALTH));
-    this.healthBarBack.clear();
-    this.healthBarBack.roundRect(0, 0, HEALTH_BAR_WIDTH_PX, HEALTH_BAR_HEIGHT_PX, 8).fill({
-      color: 0x12121a,
-      alpha: 0.92,
-    });
-    this.healthBarBack.roundRect(0, 0, HEALTH_BAR_WIDTH_PX, HEALTH_BAR_HEIGHT_PX, 8).stroke({
-      color: 0xffffff,
-      width: 2,
-      alpha: 0.6,
-    });
-
-    this.healthBarFill.clear();
-    const fillW = Math.max(0, HEALTH_BAR_WIDTH_PX * ratio);
-    if (fillW > 0) {
-      const color = ratio > 0.66 ? 0x39d353 : ratio > 0.33 ? 0xf2cc60 : 0xff4d4d;
-      this.healthBarFill.roundRect(0, 0, fillW, HEALTH_BAR_HEIGHT_PX, 8).fill({
-        color,
-        alpha: 0.96,
-      });
+    const newL = heartHudSegmentsFromPlayerHealth(this.playerHealth);
+    const prevL = this.heartHudSegmentL;
+    if (this.heartCounterTextures.length > 0 && newL < prevL && prevL > 0) {
+      this.heartHudTransTime = HEART_HUD_HIT_FLASH_SEC;
+      this.heartHudTransFromL = prevL;
     }
+    this.heartHudSegmentL = newL;
+  }
+
+  private tickHeartHud(dt: number): void {
+    if (this.heartCounterTextures.length === 0) {
+      return;
+    }
+    if (this.heartHudTransTime > 0) {
+      this.heartHudTransTime = Math.max(0, this.heartHudTransTime - dt);
+      const idx = heartHudTransitionFrameIndex(this.heartHudTransFromL);
+      this.heartHudSprite.texture = this.heartCounterTextures[idx];
+      return;
+    }
+    this.heartHudPulseAcc += dt;
+    const pair = heartHudSteadyFrameIndices(this.heartHudSegmentL);
+    const pulse = Math.floor(this.heartHudPulseAcc * HEART_HUD_PULSE_HZ * 2) % 2;
+    const idx = pulse === 0 ? pair[0] : pair[1];
+    this.heartHudSprite.texture = this.heartCounterTextures[idx];
   }
 
   /**
@@ -4919,10 +5192,12 @@ export class PlayScene implements Scene {
    */
   private async loadMushroomTextures(): Promise<void> {
     try {
-      const [idleSheet, runSheet, attackSheet] = (await Promise.all([
+      const [idleSheet, runSheet, attackSheet, dieSheet, bloodSheet] = (await Promise.all([
         Assets.load(MUSHROOM_IDLE_URL),
         Assets.load(MUSHROOM_RUN_URL),
         Assets.load(MUSHROOM_ATTACK_URL),
+        Assets.load(MUSHROOM_DIE_URL),
+        Assets.load(BLOOD_SHEET_URL),
       ])) as Texture[];
 
       const slice = (sheet: Texture, count: number): Texture[] => {
@@ -4947,10 +5222,42 @@ export class PlayScene implements Scene {
       this.mushroomIdleTextures = slice(idleSheet, MUSHROOM_IDLE_FRAME_COUNT);
       this.mushroomRunTextures = slice(runSheet, MUSHROOM_RUN_FRAME_COUNT);
       this.mushroomAttackTextures = slice(attackSheet, MUSHROOM_ATTACK_FRAME_COUNT);
+
+      const dieSource = dieSheet.source;
+      const dieFrameCount = Math.min(
+        MUSHROOM_DIE_FRAME_COUNT,
+        Math.max(1, Math.floor(dieSource.width / MUSHROOM_FRAME_W)),
+      );
+      this.mushroomDieTextures = [];
+      for (let i = 0; i < dieFrameCount; i += 1) {
+        this.mushroomDieTextures.push(
+          new Texture({
+            source: dieSource,
+            frame: new Rectangle(i * MUSHROOM_FRAME_W, 0, MUSHROOM_FRAME_W, MUSHROOM_FRAME_H),
+          }),
+        );
+      }
+
+      const bloodSource = bloodSheet.source;
+      const cellW = Math.max(1, Math.floor(bloodSource.width / BLOOD_SHEET_COLS));
+      const cellH = Math.max(1, Math.floor(bloodSource.height / BLOOD_SHEET_COLS));
+      this.bloodEffectTextures = [];
+      for (let i = 0; i < BLOOD_EFFECT_FRAME_COUNT; i += 1) {
+        const col = i % BLOOD_SHEET_COLS;
+        const row = Math.floor(i / BLOOD_SHEET_COLS);
+        this.bloodEffectTextures.push(
+          new Texture({
+            source: bloodSource,
+            frame: new Rectangle(col * cellW, row * cellH, cellW, cellH),
+          }),
+        );
+      }
     } catch {
       this.mushroomIdleTextures = [];
       this.mushroomRunTextures = [];
       this.mushroomAttackTextures = [];
+      this.mushroomDieTextures = [];
+      this.bloodEffectTextures = [];
     }
   }
 
@@ -5080,6 +5387,13 @@ export class PlayScene implements Scene {
       sprite.scale.y = MUSHROOM_SPRITE_SCALE;
 
       if (this.mushroomHitsPlayer(wx, wy)) {
+        // Flash / beast combo boost: body contact vaporizes mushrooms (matches the pulsing
+        // “charged” look on the avatar). No HP loss while boost is active.
+        if (this.isFlashSkillBoostActive()) {
+          this.destroyMushroomEnemy(i);
+          i -= 1;
+          continue;
+        }
         if (this.damagePlayer()) {
           // Stop scanning this frame — `damagePlayer` already updated invuln/UI; subsequent
           // overlaps in the same frame would be wasted (one hit per swing window is enough).
