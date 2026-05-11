@@ -158,6 +158,8 @@ const SFX_REMOTE: Record<SfxId, string> = {
 
 /** Game binaries (music, DragonBones, diamond SFX) live in `public/assets/`. */
 const GAME_ASSETS = `${import.meta.env.BASE_URL}assets`;
+/** Looping gameplay BGM — `public/assets/Dream Sakura_Loop.ogg`. */
+const BGM_URL = `${GAME_ASSETS}/${encodeURIComponent('Dream Sakura_Loop.ogg')}`;
 
 const SFX_LOCAL: Record<SfxId, string> = {
   tongue_shoot: `${import.meta.env.BASE_URL}audio/tongue_shoot.mp3`,
@@ -261,8 +263,13 @@ const PLAYER_ATTACK_REACH_PX = 110;
 /** Vertical generosity applied to the attack hitbox (tops/bottoms) — slightly forgiving. */
 const PLAYER_ATTACK_VERT_PAD_PX = 16;
 
-/** Player health / damage configuration. Falls still bypass invuln & go straight to game over. */
-const PLAYER_MAX_HEALTH = 3;
+/**
+ * Large HP pool so mushroom touches chip **very little**; HUD still maps 0..max → 10 segments.
+ * Tune `MUSHROOM_DAMAGE_PER_HIT` (not max) for per-hit sting.
+ */
+const PLAYER_MAX_HEALTH = 120;
+/** HP lost on each mushroom hit (after i-frames). 1 ≈ 0.8% of the bar per contact. */
+const MUSHROOM_DAMAGE_PER_HIT = 1;
 /** Seconds of i-frames granted after a hit (no further mushroom damage during this window). */
 const PLAYER_INVULN_SEC = 1.5;
 /** Blink frequency while invulnerable. Higher = faster strobe. */
@@ -589,7 +596,8 @@ export class PlayScene implements Scene {
   /**
    * Player health & i-frame state.
    *
-   * `playerHealth` is decremented by mushroom contact (capped at 0 = game over). Falls
+   * `playerHealth` is decremented by mushroom contact by `MUSHROOM_DAMAGE_PER_HIT` (capped at
+   * 0 = game over). Falls
    * into the death plane still bypass this and trigger an immediate game over via the
    * existing `checkFallGameOver` → `triggerGameOver` flow. `playerInvulnTime` counts
    * down each frame; while it is positive the player can absorb further hits without
@@ -2442,7 +2450,7 @@ export class PlayScene implements Scene {
 
   private startBackgroundMusic(): void {
     this.stopBackgroundMusic();
-    const bgm = new Audio(`${GAME_ASSETS}/music.mp3`);
+    const bgm = new Audio(BGM_URL);
     bgm.loop = true;
     bgm.volume = 0.2;
     this.bgm = bgm;
@@ -3844,9 +3852,9 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Apply one point of mushroom damage. Returns `true` when the hit landed (so the caller
-   * can stop scanning further enemies this frame), or `false` when the player is currently
-   * invulnerable. Triggers the game-over flow only when health drops to zero.
+   * Apply mushroom damage (`MUSHROOM_DAMAGE_PER_HIT`). Returns `true` when the hit landed (so
+   * the caller can stop scanning further enemies this frame), or `false` when the player is
+   * currently invulnerable. Triggers the game-over flow only when health drops to zero.
    */
   private damagePlayer(): boolean {
     if (this.gameOver) {
@@ -3855,7 +3863,7 @@ export class PlayScene implements Scene {
     if (this.playerInvulnTime > 0) {
       return false;
     }
-    this.playerHealth = Math.max(0, this.playerHealth - 1);
+    this.playerHealth = Math.max(0, this.playerHealth - MUSHROOM_DAMAGE_PER_HIT);
     this.playerHealthCeilingThisRun = this.playerHealth;
     this.playerInvulnTime = PLAYER_INVULN_SEC;
     this.playerInvulnBlinkPhase = 0;
