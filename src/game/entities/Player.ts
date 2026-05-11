@@ -10,6 +10,7 @@ export enum PlayerState {
   Fall,
   Grapple,
   SuperJump,
+  Attack,
 }
 
 /**
@@ -24,9 +25,25 @@ const FRAME_H = 40;
 const IDLE_ROW = 0;
 const RUN_ROW = 1;
 const JUMP_ROW = 2;
+const ATTACK_ROW = 3;
 const IDLE_FRAMES = 6;
 const RUN_FRAMES = 8;
 const JUMP_FRAMES = 8;
+const ATTACK_FRAMES = 8;
+
+/**
+ * Attack swing length (seconds). Drives both the animation playback rate and the
+ * "locked until anim finishes" cooldown — `attackTime` counts down from this value
+ * to 0, and the player ignores new attack inputs while it is non-zero.
+ */
+export const PLAYER_ATTACK_DURATION_SEC = 0.4;
+/**
+ * Hit window — the fraction of the attack animation during which the swing actually
+ * connects with enemies. Skips the wind-up and recovery frames so the player has to
+ * roughly aim at an enemy rather than instakill anything in range.
+ */
+export const PLAYER_ATTACK_HIT_WINDOW_START = 0.18;
+export const PLAYER_ATTACK_HIT_WINDOW_END = 0.78;
 
 /** Display scale of each cell. Character art occupies ~25×28 inside the cell, so a 3.12× scale
  * renders the visible figure at ~78×87 (20% larger than the previous 2.6× sizing). */
@@ -53,6 +70,7 @@ type CharacterTextures = {
   idle: Texture[];
   run: Texture[];
   jump: Texture[];
+  attack: Texture[];
 };
 
 export class Player extends Container {
@@ -87,6 +105,8 @@ export class Player extends Container {
   private grapplePoseActive = false;
   private grappleAnimT = 0;
   private grappleClip: ActiveGrapple | null = null;
+  /** Counts down from `PLAYER_ATTACK_DURATION_SEC` while a swing is in progress. */
+  private attackTime = 0;
 
   constructor() {
     super();
@@ -132,6 +152,7 @@ export class Player extends Container {
       idle: sliceRow(IDLE_ROW, IDLE_FRAMES),
       run: sliceRow(RUN_ROW, RUN_FRAMES),
       jump: sliceRow(JUMP_ROW, JUMP_FRAMES),
+      attack: sliceRow(ATTACK_ROW, ATTACK_FRAMES),
     };
 
     const initialFrame = this.textures.idle[0];
@@ -177,6 +198,7 @@ export class Player extends Container {
     this.jumpAnticipationMs = Math.max(0, this.jumpAnticipationMs - dt * 1000);
     this.landingPulseMs = Math.max(0, this.landingPulseMs - dt * 1000);
     this.grappleLaunchMs = Math.max(0, this.grappleLaunchMs - dt * 1000);
+    this.attackTime = Math.max(0, this.attackTime - dt);
     this.idleTime += dt;
 
     if (this.body.grounded) {
@@ -226,7 +248,56 @@ export class Player extends Container {
     this.walkBlend = Math.min(this.walkBlend, 0.1);
   }
 
+  /**
+   * Begin an attack swing. Returns `false` if a previous swing is still in progress —
+   * caller should treat that as the cooldown lockout the task spec asks for. Locks the
+   * facing direction at the moment of the swing so the player doesn't visibly U-turn
+   * mid-attack while the hitbox is live.
+   */
+  startAttack(facing?: Direction): boolean {
+    if (this.attackTime > 0) {
+      return false;
+    }
+    this.attackTime = PLAYER_ATTACK_DURATION_SEC;
+    if (facing) {
+      this.direction = facing;
+    }
+    return true;
+  }
+
+  isAttacking(): boolean {
+    return this.attackTime > 0;
+  }
+
+  /**
+   * Normalized 0..1 progress through the current swing (0 = start, ~1 = finishing).
+   * Returns 0 when no attack is active.
+   */
+  getAttackProgress(): number {
+    if (this.attackTime <= 0) {
+      return 0;
+    }
+    return Math.max(
+      0,
+      Math.min(1, 1 - this.attackTime / PLAYER_ATTACK_DURATION_SEC),
+    );
+  }
+
+  /** True only during the "swing connects" portion of the animation. */
+  isAttackHitActive(): boolean {
+    if (this.attackTime <= 0) {
+      return false;
+    }
+    const t = this.getAttackProgress();
+    return t >= PLAYER_ATTACK_HIT_WINDOW_START && t <= PLAYER_ATTACK_HIT_WINDOW_END;
+  }
+
   private updateState(): void {
+    if (this.attackTime > 0) {
+      this.state = PlayerState.Attack;
+      return;
+    }
+
     if (this.grapplePoseActive) {
       this.state = PlayerState.Grapple;
       return;
@@ -390,6 +461,13 @@ export class Player extends Container {
   private pickBodyTexture(): Texture {
     if (!this.textures) {
       return Texture.EMPTY;
+    }
+
+    if (this.state === PlayerState.Attack && this.textures.attack.length > 0) {
+      const attack = this.textures.attack;
+      const progress = this.getAttackProgress();
+      const idx = Math.min(attack.length - 1, Math.floor(progress * attack.length));
+      return attack[idx];
     }
 
     if (this.state === PlayerState.Grapple) {

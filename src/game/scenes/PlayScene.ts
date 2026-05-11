@@ -1,6 +1,7 @@
 import {
   Application,
   Assets,
+  Circle,
   Container,
   FederatedPointerEvent,
   Graphics,
@@ -189,6 +190,16 @@ const MUSHROOM_ATTACK_RANGE_PX = 220;
 /** First platform index that may carry an enemy. Skips the starting platform (index 0). */
 const MUSHROOM_PLATFORM_START_INDEX = 2;
 const MUSHROOM_PLATFORM_STRIDE = 3;
+
+/** Player melee attack — virtual button (bottom-right) + KeyF, plays the attack row of the character spritesheet. */
+const ATTACK_BTN_RADIUS_PX = 44;
+const ATTACK_BTN_MARGIN_PX = 24;
+const ATTACK_BTN_FILL_COLOR = 0xff4d1a;
+const ATTACK_BTN_STROKE_COLOR = 0xffd64a;
+/** Forward reach of the attack hitbox (px in world coords) from the player center. */
+const PLAYER_ATTACK_REACH_PX = 110;
+/** Vertical generosity applied to the attack hitbox (tops/bottoms) — slightly forgiving. */
+const PLAYER_ATTACK_VERT_PAD_PX = 16;
 
 /** DragonBones export: `*_ske.json`, `*_tex.json`, `*_tex.png` in `public/assets/`. */
 const TONGUE_DB_SKE = `${GAME_ASSETS}/tongue_ske.json`;
@@ -455,6 +466,10 @@ export class PlayScene implements Scene {
   private headerPauseRoot = new Container();
   private headerPauseBtn = new Graphics();
   private headerPauseIcon?: Text;
+  /** Bottom-right virtual ATTACK button — taps call `playerAttack()`. */
+  private attackBtnRoot = new Container();
+  private attackBtn = new Graphics();
+  private attackBtnIcon = new Graphics();
   private paused = false;
   private pauseOverlay = new Container();
   private pauseBackdrop = new Graphics();
@@ -705,6 +720,7 @@ export class PlayScene implements Scene {
     this.touchGlobalAnywhereLock = this.loadTouchGlobalSteeringPreference();
     this.setupPauseUi();
     this.setupHeaderPauseButton();
+    this.setupAttackButton();
     this.setupSpeedTierPulseOverlay();
     this.drawTopHeaderPanel();
     this.layoutHeaderPauseButton();
@@ -945,6 +961,11 @@ export class PlayScene implements Scene {
     this.updateAction360Sparks(dt);
     this.updateCollectibles(dt);
     this.updateMushroomEnemies(dt);
+    if (this.input?.consumeAttack()) {
+      this.playerAttack();
+    }
+    this.tickPlayerAttackHitbox();
+    this.refreshAttackButtonCooldownVisual();
     this.maybePurchaseShieldFromBank();
     this.updateCollectibleHudSmooth(dt);
     const mult = this.getComboMultiplier();
@@ -984,6 +1005,7 @@ export class PlayScene implements Scene {
     this.layoutAutoScrollHud();
     this.layoutGameOverUi();
     this.layoutHeaderPauseButton();
+    this.layoutAttackButton();
     this.layoutPauseOverlay();
     this.redrawSpeedPulseOverlay();
     this.drawTopHeaderPanel();
@@ -996,6 +1018,7 @@ export class PlayScene implements Scene {
       this.drawStaticWorld();
       this.drawTopHeaderPanel();
       this.layoutHeaderPauseButton();
+      this.layoutAttackButton();
       this.layoutPauseOverlay();
       this.redrawSpeedPulseOverlay();
       this.clampEntitiesToWorldBounds();
@@ -1451,6 +1474,7 @@ export class PlayScene implements Scene {
     this.paused = false;
     this.pauseOverlay.visible = false;
     this.headerPauseRoot.visible = true;
+    this.attackBtnRoot.visible = true;
     this.beastParticles = [];
     this.beastParticleSpawnAcc = 0;
     this.shakeTime = 0;
@@ -3235,6 +3259,161 @@ export class PlayScene implements Scene {
     this.headerPauseIcon?.position.set(btnW * 0.5, btnH * 0.5);
   }
 
+  /**
+   * Bottom-right virtual attack button. Tapping or clicking it triggers `playerAttack()`,
+   * matching the keyboard `F` binding. Uses `stopPropagation` so the underlying full-screen
+   * touch handler (which would otherwise interpret the press as a jump-swipe baseline)
+   * never sees this pointer.
+   */
+  private setupAttackButton(): void {
+    this.attackBtnRoot.zIndex = 1002;
+    this.attackBtnRoot.sortableChildren = false;
+    this.attackBtn.eventMode = 'static';
+    this.attackBtn.cursor = 'pointer';
+    this.attackBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+      this.playerAttack();
+    });
+    this.attackBtnIcon.eventMode = 'none';
+    this.attackBtnRoot.addChild(this.attackBtn, this.attackBtnIcon);
+    this.uiLayer.addChild(this.attackBtnRoot);
+    this.layoutAttackButton();
+  }
+
+  private layoutAttackButton(): void {
+    const r = ATTACK_BTN_RADIUS_PX;
+    this.attackBtn.clear();
+    this.attackBtn
+      .circle(0, 0, r)
+      .fill({ color: ATTACK_BTN_FILL_COLOR, alpha: 0.94 });
+    this.attackBtn
+      .circle(0, 0, r)
+      .stroke({ color: ATTACK_BTN_STROKE_COLOR, width: 3, alpha: 0.95 });
+    this.attackBtn
+      .circle(0, 0, r - 6)
+      .stroke({ color: 0xffffff, width: 1.2, alpha: 0.35 });
+    this.attackBtn.hitArea = new Circle(0, 0, r);
+
+    this.attackBtnIcon.clear();
+    this.drawAttackButtonIcon(this.attackBtnIcon);
+
+    this.attackBtnRoot.position.set(
+      this.width - r - ATTACK_BTN_MARGIN_PX,
+      this.height - r - ATTACK_BTN_MARGIN_PX,
+    );
+  }
+
+  /**
+   * Hand-drawn sword glyph so the button doesn't depend on emoji-font fallbacks.
+   * Coordinates are in the button's local space (centered on origin); ~30 px tall.
+   */
+  private drawAttackButtonIcon(g: Graphics): void {
+    g.poly([
+      -14, 12,
+      -8, 16,
+      14, -8,
+      10, -16,
+      -16, 8,
+    ]).fill({ color: 0xffffff, alpha: 0.95 });
+    g.poly([
+      -14, 12,
+      -8, 16,
+      14, -8,
+      10, -16,
+      -16, 8,
+    ]).stroke({ color: 0x3a0e00, width: 1.6, alpha: 0.85 });
+    g.rect(-22, 4, 12, 5).fill({ color: 0xffd64a }).stroke({
+      color: 0x3a0e00,
+      width: 1.2,
+      alpha: 0.9,
+    });
+    g.rect(-26, 8, 6, 8).fill({ color: 0x8a4a16 }).stroke({
+      color: 0x3a0e00,
+      width: 1.2,
+      alpha: 0.9,
+    });
+  }
+
+  /**
+   * Update the button's tint/alpha so the cooldown lock is visually obvious — dimmer while
+   * `player.isAttacking()` is true, full opacity otherwise.
+   */
+  private refreshAttackButtonCooldownVisual(): void {
+    const cooling = this.player.isAttacking();
+    this.attackBtnRoot.alpha = cooling ? 0.55 : 1;
+  }
+
+  /**
+   * Public action triggered by virtual button or `F` key. Starts the attack animation;
+   * returns immediately (no animation, no hit window) if a previous swing is still active —
+   * this is the "can't attack until current animation finishes" cooldown requirement.
+   */
+  private playerAttack(): void {
+    if (this.gameOver || this.paused) {
+      return;
+    }
+    if (this.player.isAttacking()) {
+      return;
+    }
+    this.player.startAttack(this.player.direction);
+  }
+
+  /**
+   * While the player is mid-swing AND inside the active hit window, sweep a forward-facing
+   * AABB through the enemy list and destroy any mushroom it overlaps. Iterates backwards so
+   * splicing during iteration is safe.
+   */
+  private tickPlayerAttackHitbox(): void {
+    if (!this.player.isAttackHitActive()) {
+      return;
+    }
+    if (this.mushroomEnemies.length === 0) {
+      return;
+    }
+
+    const pb = this.player.body;
+    const facing = this.player.direction;
+    const playerCx = pb.x + pb.width * 0.5;
+    const reach = PLAYER_ATTACK_REACH_PX;
+    const hx1 = facing >= 0 ? playerCx - 6 : playerCx - reach;
+    const hx2 = facing >= 0 ? playerCx + reach : playerCx + 6;
+    const hy1 = pb.y - PLAYER_ATTACK_VERT_PAD_PX;
+    const hy2 = pb.y + pb.height + PLAYER_ATTACK_VERT_PAD_PX;
+
+    const halfW = MUSHROOM_HITBOX_W * 0.5;
+    for (let i = this.mushroomEnemies.length - 1; i >= 0; i -= 1) {
+      const enemy = this.mushroomEnemies[i];
+      const platform = this.platforms[enemy.platformIdx];
+      if (!platform) {
+        continue;
+      }
+      const ex = platform.x + enemy.along * platform.width;
+      const ey = platform.y;
+      const ex1 = ex - halfW;
+      const ex2 = ex + halfW;
+      const ey1 = ey - MUSHROOM_HITBOX_H;
+      const ey2 = ey;
+      if (ex1 < hx2 && ex2 > hx1 && ey1 < hy2 && ey2 > hy1) {
+        this.destroyMushroomEnemy(i);
+      }
+    }
+  }
+
+  /**
+   * Tear down a single mushroom: remove it from the parallel `mushroomEnemies` /
+   * `mushroomEnemySprites` arrays and destroy its sprite. The enemy is gone for the rest
+   * of the run — the slot will be repopulated on the next `resetRun()` only.
+   */
+  private destroyMushroomEnemy(index: number): void {
+    const sprite = this.mushroomEnemySprites[index];
+    if (sprite) {
+      this.mushroomEnemyLayer.removeChild(sprite);
+      sprite.destroy();
+    }
+    this.mushroomEnemies.splice(index, 1);
+    this.mushroomEnemySprites.splice(index, 1);
+  }
+
   private setupSpeedTierPulseOverlay(): void {
     this.speedPulseGfx.eventMode = 'none';
     this.speedPulseGfx.visible = false;
@@ -3391,6 +3570,7 @@ export class PlayScene implements Scene {
     this.paused = false;
     this.pauseOverlay.visible = false;
     this.headerPauseRoot.visible = false;
+    this.attackBtnRoot.visible = false;
     this.finalMetersAtDeath = Math.max(0, Math.floor(-this.highestY / 12));
     this.refreshGameOverScoreText();
     this.gameOverOverlay.visible = true;
