@@ -61,6 +61,7 @@ export const WALK = {
   touchReverseCarveBoost: 1.16,
   acceleration: 5880,
   airAcceleration: 3360,
+  airStopDeceleration: 980,
   stopDeceleration: 2200,
   vxThreshold: 24,
   bobAmplitude: 1.2,
@@ -232,11 +233,14 @@ export const COLLECTIBLES = {
   diamondPoints: 50,
   /** Score bonus when a shield is bought from the gold/diamond bank (no world pickup). */
   shieldPickupPoints: 40,
+  shieldDurationSec: 5,
+  shieldSpawnChance: 0.12,
   diamondSpawnChance: 0.24,
   /** One pickup per platform slot; capped by stair pool size. */
   maxActive: 16,
   coinRadius: 15,
   diamondRadius: 17,
+  shieldRadius: 18,
   /** Pixels above platform top surface (negative Y = toward sky in spawn math: y = platform.y - this). */
   aboveSurfacePx: 8,
   /** Keep pickups inset from platform left/right edges. */

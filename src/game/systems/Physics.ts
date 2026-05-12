@@ -120,13 +120,14 @@ export class Physics {
     dt: number,
     airControlScale = 1,
     groundAccelScale = 1,
+    speedMultiplier = 1,
   ): void {
-    const targetVx = axis * WALK.speedPxPerSecond;
+    const targetVx = axis * WALK.speedPxPerSecond * speedMultiplier;
     let rate: number;
     const airMul = body.grounded ? 1 : airControlScale;
     const groundMul = body.grounded ? groundAccelScale : 1;
     if (axis === 0) {
-      rate = body.grounded ? WALK.stopDeceleration : WALK.airAcceleration * airMul;
+      rate = body.grounded ? WALK.stopDeceleration : WALK.airStopDeceleration;
     } else {
       rate = body.grounded ? WALK.acceleration * groundMul : WALK.airAcceleration * airMul;
     }

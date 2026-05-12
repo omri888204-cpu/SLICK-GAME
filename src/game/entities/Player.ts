@@ -86,6 +86,7 @@ export class Player extends Container {
 
   state = PlayerState.Idle;
   direction: Direction = 1;
+  isShielded = false;
 
   private glow = new Graphics();
   private feet = new Graphics();
@@ -413,7 +414,8 @@ export class Player extends Container {
       (this.walkBlend + ALIVE.tailIdleInfluence) *
       this.direction;
     if (beastMode) {
-      this.bodySprite.tint = 0xffddaa;
+      const flash = Math.sin(this.idleTime * 34) > 0;
+      this.bodySprite.tint = flash ? 0xffffff : 0xffb13d;
     } else {
       this.bodySprite.tint = 0xffffff;
     }

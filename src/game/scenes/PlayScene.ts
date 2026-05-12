@@ -120,7 +120,7 @@ type MushroomDeathEffect = {
   timeInPhase: number;
 };
 
-type CollectibleKind = 'coin' | 'diamond';
+type CollectibleKind = 'coin' | 'diamond' | 'shield';
 
 type Collectible = {
   kind: CollectibleKind;
@@ -522,7 +522,10 @@ const SHIELD_SUPER_LAUNCH_STAIR_COUNT = 4;
 const SHIELD_LAUNCH_MAX_FEET_ABOVE_TOP_PX = 28;
 /** After teleport, recycle passes so low stairs repack above the new camera. */
 const SHIELD_LAUNCH_RECYCLE_PASSES = 28;
-const FLASH_SKILL_BOOST_DURATION_SEC = 10;
+const FLASH_SKILL_BOOST_DURATION_SEC = 4;
+const JUMP_BUFFER_SEC = 0.1;
+const COMBO_BOOST_JUMP_THRESHOLD = 3;
+const COMBO_BOOST_SPEED_MULT = 1.5;
 /**
  * HUD climb (m): while ×6+ beast combo, Flash skill (tongue / 360 window) stays pegged — deep-run relief,
  * especially on touch where scroll + cadence punish drop-offs.
@@ -601,9 +604,8 @@ export class PlayScene implements Scene {
    * Player health & i-frame state.
    *
    * `playerHealth` is decremented by mushroom contact by `MUSHROOM_DAMAGE_PER_HIT` (capped at
-   * 0 = game over). Falls
-   * into the death plane still bypass this and trigger an immediate game over via the
-   * existing `checkFallGameOver` → `triggerGameOver` flow. `playerInvulnTime` counts
+   * 0 = game over). Falls into the death plane consume an active shield once before
+   * the regular game-over path. `playerInvulnTime` counts
    * down each frame; while it is positive the player can absorb further hits without
    * losing HP, and the sprite strobes via `playerInvulnBlinkPhase`.
    */
@@ -766,6 +768,8 @@ export class PlayScene implements Scene {
 
   /** Successful chains within `COMBO.chainWindowSec`; 0 = idle. */
   private comboChain = 0;
+  private platformJumpChain = 0;
+  private jumpBufferTimeLeft = 0;
   private lastChainTime = -1e9;
   private runTime = 0;
   private hurryUpTimeLeft = 0;
@@ -797,10 +801,11 @@ export class PlayScene implements Scene {
   /** Level-up reward: faster scroll + stronger jumps for a few seconds. */
   private levelUpBoostTime = 0;
   /**
-   * Shield charges: each fall into the death zone consumes one (then super-launch).
-   * Bank auto-fills charges while gold ≥ 10 and diamonds ≥ 5 (see `maybePurchaseShieldFromBank`).
+   * Reserve shield charges from the gold/diamond bank. An active shield lives on
+   * `player.isShielded` and expires or breaks independently.
    */
   private shieldStock = 0;
+  private shieldTimeLeft = 0;
   async init(app: Application): Promise<void> {
     this.app = app;
     this.width = app.screen.width;
@@ -939,6 +944,8 @@ export class PlayScene implements Scene {
     this.update360Action(dt);
     this.updateTouchFollowAxis();
     this.input?.smoothTouchJoystickAxis(dt, this.player.body.grounded);
+    this.tickPlayerShield(dt);
+    this.tickJumpBuffer(dt);
 
     const deepPullMul = this.getDeepRunGrapplePullMul();
     const pullVyCap = GRAPPLE_VERTICAL_BOOST_VY * deepPullMul;
@@ -1016,7 +1023,7 @@ export class PlayScene implements Scene {
         this.highestY < -650,
         this.grapple,
         mult >= COMBO.beastModeMinMultiplier,
-        this.shieldStock > 0,
+        this.player.isShielded,
       );
     this.physics.applyWorldBounds(this.player.body, this.worldWidth);
     this.clampPlayerToCameraViewport();
@@ -1055,6 +1062,7 @@ export class PlayScene implements Scene {
       dt,
       touchAirControl,
       touchGroundMul,
+      this.isFlashSkillBoostActive() ? COMBO_BOOST_SPEED_MULT : 1,
     );
     if (jumpArcAssistActive) {
       this.jumpArcAssistTime = Math.max(0, this.jumpArcAssistTime - dt);
@@ -1116,6 +1124,7 @@ export class PlayScene implements Scene {
         this.maybeTriggerScreenShake(delta, mult);
       }
       this.landOn(p);
+      this.tryConsumeBufferedJump();
     } else if (!this.player.body.grounded) {
       this.currentGroundPlatform = null;
     }
@@ -1150,7 +1159,7 @@ export class PlayScene implements Scene {
       this.highestY < -650,
       this.grapple,
       boostVisualActive,
-      this.shieldStock > 0,
+      this.player.isShielded,
     );
     this.tickAltitudePresentation(dt);
     this.drawDynamicWorld();
@@ -1248,8 +1257,9 @@ export class PlayScene implements Scene {
     const jumpPressed = this.input?.consumeJump() ?? false;
 
     if (jumpPressed) {
-      this.triggerJumpAction();
+      this.jumpBufferTimeLeft = JUMP_BUFFER_SEC;
     }
+    this.tryConsumeBufferedJump();
   }
 
   private computeGrappleTargetHit():
@@ -1336,11 +1346,39 @@ export class PlayScene implements Scene {
     }
   }
 
-  private triggerJumpAction(fromRightSwipe = false): void {
-    if (!this.player.body.grounded || !!this.grapple) {
+  private tickJumpBuffer(dt: number): void {
+    if (this.jumpBufferTimeLeft > 0) {
+      this.jumpBufferTimeLeft = Math.max(0, this.jumpBufferTimeLeft - dt);
+    }
+  }
+
+  private tryConsumeBufferedJump(): void {
+    if (this.jumpBufferTimeLeft <= 0) {
       return;
     }
+    if (this.triggerJumpAction()) {
+      this.jumpBufferTimeLeft = 0;
+    }
+  }
+
+  private activateComboBoostFromPlatformJumps(): void {
+    this.flashSkillBoostTime = FLASH_SKILL_BOOST_DURATION_SEC;
+    this.platformJumpChain = 0;
+    this.spawnComboPopup('COMBO BOOST!');
+    this.scoreboard?.triggerBeastBurst();
+  }
+
+  private triggerJumpAction(fromRightSwipe = false): boolean {
+    if (!this.player.body.grounded || !!this.grapple) {
+      return false;
+    }
     this.physics.jump(this.player.body);
+    if (!this.isFlashSkillBoostActive()) {
+      this.platformJumpChain += 1;
+      if (this.platformJumpChain >= COMBO_BOOST_JUMP_THRESHOLD) {
+        this.activateComboBoostFromPlatformJumps();
+      }
+    }
     if (this.isFlashSkillBoostActive()) {
       const maxBoostJumpHeight = STAIRS.stepPx * FLASH_BOOST_STAIR_COUNT;
       const maxBoostJumpVy = -Math.sqrt(2 * PHYSICS.gravity * maxBoostJumpHeight);
@@ -1365,6 +1403,7 @@ export class PlayScene implements Scene {
       this.jumpArcTargetCenterX = centerX;
     }
     this.player.onJump();
+    return true;
   }
 
   private createPlatforms(): void {
@@ -1672,6 +1711,8 @@ export class PlayScene implements Scene {
     this.diamondCount = 0;
     this.collectibles = [];
     this.comboChain = 0;
+    this.platformJumpChain = 0;
+    this.jumpBufferTimeLeft = 0;
     this.lastChainTime = -1e9;
     this.runTime = 0;
     this.hurryUpTimeLeft = 0;
@@ -1705,6 +1746,8 @@ export class PlayScene implements Scene {
     this.jumpArcAssistDuration = 0;
     this.levelUpBoostTime = 0;
     this.shieldStock = 0;
+    this.shieldTimeLeft = 0;
+    this.player.isShielded = false;
     this.playerHealth = PLAYER_MAX_HEALTH;
     this.playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
     this.playerInvulnTime = 0;
@@ -1771,6 +1814,7 @@ export class PlayScene implements Scene {
     }
 
     if (wasBoostActive && this.flashSkillBoostTime <= 0) {
+      this.platformJumpChain = 0;
       this.resetBoostAbilitiesToNormal();
     }
     this.syncBoostHudButtonsVisibility();
@@ -2038,6 +2082,12 @@ export class PlayScene implements Scene {
     if (feetY <= deathLineY) {
       return;
     }
+    this.platformJumpChain = 0;
+    this.jumpBufferTimeLeft = 0;
+    if (this.consumePlayerShield()) {
+      this.performShieldSuperLaunch();
+      return;
+    }
     this.triggerGameOver();
   }
 
@@ -2099,7 +2149,7 @@ export class PlayScene implements Scene {
     this.grappleReloadingLogged = false;
     this.lastScoredStairId = this.platforms[0]?.stairId ?? 0;
     this.lastScoredLandWorldTopY = this.platforms[0]?.y ?? Number.POSITIVE_INFINITY;
-    this.player.update(0, 0, false, null, false, false);
+    this.player.update(0, 0, false, null, false, this.player.isShielded);
   }
 
   private landOn(platform: Platform): void {
@@ -3861,6 +3911,37 @@ export class PlayScene implements Scene {
     }
   }
 
+  private activatePlayerShield(): void {
+    this.player.isShielded = true;
+    this.shieldTimeLeft = COLLECTIBLES.shieldDurationSec;
+    this.refreshCollectibleHudText();
+  }
+
+  private tickPlayerShield(dt: number): void {
+    if (!this.player.isShielded) {
+      return;
+    }
+    this.shieldTimeLeft = Math.max(0, this.shieldTimeLeft - dt);
+    if (this.shieldTimeLeft <= 0) {
+      this.player.isShielded = false;
+      this.refreshCollectibleHudText();
+    }
+  }
+
+  private consumePlayerShield(): boolean {
+    if (!this.player.isShielded) {
+      return false;
+    }
+    this.player.isShielded = false;
+    this.shieldTimeLeft = 0;
+    this.playerInvulnTime = PLAYER_INVULN_SEC;
+    this.playerInvulnBlinkPhase = 0;
+    this.player.alpha = 1;
+    this.shakeTime = Math.max(this.shakeTime, 0.24);
+    this.refreshCollectibleHudText();
+    return true;
+  }
+
   /**
    * Apply mushroom damage (`MUSHROOM_DAMAGE_PER_HIT`). Returns `true` when the hit landed (so
    * the caller can stop scanning further enemies this frame), or `false` when the player is
@@ -3872,6 +3953,9 @@ export class PlayScene implements Scene {
     }
     if (this.playerInvulnTime > 0) {
       return false;
+    }
+    if (this.consumePlayerShield()) {
+      return true;
     }
     this.playerHealth = Math.max(0, this.playerHealth - MUSHROOM_DAMAGE_PER_HIT);
     this.playerHealthCeilingThisRun = this.playerHealth;
@@ -4539,9 +4623,9 @@ export class PlayScene implements Scene {
     this.collectibleHudShieldText?.position.set(28, shieldRowY);
   }
 
-  /** Current shield charges (each fall consumes one; bank refills when 10g+5d available). */
+  /** HUD count includes the active shield plus any reserve bank charges. */
   private getShieldHudStock(): number {
-    return this.shieldStock;
+    return this.shieldStock + (this.player.isShielded ? 1 : 0);
   }
 
   private refreshCollectibleHudText(): void {
@@ -4620,6 +4704,37 @@ export class PlayScene implements Scene {
     return { x, y };
   }
 
+  private pickCollectibleKind(): CollectibleKind {
+    const roll = Math.random();
+    if (roll < COLLECTIBLES.shieldSpawnChance) {
+      return 'shield';
+    }
+    if (roll < COLLECTIBLES.shieldSpawnChance + COLLECTIBLES.diamondSpawnChance) {
+      return 'diamond';
+    }
+    return 'coin';
+  }
+
+  private getCollectibleRadius(kind: CollectibleKind): number {
+    if (kind === 'coin') {
+      return COLLECTIBLES.coinRadius;
+    }
+    if (kind === 'diamond') {
+      return COLLECTIBLES.diamondRadius;
+    }
+    return COLLECTIBLES.shieldRadius;
+  }
+
+  private getCollectiblePoints(kind: CollectibleKind): number {
+    if (kind === 'coin') {
+      return COLLECTIBLES.coinPoints;
+    }
+    if (kind === 'diamond') {
+      return COLLECTIBLES.diamondPoints;
+    }
+    return COLLECTIBLES.shieldPickupPoints;
+  }
+
   /** While bank has 10+ gold and 5+ diamonds, spend and add shield charges (capped). No refill at end of fall launch. */
   private maybePurchaseShieldFromBank(): void {
     const maxStock = 99;
@@ -4638,6 +4753,10 @@ export class PlayScene implements Scene {
       this.scoreboard?.onPointsGained(add);
     }
     if (gained > 0) {
+      if (!this.player.isShielded && this.shieldStock > 0) {
+        this.shieldStock -= 1;
+        this.activatePlayerShield();
+      }
       this.sfx.play('collect_diamond', 0.72);
       this.collectibleHudBump = 1;
       this.hudGoldShown = this.goldCount;
@@ -4651,8 +4770,8 @@ export class PlayScene implements Scene {
     const n = Math.min(COLLECTIBLES.maxActive, this.platforms.length);
     let occupied = this.getOccupiedActivePlatformIndices();
     for (let i = 0; i < n; i += 1) {
-      const kind = Math.random() < COLLECTIBLES.diamondSpawnChance ? 'diamond' : 'coin';
-      const r = kind === 'coin' ? COLLECTIBLES.coinRadius : COLLECTIBLES.diamondRadius;
+      const kind = this.pickCollectibleKind();
+      const r = this.getCollectibleRadius(kind);
       const slot = this.pickPlatformSpawnSlot(r, occupied);
       if (!slot) {
         break;
@@ -4751,15 +4870,18 @@ export class PlayScene implements Scene {
     if (!hit) {
       return;
     }
-    const add =
-      c.kind === 'coin' ? COLLECTIBLES.coinPoints : COLLECTIBLES.diamondPoints;
+    const add = this.getCollectiblePoints(c.kind);
     this.score += add * this.getScoreGainMultiplier();
     this.scoreboard?.onPointsGained(add);
     if (c.kind === 'coin') {
       this.goldCount += 1;
       this.sfx.play('collect_coin', 0.9);
-    } else {
+    } else if (c.kind === 'diamond') {
       this.diamondCount += 1;
+      this.sfx.play('collect_diamond', 0.92);
+      this.spawnDiamondCollectShine(pos.x, pos.y);
+    } else {
+      this.activatePlayerShield();
       this.sfx.play('collect_diamond', 0.92);
       this.spawnDiamondCollectShine(pos.x, pos.y);
     }
@@ -4773,9 +4895,9 @@ export class PlayScene implements Scene {
   }
 
   private respawnCollectible(c: Collectible): void {
-    const kind = Math.random() < COLLECTIBLES.diamondSpawnChance ? 'diamond' : 'coin';
+    const kind = this.pickCollectibleKind();
     c.kind = kind;
-    c.r = kind === 'coin' ? COLLECTIBLES.coinRadius : COLLECTIBLES.diamondRadius;
+    c.r = this.getCollectibleRadius(kind);
     c.phase = 'active';
     c.collectT = 0;
     const occupied = this.getOccupiedActivePlatformIndices();
@@ -4851,6 +4973,24 @@ export class PlayScene implements Scene {
         this.collectiblesGfx
           .ellipse(cx - rx * 0.32, cy - ry * 0.22, rx * 0.38, ry * 0.24)
           .fill({ color: 0xfff2a0, alpha: alphaMul * 0.65 });
+      } else if (c.kind === 'shield') {
+        const pulse = Math.sin(t * Math.PI * 2 * COLLECTIBLES.diamondPulseHz + c.platformIdx * 0.45);
+        const pulse01 = (pulse + 1) * 0.5;
+        const r = baseR * (1 + 0.08 * pulse);
+        const alpha = (0.72 + 0.28 * pulse01) * alphaMul;
+        this.collectiblesGfx
+          .circle(cx, cy, r + COLLECTIBLES.glowOuterPx)
+          .fill({ color: 0x2aa8ff, alpha: alpha * 0.16 });
+        this.collectiblesGfx
+          .circle(cx, cy, r + COLLECTIBLES.glowMidPx)
+          .stroke({ width: 4, color: 0x7af0ff, alpha: alpha * 0.5 });
+        this.collectiblesGfx
+          .circle(cx, cy, r)
+          .stroke({ width: 3.4, color: 0xc8ffff, alpha })
+          .fill({ color: 0x2266ff, alpha: alpha * 0.22 });
+        this.collectiblesGfx
+          .circle(cx, cy, r * 0.58)
+          .stroke({ width: 2, color: 0xffffff, alpha: alpha * 0.58 });
       } else {
         const pulse = Math.sin(t * Math.PI * 2 * COLLECTIBLES.diamondPulseHz + c.platformIdx * 0.45);
         const pulse01 = (pulse + 1) * 0.5;
