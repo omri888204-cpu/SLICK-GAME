@@ -5095,8 +5095,8 @@ export class PlayScene implements Scene {
     tex: Texture,
     artMul: number,
   ): void {
-    let sprite = root.children[0] as Sprite | undefined;
-    if (this.platformSpriteModes[index] !== 'legacy' || !(sprite instanceof Sprite)) {
+    let sprite = root.children.find((c): c is Sprite => c instanceof Sprite);
+    if (this.platformSpriteModes[index] !== 'legacy' || !sprite) {
       root.removeChildren().forEach((child) => child.destroy());
       sprite = new Sprite(tex);
       sprite.anchor.set(0.5);
@@ -5122,6 +5122,42 @@ export class PlayScene implements Scene {
     sprite.position.set(platform.width * 0.5, platform.height * 0.5 + 6);
     root.position.set(platform.x, platform.y);
     root.alpha = 0.98;
+
+    const isSlime = tex === this.platformTextureSlime;
+    if (isSlime) {
+      const tw = tex.width;
+      const th = tex.height;
+      const sw = sprite.width;
+      const sh = (th / tw) * sw;
+      const cx = platform.width * 0.5;
+      const cy = platform.height * 0.5 + 6;
+      const halfH = sh * 0.5;
+      const top = cy - halfH;
+      const bottom = cy + halfH;
+      const maskY = Math.min(0, top);
+      const maskH = Math.max(platform.height, bottom) - maskY;
+
+      let maskGfx = root.children.find(
+        (c): c is Graphics => c instanceof Graphics && c.label === 'slime-platform-mask',
+      );
+      if (!maskGfx) {
+        maskGfx = new Graphics();
+        maskGfx.label = 'slime-platform-mask';
+        maskGfx.eventMode = 'none';
+        root.addChildAt(maskGfx, 0);
+      }
+      maskGfx.clear();
+      maskGfx.rect(0, maskY, platform.width, maskH).fill({ color: 0xffffff });
+      root.mask = maskGfx;
+    } else {
+      root.mask = null;
+      for (const c of [...root.children]) {
+        if (c instanceof Graphics && c.label === 'slime-platform-mask') {
+          root.removeChild(c);
+          c.destroy();
+        }
+      }
+    }
   }
 
   /** Same bead radius as `syncBeadBridgePlatformSprite` (visual sizing only). */
