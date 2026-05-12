@@ -276,6 +276,8 @@ const PLAYER_INVULN_SEC = 1.5;
 const PLAYER_HURT_BLINK_HZ = 12;
 /** Top-left placement for the health HUD (below the header panel). */
 const HEALTH_HUD_X_PX = 18;
+/** Extra X so the bar clears the shield counter column (same row as diamond). */
+const HEALTH_HUD_CLEAR_LEFT_COLUMN_PX = 16;
 const HEALTH_HUD_Y_OFFSET_PX = 6;
 /** Vertical gap between timer text and heart HUD. */
 const HEALTH_BAR_UNDER_TIMER_GAP_PX = 8;
@@ -3803,13 +3805,19 @@ export class PlayScene implements Scene {
   private layoutHealthHud(): void {
     if (this.timerHudText) {
       const timerBottomY = this.timerHudText.position.y + this.timerHudText.height;
-      const heartX = this.timerHudText.position.x - HEART_HUD_DISPLAY_WIDTH_PX * 0.5;
+      const heartX =
+        this.timerHudText.position.x -
+        HEART_HUD_DISPLAY_WIDTH_PX * 0.5 +
+        HEALTH_HUD_CLEAR_LEFT_COLUMN_PX;
       const barY = timerBottomY + HEALTH_BAR_UNDER_TIMER_GAP_PX;
       this.healthHudRoot.position.set(heartX, barY);
       return;
     }
     const fallbackY = UI_SAFE_PAD_TOP + UI_HEADER_H + HEALTH_HUD_Y_OFFSET_PX;
-    this.healthHudRoot.position.set(HEALTH_HUD_X_PX, fallbackY);
+    this.healthHudRoot.position.set(
+      HEALTH_HUD_X_PX + HEALTH_HUD_CLEAR_LEFT_COLUMN_PX,
+      fallbackY,
+    );
   }
 
   /** Sync segment level / hit-flash when `playerHealth` changes; frame cycling runs in `tickHeartHud`. */
