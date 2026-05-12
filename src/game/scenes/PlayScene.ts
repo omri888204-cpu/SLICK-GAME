@@ -429,6 +429,8 @@ const TONGUE_COMBO_BOOST_DURATION_SEC = 10;
 /** Landing combo when `stairId` regresses after recycle — must climb ≥ this many px higher (world Y↓). */
 const COMBO_LAND_MIN_WORLD_Y_DELTA_PX = 6;
 const PLATFORM_SCALE = 2.1;
+/** Horizontal repeat width of one grass/dirt block inside `slime-platform.png` (atlas is tiled). */
+const SLIME_PLATFORM_TILE_PX = 46;
 const PLATFORM_EDGE_PADDING_PX = 8;
 const CAMERA_ZOOM = 0.5;
 const MOBILE_CAMERA_ZOOM = 0.42;
@@ -5037,7 +5039,10 @@ export class PlayScene implements Scene {
   private async loadPlatformSprite(): Promise<void> {
     this.platformTexture = await this.createCheckerTransparentTexture(crystalPlatformUrl);
     try {
-      this.platformTextureSlime = await this.createEdgeDarkTransparentTexture(slimePlatformUrl);
+      // Slime tier uses hand-painted grass/dirt tiles (from `spring_.png`); do not run
+      // `createEdgeDarkTransparentTexture` — dark soil pixels touch the edges and would be
+      // flood-cleared, corrupting the GPU texture.
+      this.platformTextureSlime = (await Assets.load<Texture>(slimePlatformUrl)) as Texture;
     } catch {
       this.platformTextureSlime = undefined;
     }
@@ -5105,11 +5110,25 @@ export class PlayScene implements Scene {
       return;
     }
     sprite.roundPixels = RENDER.pixelArt;
-    sprite.width = platform.width * artMul;
+    let scaleMul = artMul;
+    if (tex === this.platformTextureSlime) {
+      const w = Math.max(1, platform.width);
+      const beadR = this.beadBridgeBeadRadius(platform);
+      const targetTilePx = 2 * beadR;
+      scaleMul = (targetTilePx * tex.width) / (SLIME_PLATFORM_TILE_PX * w);
+    }
+    sprite.width = platform.width * scaleMul;
     sprite.scale.y = Math.abs(sprite.scale.x);
     sprite.position.set(platform.width * 0.5, platform.height * 0.5 + 6);
     root.position.set(platform.x, platform.y);
     root.alpha = 0.98;
+  }
+
+  /** Same bead radius as `syncBeadBridgePlatformSprite` (visual sizing only). */
+  private beadBridgeBeadRadius(platform: Platform): number {
+    const w = platform.width;
+    const h = platform.height;
+    return Math.max(5.5, Math.min(h * 0.4, w * 0.09));
   }
 
   /**
@@ -5124,7 +5143,7 @@ export class PlayScene implements Scene {
     const sid = Math.max(0, platform.stairId);
     const w = platform.width;
     const h = platform.height;
-    const beadR = Math.max(5.5, Math.min(h * 0.4, w * 0.09));
+    const beadR = this.beadBridgeBeadRadius(platform);
     const margin = beadR * 1.15;
     const span = Math.max(w - margin * 2, beadR * 3.5);
     const step = beadR * 2.05;

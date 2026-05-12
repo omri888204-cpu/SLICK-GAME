@@ -204,7 +204,10 @@ export const STAIRS = {
    * From this HUD altitude (meters), switch to slime platform art and apply `slimePlatformArtScale`.
    */
   slimePlatformAfterMeters: 1000,
-  /** Scale for slime stairs so footprint matches the purple procedural slab (~28px hit height). */
+  /**
+   * Legacy multiplier for slime tier (volcano/storm still use fixed scales).
+   * Grass/dirt art scales per stair to match bead-bridge diameter; see `PlayScene.syncLegacyPlatformSprite`.
+   */
   slimePlatformArtScale: 0.72,
   /**
    * Volcanic / lava platform art from this HUD altitude (meters).
