@@ -512,14 +512,13 @@ const REST_FLOOR_CLOUD_ROTATION_DEG = -3;
 const REST_FLOOR_CLOUD_BREATH_AMPLITUDE_PX = 4;
 const REST_FLOOR_CLOUD_BREATH_SCALE = 0.018;
 const REST_FLOOR_CLOUD_BREATH_HZ = 0.45;
-const REST_FLOOR_SUPPLIES_SURFACE_OFFSET_Y_PX = -6;
-const REST_FLOOR_SUPPLIES_SCALE_DESKTOP = 1.55;
-const REST_FLOOR_SUPPLIES_SCALE_MOBILE = 1.25;
+const REST_FLOOR_SUPPLIES_START_X_PX = 100;
+const REST_FLOOR_SUPPLIES_SCALE_DESKTOP = 1.25;
+const REST_FLOOR_SUPPLIES_SCALE_MOBILE = 1.05;
 const REST_FLOOR_SUPPLY_PROPS = [
-  { x: 1, y: 0, w: 206, h: 76, viewX: 0.25, yOffset: 0, scale: 0.92 },
-  { x: 118, y: 82, w: 88, h: 204, viewX: 0.72, yOffset: 4, scale: 0.82 },
-  { x: 0, y: 326, w: 206, h: 80, viewX: 0.5, yOffset: 2, scale: 1 },
-  { x: 0, y: 160, w: 102, h: 84, viewX: 0.1, yOffset: 5, scale: 0.82 },
+  { x: 1, y: 0, w: 206, h: 76, spacingAfter: 96, scale: 1.08 },
+  { x: 118, y: 82, w: 88, h: 204, spacingAfter: 114, scale: 0.72 },
+  { x: 0, y: 326, w: 206, h: 80, spacingAfter: 88, scale: 1.1 },
 ] as const;
 const PLAYER_SPAWN_CLEARANCE_PX = 14;
 const GRAPPLE_VERTICAL_REACH_PLATFORMS = 2;
@@ -5600,6 +5599,7 @@ export class PlayScene implements Scene {
       let sprite = this.restFloorSupplySprites[i];
       if (!sprite) {
         sprite = new Sprite(this.restFloorSupplyTextures[i]);
+        // Pixi display-only props: no physics body is registered, so they remain static scenery.
         sprite.anchor.set(0.5, 1);
         sprite.roundPixels = RENDER.pixelArt;
         sprite.eventMode = 'none';
@@ -5623,12 +5623,12 @@ export class PlayScene implements Scene {
 
     const floorY = this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS);
     const viewLeft = this.cameraX;
-    const viewW = this.worldWidthFromScreen();
     const baseScale =
       this.width < REST_FLOOR_PROPS_MOBILE_SCREEN_W
         ? REST_FLOOR_SUPPLIES_SCALE_MOBILE
         : REST_FLOOR_SUPPLIES_SCALE_DESKTOP;
 
+    let x = viewLeft + REST_FLOOR_SUPPLIES_START_X_PX;
     for (let i = 0; i < REST_FLOOR_SUPPLY_PROPS.length; i += 1) {
       const sprite = this.restFloorSupplySprites[i];
       if (!sprite || !sprite.visible) {
@@ -5637,10 +5637,8 @@ export class PlayScene implements Scene {
       const prop = REST_FLOOR_SUPPLY_PROPS[i];
       const scale = baseScale * prop.scale;
       sprite.scale.set(scale);
-      sprite.position.set(
-        viewLeft + viewW * prop.viewX,
-        floorY + REST_FLOOR_SUPPLIES_SURFACE_OFFSET_Y_PX + prop.yOffset * scale,
-      );
+      sprite.position.set(x, floorY);
+      x += prop.spacingAfter;
     }
   }
 
