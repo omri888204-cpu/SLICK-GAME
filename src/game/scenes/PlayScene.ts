@@ -493,7 +493,6 @@ const REST_FLOOR_INTERVAL_METERS = 1000;
 const REST_FLOOR_MONSTER_CLEAR_METERS = 100;
 const REST_FLOOR_RESUME_ABOVE_PX = 50;
 const REST_FLOOR_TILE_PX = 64;
-const REST_FLOOR_VISUAL_DEPTH_PX = 260;
 const REST_FLOOR_HOUSE_METERS = 1000;
 const REST_FLOOR_HOUSE_DEPTH = 100;
 /** Place the house at this fraction of the visible screen width so it stays on-screen on any aspect ratio. */
@@ -516,9 +515,7 @@ const REST_FLOOR_SUPPLIES_START_X_PX = 100;
 const REST_FLOOR_SUPPLIES_SCALE_DESKTOP = 1.25;
 const REST_FLOOR_SUPPLIES_SCALE_MOBILE = 1.05;
 const REST_FLOOR_SUPPLY_PROPS = [
-  { x: 1, y: 0, w: 206, h: 76, spacingAfter: 96, scale: 1.08 },
-  { x: 118, y: 82, w: 88, h: 204, spacingAfter: 114, scale: 0.72 },
-  { x: 0, y: 326, w: 206, h: 80, spacingAfter: 88, scale: 1.1 },
+  { x: 0, y: 356, w: 206, h: 50, spacingAfter: 88, scale: 1.848 },
 ] as const;
 const PLAYER_SPAWN_CLEARANCE_PX = 14;
 const GRAPPLE_VERTICAL_REACH_PLATFORMS = 2;
@@ -5482,10 +5479,6 @@ export class PlayScene implements Scene {
     const tile = REST_FLOOR_TILE_PX;
     const x = platform.x;
     const width = platform.width;
-    const visualDepth = Math.max(REST_FLOOR_VISUAL_DEPTH_PX, h + 32);
-    this.platformLayer
-      .rect(x, platform.y, width, visualDepth)
-      .fill({ color: 0x080612, alpha: 0.98 });
     this.platformLayer
       .rect(x, platform.y - 4, width, h + 8)
       .fill({ color: 0x1a1630, alpha: 0.96 })
@@ -5594,6 +5587,15 @@ export class PlayScene implements Scene {
     if (this.restFloorSupplyTextures.length === 0) {
       return;
     }
+
+    for (let i = this.restFloorSupplyTextures.length; i < this.restFloorSupplySprites.length; i += 1) {
+      const sprite = this.restFloorSupplySprites[i];
+      if (sprite) {
+        this.restFloorPropLayer.removeChild(sprite);
+        sprite.destroy();
+      }
+    }
+    this.restFloorSupplySprites.length = this.restFloorSupplyTextures.length;
 
     for (let i = 0; i < this.restFloorSupplyTextures.length; i += 1) {
       let sprite = this.restFloorSupplySprites[i];
