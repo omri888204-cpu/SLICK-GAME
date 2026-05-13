@@ -494,9 +494,13 @@ const REST_FLOOR_MONSTER_CLEAR_METERS = 100;
 const REST_FLOOR_RESUME_ABOVE_PX = 50;
 const REST_FLOOR_TILE_PX = 64;
 const REST_FLOOR_HOUSE_METERS = 1000;
-const REST_FLOOR_HOUSE_SCALE = 1;
 const REST_FLOOR_HOUSE_DEPTH = 100;
-const REST_FLOOR_HOUSE_SCREEN_RIGHT_OFFSET_PX = 480;
+/** Place the house at this fraction of the visible screen width so it stays on-screen on any aspect ratio. */
+const REST_FLOOR_HOUSE_SCREEN_X_RATIO = 0.8;
+/** Below this screen width (phones/small viewports) we render the house and clouds smaller so they're not cropped. */
+const REST_FLOOR_PROPS_MOBILE_SCREEN_W = 600;
+const REST_FLOOR_HOUSE_SCALE_DESKTOP = 0.8;
+const REST_FLOOR_HOUSE_SCALE_MOBILE = 0.5;
 const REST_FLOOR_HOUSE_SINK_PX = 130;
 const REST_FLOOR_CLOUD_DEPTH = 90;
 const REST_FLOOR_CLOUD_WIDTH_PX = 580;
@@ -5383,16 +5387,33 @@ export class PlayScene implements Scene {
     }
   }
 
+  /**
+   * Compute the responsive layout for the rest-floor props.
+   * - `propX` anchors the house to {@link REST_FLOOR_HOUSE_SCREEN_X_RATIO} of the current visible viewport
+   *   (in world space), so it stays on-screen across desktop and mobile aspect ratios.
+   * - `propScale` shrinks the house and its clouds on narrow viewports so they aren't cropped.
+   * Y is always pinned to the 1000m rest-floor top (`floorY`) so clouds and house never drift
+   * away from the floor when the window resizes or aspect ratio changes.
+   */
+  private getRestFloorPropLayout(): { propX: number; propScale: number; floorY: number } {
+    const floorY = this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS);
+    const propX =
+      this.cameraX + (this.width * REST_FLOOR_HOUSE_SCREEN_X_RATIO) / this.getCameraZoom();
+    const propScale =
+      this.width < REST_FLOOR_PROPS_MOBILE_SCREEN_W
+        ? REST_FLOOR_HOUSE_SCALE_MOBILE
+        : REST_FLOOR_HOUSE_SCALE_DESKTOP;
+    return { propX, propScale, floorY };
+  }
+
   private spawnRestFloorHouse(): void {
     const texture = this.restFloorHouseTexture;
     if (!texture) {
       return;
     }
-    const floorY = this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS);
-    const propX =
-      this.cameraX + (this.width - REST_FLOOR_HOUSE_SCREEN_RIGHT_OFFSET_PX) / this.getCameraZoom();
-    this.spawnRestFloorCloud(propX, floorY, 'left');
-    this.spawnRestFloorCloud(propX, floorY, 'right');
+    const { propX, propScale, floorY } = this.getRestFloorPropLayout();
+    this.spawnRestFloorCloud(propX, floorY, 'left', propScale);
+    this.spawnRestFloorCloud(propX, floorY, 'right', propScale);
     let house = this.restFloorHouseSprite;
     if (!house) {
       house = new Sprite(texture);
@@ -5406,15 +5427,19 @@ export class PlayScene implements Scene {
       house.texture = texture;
     }
 
-    house.scale.set(REST_FLOOR_HOUSE_SCALE);
+    house.scale.set(propScale);
     house.rotation = 0;
     house.position.set(propX, floorY + REST_FLOOR_HOUSE_SINK_PX);
     house.visible = true;
     house.alpha = 1;
-    console.log('House spawned at:', house.x, house.y);
   }
 
-  private spawnRestFloorCloud(x: number, floorY: number, side: 'left' | 'right'): void {
+  private spawnRestFloorCloud(
+    x: number,
+    floorY: number,
+    side: 'left' | 'right',
+    propScale: number,
+  ): void {
     const texture = this.restFloorCloudTexture;
     if (!texture) {
       return;
@@ -5436,36 +5461,42 @@ export class PlayScene implements Scene {
       cloud.texture = texture;
     }
 
-    cloud.width = REST_FLOOR_CLOUD_WIDTH_PX;
+    cloud.width = REST_FLOOR_CLOUD_WIDTH_PX * propScale;
     cloud.scale.y = Math.abs(cloud.scale.x);
     cloud.rotation = (REST_FLOOR_CLOUD_ROTATION_DEG * Math.PI) / 180;
-    const offsetX =
+    const baseOffsetX =
       side === 'left' ? REST_FLOOR_CLOUD_OFFSET_X_PX : REST_FLOOR_CLOUD_RIGHT_OFFSET_X_PX;
-    cloud.position.set(x + offsetX, floorY + REST_FLOOR_CLOUD_SINK_PX);
+    cloud.position.set(x + baseOffsetX * propScale, floorY + REST_FLOOR_CLOUD_SINK_PX);
     cloud.visible = true;
     cloud.alpha = 1;
-    console.log('Rest floor cloud spawned at:', cloud.x, cloud.y);
   }
 
+  /**
+   * Per-frame: refresh the rest-floor house+clouds layout so they track viewport resizes
+   * (mobile browser chrome toggling, orientation change) and stay anchored to the rest floor.
+   */
   private updateRestFloorCloudBreathing(): void {
-    const floorY = this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS);
-    const propX =
-      this.cameraX + (this.width - REST_FLOOR_HOUSE_SCREEN_RIGHT_OFFSET_PX) / this.getCameraZoom();
+    const { propX, propScale, floorY } = this.getRestFloorPropLayout();
+    const house = this.restFloorHouseSprite;
+    if (house && house.visible) {
+      house.scale.set(propScale);
+      house.position.set(propX, floorY + REST_FLOOR_HOUSE_SINK_PX);
+    }
     const breath = Math.sin(this.runTime * Math.PI * 2 * REST_FLOOR_CLOUD_BREATH_HZ);
-    const scale = 1 + breath * REST_FLOOR_CLOUD_BREATH_SCALE;
+    const breathScale = 1 + breath * REST_FLOOR_CLOUD_BREATH_SCALE;
     const y = floorY + REST_FLOOR_CLOUD_SINK_PX + breath * REST_FLOOR_CLOUD_BREATH_AMPLITUDE_PX;
 
     this.applyRestFloorCloudBreath(
       this.restFloorCloudSprite,
-      propX + REST_FLOOR_CLOUD_OFFSET_X_PX,
+      propX + REST_FLOOR_CLOUD_OFFSET_X_PX * propScale,
       y,
-      scale,
+      breathScale * propScale,
     );
     this.applyRestFloorCloudBreath(
       this.restFloorCloudRightSprite,
-      propX + REST_FLOOR_CLOUD_RIGHT_OFFSET_X_PX,
+      propX + REST_FLOOR_CLOUD_RIGHT_OFFSET_X_PX * propScale,
       y,
-      scale,
+      breathScale * propScale,
     );
   }
 
