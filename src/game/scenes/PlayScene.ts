@@ -40,7 +40,6 @@ import type {
 import crystalPlatformUrl from '../../assets/sprites/crystal-platform.png';
 import slimePlatformUrl from '../../assets/sprites/slime-platform.png';
 import volcanoPlatformUrl from '../../assets/sprites/volcano-platform.png';
-import stormPlatformUrl from '../../assets/sprites/storm-platform.png';
 import type { Scene } from './Scene';
 
 type ComboPopup = {
@@ -764,7 +763,6 @@ export class PlayScene implements Scene {
   private platformTexture?: Texture;
   private platformTextureSlime?: Texture;
   private platformTextureVolcano?: Texture;
-  private platformTextureStorm?: Texture;
   private restFloorHouseTexture?: Texture;
   private restFloorHouseSprite?: Sprite;
   private restFloorCloudTexture?: Texture;
@@ -1757,8 +1755,8 @@ export class PlayScene implements Scene {
     let tex: Texture = this.platformTexture;
     let artMul = 1;
 
-    if (climbM >= STAIRS.stormPlatformAfterMeters && this.platformTextureStorm !== undefined) {
-      tex = this.platformTextureStorm;
+    if (climbM >= STAIRS.stormPlatformAfterMeters && this.restFloorCloudTexture !== undefined) {
+      tex = this.restFloorCloudTexture;
       artMul = STAIRS.stormPlatformArtScale;
     } else if (climbM >= STAIRS.volcanoPlatformAfterMeters && this.platformTextureVolcano !== undefined) {
       tex = this.platformTextureVolcano;
@@ -5409,11 +5407,6 @@ export class PlayScene implements Scene {
       this.platformTextureVolcano = await this.createEdgeDarkTransparentTexture(volcanoPlatformUrl);
     } catch {
       this.platformTextureVolcano = undefined;
-    }
-    try {
-      this.platformTextureStorm = await this.createEdgeDarkTransparentTexture(stormPlatformUrl);
-    } catch {
-      this.platformTextureStorm = undefined;
     }
   }
 
