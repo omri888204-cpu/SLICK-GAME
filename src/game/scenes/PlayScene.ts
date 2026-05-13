@@ -496,7 +496,7 @@ const REST_FLOOR_TILE_PX = 64;
 const REST_FLOOR_HOUSE_METERS = 1000;
 const REST_FLOOR_HOUSE_DEPTH = 100;
 /** Place the house at this fraction of the visible screen width so it stays on-screen on any aspect ratio. */
-const REST_FLOOR_HOUSE_SCREEN_X_RATIO = 0.8;
+const REST_FLOOR_HOUSE_SCREEN_X_RATIO = 0.75;
 /** Below this screen width (phones/small viewports) we render the house and clouds smaller so they're not cropped. */
 const REST_FLOOR_PROPS_MOBILE_SCREEN_W = 600;
 const REST_FLOOR_HOUSE_SCALE_DESKTOP = 0.8;
@@ -1521,10 +1521,9 @@ export class PlayScene implements Scene {
       p.driftVx = 0;
       p.kind = this.isRestFloorY(p.y) ? 'rest' : 'normal';
       this.applyResponsivePlatformWidth(p);
-      p.x =
-        p.kind === 'rest'
-          ? 0
-          : this.computePlatformSpawnX(this.nextStairId, p.width);
+      if (p.kind !== 'rest') {
+        p.x = this.computePlatformSpawnX(this.nextStairId, p.width);
+      }
       previousTopY = p.y;
       spawnY = p.y - this.computeStairGapPx(this.nextStairId);
     }
@@ -1589,8 +1588,9 @@ export class PlayScene implements Scene {
 
   private applyResponsivePlatformWidth(platform: Platform): void {
     if (platform.kind === 'rest') {
-      platform.x = 0;
-      platform.width = this.worldWidth;
+      const bounds = this.getRestFloorPlatformBounds();
+      platform.x = bounds.x;
+      platform.width = bounds.width;
       this.updatePlatformBodyFromScale(platform);
       return;
     }
@@ -1729,8 +1729,9 @@ export class PlayScene implements Scene {
     const maxPx = Math.max(margin + 1, this.worldWidth - margin);
     for (const p of this.platforms) {
       if (p.kind === 'rest') {
-        p.x = 0;
-        p.width = this.worldWidth;
+        const bounds = this.getRestFloorPlatformBounds();
+        p.x = bounds.x;
+        p.width = bounds.width;
         this.updatePlatformBodyFromScale(p);
         continue;
       }
@@ -2257,12 +2258,38 @@ export class PlayScene implements Scene {
   private updateRestFloorHoldState(): void {
     const holdY = this.restFloorHoldY;
     if (holdY === null) {
+      this.tryStartRestFloorHoldFromWorldPosition();
       return;
     }
     const feetY = this.player.body.y + this.player.body.height;
     if (!this.player.body.grounded && feetY <= holdY - REST_FLOOR_RESUME_ABOVE_PX) {
       this.restFloorHoldY = null;
     }
+  }
+
+  private tryStartRestFloorHoldFromWorldPosition(): void {
+    const feetY = this.player.body.y + this.player.body.height;
+    const restPlatform = this.platforms.find((p) => {
+      if (p.kind !== 'rest') {
+        return false;
+      }
+      const nearRestTop = feetY >= p.y - 2 && feetY <= p.y + p.height;
+      const horizontallyOverRest =
+        this.player.body.x + this.player.body.width > p.x && this.player.body.x < p.x + p.width;
+      return nearRestTop && horizontallyOverRest;
+    });
+    if (restPlatform) {
+      this.restFloorHoldY = restPlatform.y;
+    }
+  }
+
+  private getRestFloorPlatformBounds(): { x: number; width: number } {
+    const visibleWorldW = this.worldWidthFromScreen();
+    const width = visibleWorldW * 2;
+    return {
+      x: this.cameraX - visibleWorldW * 0.5,
+      width,
+    };
   }
 
   private resetPlayer(): void {
@@ -2791,8 +2818,9 @@ export class PlayScene implements Scene {
     const edgePad = PLATFORM_EDGE_PADDING_PX;
     for (const p of this.platforms) {
       if (p.kind === 'rest') {
-        p.x = 0;
-        p.width = this.worldWidth;
+        const bounds = this.getRestFloorPlatformBounds();
+        p.x = bounds.x;
+        p.width = bounds.width;
         p.driftVx = 0;
         this.updatePlatformBodyFromScale(p);
         continue;
@@ -5328,26 +5356,28 @@ export class PlayScene implements Scene {
   private drawRestFloorPlatform(platform: Platform): void {
     const h = Math.max(platform.height * 1.18, platform.height + 12);
     const tile = REST_FLOOR_TILE_PX;
+    const x = platform.x;
+    const width = platform.width;
     this.platformLayer
-      .rect(0, platform.y - 4, this.worldWidth, h + 8)
+      .rect(x, platform.y - 4, width, h + 8)
       .fill({ color: 0x1a1630, alpha: 0.96 })
       .stroke({ color: 0xb8f7ff, width: 2.5, alpha: 0.88 });
     this.platformLayer
-      .rect(0, platform.y, this.worldWidth, h * 0.35)
+      .rect(x, platform.y, width, h * 0.35)
       .fill({ color: 0x39336c, alpha: 0.9 });
-    const cols = Math.ceil(this.worldWidth / tile);
+    const cols = Math.ceil(width / tile);
     for (let i = 0; i < cols; i += 1) {
-      const x = i * tile;
+      const tileX = x + i * tile;
       const color = i % 2 === 0 ? 0x302a58 : 0x262044;
       this.platformLayer
-        .rect(x, platform.y + h * 0.35, Math.min(tile, this.worldWidth - x), h * 0.65)
+        .rect(tileX, platform.y + h * 0.35, Math.min(tile, width - i * tile), h * 0.65)
         .fill({ color, alpha: 0.95 });
       this.platformLayer
-        .rect(x, platform.y - 4, 2, h + 8)
+        .rect(tileX, platform.y - 4, 2, h + 8)
         .fill({ color: 0x80f7ff, alpha: 0.18 });
     }
     this.platformLayer
-      .rect(0, platform.y - 6, this.worldWidth, 6)
+      .rect(x, platform.y - 6, width, 6)
       .fill({ color: 0xc8ffff, alpha: 0.78 });
   }
 
@@ -5397,8 +5427,7 @@ export class PlayScene implements Scene {
    */
   private getRestFloorPropLayout(): { propX: number; propScale: number; floorY: number } {
     const floorY = this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS);
-    const propX =
-      this.cameraX + (this.width * REST_FLOOR_HOUSE_SCREEN_X_RATIO) / this.getCameraZoom();
+    const propX = this.cameraX + this.worldWidthFromScreen() * REST_FLOOR_HOUSE_SCREEN_X_RATIO;
     const propScale =
       this.width < REST_FLOOR_PROPS_MOBILE_SCREEN_W
         ? REST_FLOOR_HOUSE_SCALE_MOBILE
@@ -5426,6 +5455,7 @@ export class PlayScene implements Scene {
     } else {
       house.texture = texture;
     }
+    (house as Sprite & { setScrollFactor?: (value: number) => void }).setScrollFactor?.(1);
 
     house.scale.set(propScale);
     house.rotation = 0;
