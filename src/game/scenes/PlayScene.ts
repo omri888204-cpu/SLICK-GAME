@@ -496,15 +496,15 @@ const REST_FLOOR_TILE_PX = 64;
 const REST_FLOOR_HOUSE_METERS = 1000;
 const REST_FLOOR_HOUSE_DEPTH = 100;
 /** Place the house at this fraction of the visible screen width so it stays on-screen on any aspect ratio. */
-const REST_FLOOR_HOUSE_SCREEN_X_RATIO = 0.75;
+const REST_FLOOR_HOUSE_SCREEN_X_RATIO = 0.8;
 /** Below this screen width (phones/small viewports) we render the house and clouds smaller so they're not cropped. */
 const REST_FLOOR_PROPS_MOBILE_SCREEN_W = 600;
 const REST_FLOOR_HOUSE_SCALE_DESKTOP = 0.8;
 const REST_FLOOR_HOUSE_SCALE_MOBILE = 0.5;
-const REST_FLOOR_HOUSE_SINK_PX = 130;
+const REST_FLOOR_HOUSE_SINK_PX = 0;
 const REST_FLOOR_CLOUD_DEPTH = 90;
 const REST_FLOOR_CLOUD_WIDTH_PX = 580;
-const REST_FLOOR_CLOUD_SINK_PX = 38;
+const REST_FLOOR_CLOUD_SINK_PX = 10;
 const REST_FLOOR_CLOUD_OFFSET_X_PX = -130;
 const REST_FLOOR_CLOUD_RIGHT_OFFSET_X_PX = 170;
 const REST_FLOOR_CLOUD_ROTATION_DEG = -3;
@@ -5457,6 +5457,7 @@ export class PlayScene implements Scene {
     }
     (house as Sprite & { setScrollFactor?: (value: number) => void }).setScrollFactor?.(1);
 
+    house.anchor.set(0.5, 1);
     house.scale.set(propScale);
     house.rotation = 0;
     house.position.set(propX, floorY + REST_FLOOR_HOUSE_SINK_PX);
@@ -5509,6 +5510,7 @@ export class PlayScene implements Scene {
     const { propX, propScale, floorY } = this.getRestFloorPropLayout();
     const house = this.restFloorHouseSprite;
     if (house && house.visible) {
+      house.anchor.set(0.5, 1);
       house.scale.set(propScale);
       house.position.set(propX, floorY + REST_FLOOR_HOUSE_SINK_PX);
     }
