@@ -1883,7 +1883,7 @@ export class PlayScene implements Scene {
     console.log(
       `1000m Rest Floor Y: ${this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS).toFixed(2)}`,
     );
-    this.spawnRestFloorHouse();
+    this.clearRestFloorProps();
     this.scoreboard?.reset();
     this.hudGoldShown = this.goldCount;
     this.hudDiamondShown = this.diamondCount;
@@ -5463,6 +5463,13 @@ export class PlayScene implements Scene {
     house.position.set(propX, floorY + REST_FLOOR_HOUSE_SINK_PX);
     house.visible = true;
     house.alpha = 1;
+  }
+
+  private clearRestFloorProps(): void {
+    this.restFloorPropLayer.removeChildren().forEach((child) => child.destroy());
+    this.restFloorHouseSprite = undefined;
+    this.restFloorCloudSprite = undefined;
+    this.restFloorCloudRightSprite = undefined;
   }
 
   private spawnRestFloorCloud(
