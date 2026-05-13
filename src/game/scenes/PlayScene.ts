@@ -160,6 +160,12 @@ const SFX_REMOTE: Record<SfxId, string> = {
 const GAME_ASSETS = `${import.meta.env.BASE_URL}assets`;
 /** Looping gameplay BGM — `public/assets/Dream Sakura_Loop.ogg`. */
 const BGM_URL = `${GAME_ASSETS}/${encodeURIComponent('Dream Sakura_Loop.ogg')}`;
+const REST_FLOOR_HOUSE_CANDIDATES = [
+  `${GAME_ASSETS}/isohome.png`,
+  `${GAME_ASSETS}/isohome.png.png`,
+  `${GAME_ASSETS}/${encodeURIComponent('isohome #1.png')}`,
+] as const;
+const REST_FLOOR_CLOUD_URL = `${GAME_ASSETS}/Cloud-7.png`;
 
 const SFX_LOCAL: Record<SfxId, string> = {
   tongue_shoot: `${import.meta.env.BASE_URL}audio/tongue_shoot.mp3`,
@@ -483,6 +489,24 @@ const VIEWPORT_SAFE_MARGIN_SCREEN_PX = 40;
 const MOBILE_NARROW_UI_MAX_W = 520;
 const STAIR_GAP_MIN_PX = 250;
 const STAIR_GAP_MAX_PX = 350;
+const REST_FLOOR_INTERVAL_METERS = 1000;
+const REST_FLOOR_MONSTER_CLEAR_METERS = 100;
+const REST_FLOOR_RESUME_ABOVE_PX = 50;
+const REST_FLOOR_TILE_PX = 64;
+const REST_FLOOR_HOUSE_METERS = 1000;
+const REST_FLOOR_HOUSE_SCALE = 1;
+const REST_FLOOR_HOUSE_DEPTH = 100;
+const REST_FLOOR_HOUSE_SCREEN_RIGHT_OFFSET_PX = 480;
+const REST_FLOOR_HOUSE_SINK_PX = 130;
+const REST_FLOOR_CLOUD_DEPTH = 90;
+const REST_FLOOR_CLOUD_WIDTH_PX = 580;
+const REST_FLOOR_CLOUD_SINK_PX = 38;
+const REST_FLOOR_CLOUD_OFFSET_X_PX = -130;
+const REST_FLOOR_CLOUD_RIGHT_OFFSET_X_PX = 170;
+const REST_FLOOR_CLOUD_ROTATION_DEG = -3;
+const REST_FLOOR_CLOUD_BREATH_AMPLITUDE_PX = 4;
+const REST_FLOOR_CLOUD_BREATH_SCALE = 0.018;
+const REST_FLOOR_CLOUD_BREATH_HZ = 0.45;
 const PLAYER_SPAWN_CLEARANCE_PX = 14;
 const GRAPPLE_VERTICAL_REACH_PLATFORMS = 2;
 const GRAPPLE_MIN_TARGET_DISTANCE_PX = 150;
@@ -584,6 +608,7 @@ export class PlayScene implements Scene {
   private fxLayer = new Graphics();
   private platformSpriteLayer = new Container();
   private platformLayer = new Graphics();
+  private restFloorPropLayer = new Container();
   private rippleLayer = new Graphics();
   private collectiblesGfx = new Graphics();
   /** Bottom hazard strip (vector lava fallback; crystal/ice asset removed). */
@@ -736,6 +761,11 @@ export class PlayScene implements Scene {
   private platformTextureSlime?: Texture;
   private platformTextureVolcano?: Texture;
   private platformTextureStorm?: Texture;
+  private restFloorHouseTexture?: Texture;
+  private restFloorHouseSprite?: Sprite;
+  private restFloorCloudTexture?: Texture;
+  private restFloorCloudSprite?: Sprite;
+  private restFloorCloudRightSprite?: Sprite;
   private platformSprites: Container[] = [];
   private platformSpriteModes: Array<'legacy' | 'bead'> = [];
   private platformSpriteCols: number[] = [];
@@ -753,6 +783,7 @@ export class PlayScene implements Scene {
   private worldMaxY = 0;
   private cameraX = 0;
   private cameraY = 0;
+  private restFloorHoldY: number | null = null;
   private highestY = 0;
   private grappleCooldown = 0;
   private grapple: ActiveGrapple | null = null;
@@ -834,6 +865,7 @@ export class PlayScene implements Scene {
       this.jelly,
       this.platformSpriteLayer,
       this.platformLayer,
+      this.restFloorPropLayer,
       this.mushroomEnemyLayer,
       this.mushroomDeathFxLayer,
       this.lavaLayer,
@@ -846,6 +878,8 @@ export class PlayScene implements Scene {
     this.jelly.zIndex = 0;
     this.platformSpriteLayer.zIndex = 2;
     this.platformLayer.zIndex = 3;
+    this.restFloorPropLayer.zIndex = REST_FLOOR_HOUSE_DEPTH;
+    this.restFloorPropLayer.sortableChildren = true;
     /** Above platforms, below FX/player so jumps visually pass in front of enemies. */
     this.mushroomEnemyLayer.zIndex = 4;
     this.mushroomEnemyLayer.sortableChildren = false;
@@ -946,6 +980,7 @@ export class PlayScene implements Scene {
     this.input?.smoothTouchJoystickAxis(dt, this.player.body.grounded);
     this.tickPlayerShield(dt);
     this.tickJumpBuffer(dt);
+    this.updateRestFloorHoldState();
 
     const deepPullMul = this.getDeepRunGrapplePullMul();
     const pullVyCap = GRAPPLE_VERTICAL_BOOST_VY * deepPullMul;
@@ -1002,9 +1037,12 @@ export class PlayScene implements Scene {
 
     if (this.action360State) {
       this.currentGroundPlatform = null;
+      this.updateRestFloorHoldState();
       this.updateCamera(dt);
       this.maybeAdvanceScrollSpeedTierFeedback();
-      this.recycleStairsOffscreen();
+      if (!this.isRestFloorHolding()) {
+        this.recycleStairsOffscreen();
+      }
       this.syncPlatformSpritesFromPlatforms();
       this.checkFallGameOver();
       this.updateRipples(dt);
@@ -1129,10 +1167,13 @@ export class PlayScene implements Scene {
       this.currentGroundPlatform = null;
     }
 
+    this.updateRestFloorHoldState();
     this.updateCamera(dt);
     this.maybeAdvanceScrollSpeedTierFeedback();
     this.clampPlayerToCameraViewport();
-    this.recycleStairsOffscreen();
+    if (!this.isRestFloorHolding()) {
+      this.recycleStairsOffscreen();
+    }
     this.syncPlatformSpritesFromPlatforms();
     this.checkFallGameOver();
     this.updateRipples(dt);
@@ -1428,6 +1469,7 @@ export class PlayScene implements Scene {
         driftDir: Math.random() < 0.5 ? -1 : 1,
         driftVx: 0,
         stairId: index,
+        kind: 'normal',
       };
       this.applyResponsivePlatformWidth(platform);
       if (index === 0) {
@@ -1460,23 +1502,63 @@ export class PlayScene implements Scene {
     }
 
     const toRecycle = this.platforms.filter((p) => p.y > cutoff).sort((a, b) => b.y - a.y);
+    let previousTopY = Math.min(...staying.map((p) => p.y));
     let spawnY = Math.min(
       Math.min(...staying.map((p) => p.y)) - STAIRS.stepPx,
       this.cameraY - 2000,
     );
 
     for (const p of toRecycle) {
-      const platformIdx = this.platforms.indexOf(p);
       this.nextStairId += 1;
       p.stairId = this.nextStairId;
-      p.y = spawnY;
+      p.y = this.pickNextPlatformY(previousTopY, spawnY);
       p.baseWidth = 150 + ((this.nextStairId * 37) % 80);
       p.driftDir = Math.random() < 0.5 ? -1 : 1;
       p.driftVx = 0;
+      p.kind = this.isRestFloorY(p.y) ? 'rest' : 'normal';
       this.applyResponsivePlatformWidth(p);
-      p.x = this.computePlatformSpawnX(this.nextStairId, p.width);
-      spawnY -= this.computeStairGapPx(this.nextStairId);
+      p.x =
+        p.kind === 'rest'
+          ? 0
+          : this.computePlatformSpawnX(this.nextStairId, p.width);
+      previousTopY = p.y;
+      spawnY = p.y - this.computeStairGapPx(this.nextStairId);
     }
+  }
+
+  private pickNextPlatformY(previousTopY: number, normalY: number): number {
+    const restY = this.getNextRestFloorYAbove(previousTopY);
+    if (restY < previousTopY && restY >= normalY) {
+      return restY;
+    }
+    return normalY;
+  }
+
+  private getNextRestFloorYAbove(worldY: number): number {
+    const currentMeters = Math.max(0, (this.climbBaselineY - (worldY - this.player.body.height)) / 12);
+    const nextMeters =
+      Math.floor(currentMeters / REST_FLOOR_INTERVAL_METERS + 1) * REST_FLOOR_INTERVAL_METERS;
+    return this.getRestFloorTopY(nextMeters);
+  }
+
+  private getRestFloorTopY(meters: number): number {
+    return this.climbBaselineY - meters * 12 + this.player.body.height;
+  }
+
+  private getRestFloorMeters(platform: Platform): number | null {
+    if (platform.kind !== 'rest') {
+      return null;
+    }
+    const meters = Math.round((this.climbBaselineY - (platform.y - this.player.body.height)) / 12);
+    return meters > 0 && meters % REST_FLOOR_INTERVAL_METERS === 0 ? meters : null;
+  }
+
+  private isRestFloorY(worldY: number): boolean {
+    const meters = Math.round((this.climbBaselineY - (worldY - this.player.body.height)) / 12);
+    if (meters <= 0 || meters % REST_FLOOR_INTERVAL_METERS !== 0) {
+      return false;
+    }
+    return Math.abs(worldY - this.getRestFloorTopY(meters)) < 0.5;
   }
 
   private computeStairGapPx(stairId: number): number {
@@ -1502,6 +1584,12 @@ export class PlayScene implements Scene {
   }
 
   private applyResponsivePlatformWidth(platform: Platform): void {
+    if (platform.kind === 'rest') {
+      platform.x = 0;
+      platform.width = this.worldWidth;
+      this.updatePlatformBodyFromScale(platform);
+      return;
+    }
     const springPhaseMul = this.getSpringPhasePlatformWidthMul(platform.stairId);
     platform.width =
       platform.baseWidth *
@@ -1636,6 +1724,12 @@ export class PlayScene implements Scene {
     const margin = PLATFORM_EDGE_PADDING_PX;
     const maxPx = Math.max(margin + 1, this.worldWidth - margin);
     for (const p of this.platforms) {
+      if (p.kind === 'rest') {
+        p.x = 0;
+        p.width = this.worldWidth;
+        this.updatePlatformBodyFromScale(p);
+        continue;
+      }
       if (p.x < margin) {
         p.x = margin;
       }
@@ -1680,6 +1774,12 @@ export class PlayScene implements Scene {
         continue;
       }
 
+      if (platform.kind === 'rest') {
+        root.visible = false;
+        continue;
+      }
+      root.visible = true;
+
       if (useBeadBridge) {
         this.syncBeadBridgePlatformSprite(i, root, platform);
       } else {
@@ -1706,6 +1806,7 @@ export class PlayScene implements Scene {
     this.lastScoredStairId = -1;
     this.cameraX = 0;
     this.cameraY = 0;
+    this.restFloorHoldY = null;
     this.highestY = 0;
     this.goldCount = 0;
     this.diamondCount = 0;
@@ -1774,6 +1875,10 @@ export class PlayScene implements Scene {
     this.centerStairZeroUnderCamera();
     this.snapPlayerOntoStairZero();
     this.climbBaselineY = this.player.body.y;
+    console.log(
+      `1000m Rest Floor Y: ${this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS).toFixed(2)}`,
+    );
+    this.spawnRestFloorHouse();
     this.scoreboard?.reset();
     this.hudGoldShown = this.goldCount;
     this.hudDiamondShown = this.diamondCount;
@@ -2077,6 +2182,9 @@ export class PlayScene implements Scene {
   }
 
   private checkFallGameOver(): void {
+    if (this.isRestFloorHolding()) {
+      return;
+    }
     const feetY = this.player.body.y + this.player.body.height;
     const deathLineY = this.getDeathPlaneWorldY();
     if (feetY <= deathLineY) {
@@ -2138,6 +2246,21 @@ export class PlayScene implements Scene {
     return this.cameraY + this.worldHeightFromScreen();
   }
 
+  private isRestFloorHolding(): boolean {
+    return this.restFloorHoldY !== null;
+  }
+
+  private updateRestFloorHoldState(): void {
+    const holdY = this.restFloorHoldY;
+    if (holdY === null) {
+      return;
+    }
+    const feetY = this.player.body.y + this.player.body.height;
+    if (!this.player.body.grounded && feetY <= holdY - REST_FLOOR_RESUME_ABOVE_PX) {
+      this.restFloorHoldY = null;
+    }
+  }
+
   private resetPlayer(): void {
     this.snapPlayerOntoStairZero();
     this.player.body.vx = 0;
@@ -2153,6 +2276,9 @@ export class PlayScene implements Scene {
   }
 
   private landOn(platform: Platform): void {
+    if (platform.kind === 'rest') {
+      this.restFloorHoldY = platform.y;
+    }
     this.ripples.push({
       x: this.player.body.x + this.player.body.width / 2,
       y: platform.y + 46,
@@ -2167,6 +2293,13 @@ export class PlayScene implements Scene {
     const viewportH = this.worldHeightFromScreen();
     const playerCy = this.player.body.y + this.player.body.height * 0.5;
     this.cameraX = (this.worldWidth - viewportW) * 0.5;
+    if (this.isRestFloorHolding()) {
+      const maxCamX = Math.max(0, this.worldWidth - viewportW);
+      this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
+      this.world.position.set(-this.cameraX, -this.cameraY);
+      this.layoutBackground();
+      return;
+    }
     // Death check uses `cameraY + worldHeightFromScreen()` — same as `drawBottomDeathLine` (viewport bottom in world space).
     this.cameraY -= this.getCameraScrollSpeedPx() * dt;
     const desiredPlayerScreenY = viewportH * 0.36;
@@ -2653,6 +2786,13 @@ export class PlayScene implements Scene {
     const widthRatio = Math.max(0.5, 1 - this.level * LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL);
     const edgePad = PLATFORM_EDGE_PADDING_PX;
     for (const p of this.platforms) {
+      if (p.kind === 'rest') {
+        p.x = 0;
+        p.width = this.worldWidth;
+        p.driftVx = 0;
+        this.updatePlatformBodyFromScale(p);
+        continue;
+      }
       const targetBaseWidth = Math.max(
         LEVEL_PLATFORM_MIN_BASE_WIDTH,
         p.baseWidth * widthRatio,
@@ -2869,6 +3009,7 @@ export class PlayScene implements Scene {
     this.collectiblesGfx.clear();
     this.tongueVector.clear();
     this.fxLayer.clear();
+    this.updateRestFloorCloudBreathing();
 
     if (this.tongueArmature && this.tongueDbReady) {
       this.tongueArmature.visible = false;
@@ -5169,6 +5310,10 @@ export class PlayScene implements Scene {
   }
 
   private drawCrystalPlatform(platform: Platform): void {
+    if (platform.kind === 'rest') {
+      this.drawRestFloorPlatform(platform);
+      return;
+    }
     if (!this.platformTexture) {
       this.platformLayer
         .roundRect(platform.x, platform.y, platform.width, platform.height, 6)
@@ -5176,8 +5321,48 @@ export class PlayScene implements Scene {
     }
   }
 
+  private drawRestFloorPlatform(platform: Platform): void {
+    const h = Math.max(platform.height * 1.18, platform.height + 12);
+    const tile = REST_FLOOR_TILE_PX;
+    this.platformLayer
+      .rect(0, platform.y - 4, this.worldWidth, h + 8)
+      .fill({ color: 0x1a1630, alpha: 0.96 })
+      .stroke({ color: 0xb8f7ff, width: 2.5, alpha: 0.88 });
+    this.platformLayer
+      .rect(0, platform.y, this.worldWidth, h * 0.35)
+      .fill({ color: 0x39336c, alpha: 0.9 });
+    const cols = Math.ceil(this.worldWidth / tile);
+    for (let i = 0; i < cols; i += 1) {
+      const x = i * tile;
+      const color = i % 2 === 0 ? 0x302a58 : 0x262044;
+      this.platformLayer
+        .rect(x, platform.y + h * 0.35, Math.min(tile, this.worldWidth - x), h * 0.65)
+        .fill({ color, alpha: 0.95 });
+      this.platformLayer
+        .rect(x, platform.y - 4, 2, h + 8)
+        .fill({ color: 0x80f7ff, alpha: 0.18 });
+    }
+    this.platformLayer
+      .rect(0, platform.y - 6, this.worldWidth, 6)
+      .fill({ color: 0xc8ffff, alpha: 0.78 });
+  }
+
   private async loadPlatformSprite(): Promise<void> {
     this.platformTexture = await this.createCheckerTransparentTexture(crystalPlatformUrl);
+    try {
+      this.restFloorHouseTexture = await this.loadTextureFromCandidates(REST_FLOOR_HOUSE_CANDIDATES);
+      console.log('Loaded rest floor house:', REST_FLOOR_HOUSE_CANDIDATES[0]);
+    } catch {
+      this.restFloorHouseTexture = undefined;
+      console.warn('Failed to load rest floor house asset:', [...REST_FLOOR_HOUSE_CANDIDATES]);
+    }
+    try {
+      this.restFloorCloudTexture = (await Assets.load<Texture>(REST_FLOOR_CLOUD_URL)) as Texture;
+      console.log('Loaded rest floor cloud:', REST_FLOOR_CLOUD_URL);
+    } catch {
+      this.restFloorCloudTexture = undefined;
+      console.warn('Failed to load rest floor cloud asset:', REST_FLOOR_CLOUD_URL);
+    }
     try {
       // Slime tier uses hand-painted grass/dirt tiles (from `spring_.png`); do not run
       // `createEdgeDarkTransparentTexture` — dark soil pixels touch the edges and would be
@@ -5196,6 +5381,106 @@ export class PlayScene implements Scene {
     } catch {
       this.platformTextureStorm = undefined;
     }
+  }
+
+  private spawnRestFloorHouse(): void {
+    const texture = this.restFloorHouseTexture;
+    if (!texture) {
+      return;
+    }
+    const floorY = this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS);
+    const propX =
+      this.cameraX + (this.width - REST_FLOOR_HOUSE_SCREEN_RIGHT_OFFSET_PX) / this.getCameraZoom();
+    this.spawnRestFloorCloud(propX, floorY, 'left');
+    this.spawnRestFloorCloud(propX, floorY, 'right');
+    let house = this.restFloorHouseSprite;
+    if (!house) {
+      house = new Sprite(texture);
+      house.anchor.set(0.5, 1);
+      house.roundPixels = RENDER.pixelArt;
+      house.eventMode = 'none';
+      house.zIndex = REST_FLOOR_HOUSE_DEPTH;
+      this.restFloorHouseSprite = house;
+      this.restFloorPropLayer.addChild(house);
+    } else {
+      house.texture = texture;
+    }
+
+    house.scale.set(REST_FLOOR_HOUSE_SCALE);
+    house.rotation = 0;
+    house.position.set(propX, floorY + REST_FLOOR_HOUSE_SINK_PX);
+    house.visible = true;
+    house.alpha = 1;
+    console.log('House spawned at:', house.x, house.y);
+  }
+
+  private spawnRestFloorCloud(x: number, floorY: number, side: 'left' | 'right'): void {
+    const texture = this.restFloorCloudTexture;
+    if (!texture) {
+      return;
+    }
+    let cloud = side === 'left' ? this.restFloorCloudSprite : this.restFloorCloudRightSprite;
+    if (!cloud) {
+      cloud = new Sprite(texture);
+      cloud.anchor.set(0.5);
+      cloud.roundPixels = RENDER.pixelArt;
+      cloud.eventMode = 'none';
+      cloud.zIndex = REST_FLOOR_CLOUD_DEPTH;
+      if (side === 'left') {
+        this.restFloorCloudSprite = cloud;
+      } else {
+        this.restFloorCloudRightSprite = cloud;
+      }
+      this.restFloorPropLayer.addChild(cloud);
+    } else {
+      cloud.texture = texture;
+    }
+
+    cloud.width = REST_FLOOR_CLOUD_WIDTH_PX;
+    cloud.scale.y = Math.abs(cloud.scale.x);
+    cloud.rotation = (REST_FLOOR_CLOUD_ROTATION_DEG * Math.PI) / 180;
+    const offsetX =
+      side === 'left' ? REST_FLOOR_CLOUD_OFFSET_X_PX : REST_FLOOR_CLOUD_RIGHT_OFFSET_X_PX;
+    cloud.position.set(x + offsetX, floorY + REST_FLOOR_CLOUD_SINK_PX);
+    cloud.visible = true;
+    cloud.alpha = 1;
+    console.log('Rest floor cloud spawned at:', cloud.x, cloud.y);
+  }
+
+  private updateRestFloorCloudBreathing(): void {
+    const floorY = this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS);
+    const propX =
+      this.cameraX + (this.width - REST_FLOOR_HOUSE_SCREEN_RIGHT_OFFSET_PX) / this.getCameraZoom();
+    const breath = Math.sin(this.runTime * Math.PI * 2 * REST_FLOOR_CLOUD_BREATH_HZ);
+    const scale = 1 + breath * REST_FLOOR_CLOUD_BREATH_SCALE;
+    const y = floorY + REST_FLOOR_CLOUD_SINK_PX + breath * REST_FLOOR_CLOUD_BREATH_AMPLITUDE_PX;
+
+    this.applyRestFloorCloudBreath(
+      this.restFloorCloudSprite,
+      propX + REST_FLOOR_CLOUD_OFFSET_X_PX,
+      y,
+      scale,
+    );
+    this.applyRestFloorCloudBreath(
+      this.restFloorCloudRightSprite,
+      propX + REST_FLOOR_CLOUD_RIGHT_OFFSET_X_PX,
+      y,
+      scale,
+    );
+  }
+
+  private applyRestFloorCloudBreath(
+    cloud: Sprite | undefined,
+    x: number,
+    y: number,
+    scale: number,
+  ): void {
+    if (!cloud || !cloud.visible) {
+      return;
+    }
+    cloud.width = REST_FLOOR_CLOUD_WIDTH_PX * scale;
+    cloud.scale.y = Math.abs(cloud.scale.x);
+    cloud.position.set(x, y);
   }
 
   private createPlatformSprites(): void {
@@ -5504,6 +5789,10 @@ export class PlayScene implements Scene {
       i < this.platforms.length;
       i += MUSHROOM_PLATFORM_STRIDE
     ) {
+      const platform = this.platforms[i];
+      if (!platform || !this.canMushroomOccupyPlatform(platform)) {
+        continue;
+      }
       const enemy: MushroomEnemy = {
         platformIdx: i,
         along: 0.3 + Math.random() * 0.4,
@@ -5545,6 +5834,11 @@ export class PlayScene implements Scene {
       if (!platform || !sprite) {
         continue;
       }
+      if (!this.canMushroomOccupyPlatform(platform)) {
+        sprite.visible = false;
+        continue;
+      }
+      sprite.visible = true;
 
       enemy.animTime += dt;
       if (enemy.edgePauseLeft > 0) {
@@ -5612,6 +5906,16 @@ export class PlayScene implements Scene {
         }
       }
     }
+  }
+
+  private canMushroomOccupyPlatform(platform: Platform): boolean {
+    if (platform.kind === 'rest') {
+      return false;
+    }
+    const clearPx = REST_FLOOR_MONSTER_CLEAR_METERS * 12;
+    return !this.platforms.some(
+      (p) => p.kind === 'rest' && Math.abs(p.y - platform.y) <= clearPx,
+    );
   }
 
   /** AABB hit between a tight mushroom hitbox (centered on `wx`, anchored above `wy`) and the player body. */

@@ -9,6 +9,7 @@ export type Platform = {
   driftVx: number;
   /** Monotonic id for higher steps (used for score / grapple bonus). */
   stairId: number;
+  kind?: 'normal' | 'rest';
 };
 
 export type Ripple = {
