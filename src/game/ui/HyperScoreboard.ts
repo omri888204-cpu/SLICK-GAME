@@ -1,6 +1,9 @@
 import { Container, Graphics, Text, type DestroyOptions } from 'pixi.js';
 import { GlowFilter } from 'pixi-filters';
-import { COMBO, SCORE_UI } from '../../config/game.config';
+import { SCORE_UI } from '../../config/game.config';
+
+/** Caps `jumpCount` influence on color cycling so deep runs don't blow out hue churn. */
+const HUD_JUMP_COLOR_SATURATION = 12;
 
 type HudBurstParticle = {
   x: number;
@@ -64,7 +67,7 @@ export class HyperScoreboard extends Container {
   private readonly readoutRoot = new Container();
   private readonly scoreShadow: Text;
   private readonly scoreValue: Text;
-  private readonly multLabel: Text;
+  private readonly jumpsLabel: Text;
   private readonly heightLabel: Text;
   private readonly levelLabel: Text;
   private readonly levelUpLabel: Text;
@@ -148,8 +151,8 @@ export class HyperScoreboard extends Container {
     this.scoreValue.anchor.set(0.5, 0.5);
     this.scoreValue.position.set(0, 0);
 
-    this.multLabel = new Text({
-      text: 'x1',
+    this.jumpsLabel = new Text({
+      text: '↑0',
       style: {
         fill: '#ff3cac',
         fontFamily: 'Arial Black, Impact, sans-serif',
@@ -164,7 +167,7 @@ export class HyperScoreboard extends Container {
         },
       },
     });
-    this.multLabel.anchor.set(0, 0.5);
+    this.jumpsLabel.anchor.set(0, 0.5);
 
     const altStyle = {
       fill: '#8cffee',
@@ -221,7 +224,7 @@ export class HyperScoreboard extends Container {
       this.particleLayer,
       this.titleLabel,
       this.readoutRoot,
-      this.multLabel,
+      this.jumpsLabel,
       this.heightLabel,
       this.levelLabel,
       this.levelUpLabel,
@@ -230,7 +233,7 @@ export class HyperScoreboard extends Container {
     this.particleLayer.zIndex = 8;
     this.titleLabel.zIndex = 5;
     this.readoutRoot.zIndex = 6;
-    this.multLabel.zIndex = 5;
+    this.jumpsLabel.zIndex = 5;
     this.heightLabel.zIndex = 5;
     this.levelLabel.zIndex = 5;
     this.levelUpLabel.zIndex = 9;
@@ -280,15 +283,6 @@ export class HyperScoreboard extends Container {
     this.depthKick = 1;
   }
 
-  triggerApexBurst(): void {
-    this.spawnBurst(38, 1, false);
-  }
-
-  /** Beast Mode: heavier star/confetti mix (electric lime / hot pink bias). */
-  triggerBeastBurst(): void {
-    this.spawnBurst(52, 1.25, true);
-  }
-
   setLevel(level: number): void {
     this.level = Math.max(1, level);
   }
@@ -305,20 +299,17 @@ export class HyperScoreboard extends Container {
   triggerLevelUp(): void {
     this.levelUpAge = 0.7;
     this.levelPulseAge = 0.35;
-    this.spawnBurst(24, 0.95, false);
+    this.spawnBurst(24, 0.95);
   }
 
-  private spawnBurst(count: number, speedMul: number, beastBias: boolean): void {
+  private spawnBurst(count: number, speedMul: number): void {
     const ox = this.readoutRoot.position.x;
     const oy = this.readoutRoot.position.y;
 
     for (let i = 0; i < count; i += 1) {
       const ang = Math.random() * Math.PI * 2;
       const sp = (90 + Math.random() * 175) * speedMul;
-      let hue = Math.random() * 360;
-      if (beastBias) {
-        hue = Math.random() < 0.5 ? 95 + Math.random() * 35 : 320 + Math.random() * 40;
-      }
+      const hue = Math.random() * 360;
 
       this.burstParticles.push({
         x: ox,
@@ -334,7 +325,14 @@ export class HyperScoreboard extends Container {
     }
   }
 
-  update(dt: number, score: number, mult: number, heightMeters: number, runTime: number, level: number): void {
+  update(
+    dt: number,
+    score: number,
+    jumpCount: number,
+    heightMeters: number,
+    runTime: number,
+    level: number,
+  ): void {
     const midY = this.panelH * 0.5;
 
     if (this.punchAge > 0) {
@@ -364,21 +362,21 @@ export class HyperScoreboard extends Container {
 
     const climbNorm = Math.min(1, heightMeters / SCORE_UI.climbBloomSaturationMeters);
     const pulse = Math.sin(runTime * SCORE_UI.rainbowPulseHz * Math.PI * 2);
-    const multPulse = 1 + Math.min(mult / COMBO.maxMultiplier, 1) * 0.85;
-    const hueBase =
-      (runTime * 58 + mult * 62 * multPulse + pulse * 36 * mult) % 360;
-    const sat = 90 + 12 * pulse * Math.min(mult / 3, 1);
-    const light = 52 + 24 * climbNorm + 8 * Math.sin(runTime * 4.5 + mult);
+    /** Color drift driven by total jumps so the HUD breathes more the longer you climb. */
+    const jumpDrive = Math.min(jumpCount, HUD_JUMP_COLOR_SATURATION);
+    const hueBase = (runTime * 58 + jumpDrive * 14 + pulse * 22) % 360;
+    const sat = 90 + 8 * pulse * Math.min(jumpDrive / 6, 1);
+    const light = 52 + 24 * climbNorm + 8 * Math.sin(runTime * 4.5);
 
     const scoreFill = hslToFill(hueBase, sat, light);
-    const multHue = (hueBase + 140 + pulse * 22) % 360;
-    const multFill = hslToFill(multHue, 94, 56);
+    const jumpHue = (hueBase + 140 + pulse * 22) % 360;
+    const jumpFill = hslToFill(jumpHue, 94, 56);
 
     this.scoreValue.text = String(score);
     this.scoreShadow.text = String(score);
     this.scoreValue.style.fill = scoreFill;
-    this.multLabel.text = `x${mult}`;
-    this.multLabel.style.fill = multFill;
+    this.jumpsLabel.text = `↑${jumpCount}`;
+    this.jumpsLabel.style.fill = jumpFill;
     this.heightLabel.text = `${heightMeters} m`;
     this.level = Math.max(1, level);
     this.levelLabel.text = `Lv${this.level}`;
@@ -387,18 +385,18 @@ export class HyperScoreboard extends Container {
 
     const halfScore = this.scoreValue.width * 0.5;
     const midRight = this.panelW * 0.5 + halfScore + 14;
-    this.multLabel.position.set(midRight, midY);
+    this.jumpsLabel.position.set(midRight, midY);
 
-    this.heightLabel.position.set(midRight + this.multLabel.width + 12, midY);
+    this.heightLabel.position.set(midRight + this.jumpsLabel.width + 12, midY);
     this.levelLabel.position.set(6, midY);
     this.titleLabel.position.set(this.panelW - 6, 8);
 
     const padR = 12;
     this.hintLabel.position.set(this.panelW - padR, midY);
 
-    // Cap bloom so high altitude / combo doesn’t blow out to a white flash on some GPUs.
-    this.glowFilter.outerStrength = Math.min(6.5, 1.5 + climbNorm * 5.5 + mult * 0.35);
-    this.glowFilter.distance = Math.min(22, 8 + climbNorm * 14 + mult * 0.45);
+    // Cap bloom so altitude doesn’t blow out to a white flash on some GPUs.
+    this.glowFilter.outerStrength = Math.min(6.5, 1.5 + climbNorm * 5.5);
+    this.glowFilter.distance = Math.min(22, 8 + climbNorm * 14);
     this.glowFilter.color = hslToFill((hueBase + 275) % 360, 72, 52);
 
     if (this.levelPulseAge > 0) {

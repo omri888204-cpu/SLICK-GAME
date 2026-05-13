@@ -15,16 +15,21 @@ import {
 } from 'pixi.js';
 import { PixiFactory, type PixiArmatureDisplay } from 'pixi-dragonbones-runtime';
 import {
-  COMBO,
   COLLECTIBLES,
   GRAPPLE,
-  PHYSICS,
   RENDER,
   SCORE_UI,
   STAIRS,
   WALK,
 } from '../../config/game.config';
 import { HyperScoreboard } from '../ui/HyperScoreboard';
+import {
+  ComboBadge,
+  COMBO_BADGE_H,
+  COMBO_BADGE_W,
+  comboStreakToWordTier,
+} from '../ui/ComboBadge';
+import { ComboSynth } from '../audio/ComboSynth';
 import { Player } from '../entities/Player';
 import { fetchTopLeaderboard, saveScore, type LeaderboardEntry } from '../services/leaderboard';
 import { getSavedNickname } from '../services/playerProfile';
@@ -41,19 +46,6 @@ import crystalPlatformUrl from '../../assets/sprites/crystal-platform.png';
 import slimePlatformUrl from '../../assets/sprites/slime-platform.png';
 import volcanoPlatformUrl from '../../assets/sprites/volcano-platform.png';
 import type { Scene } from './Scene';
-
-type ComboPopup = {
-  label: Text;
-  t: number;
-  wx: number;
-  wy: number;
-};
-
-type BeastParticle = {
-  x: number;
-  y: number;
-  age: number;
-};
 
 type DiamondShineSpark = {
   x: number;
@@ -73,25 +65,12 @@ type LevelUpParticle = {
   life: number;
 };
 
-type Action360Phase = 'attach' | 'rotate';
-
-type Action360State = {
-  phase: Action360Phase;
-  timeLeft: number;
-  hookStairId: number;
-  hookX: number;
-  hookY: number;
-  orbitRadius: number;
-  orbitBaseAngle: number;
-};
-
-type Action360Spark = {
+type RecordedPlatform = {
   x: number;
   y: number;
-  vx: number;
-  vy: number;
-  age: number;
-  life: number;
+  width: number;
+  height: number;
+  stairId: number;
 };
 
 type TouchPointerTrack = {
@@ -155,23 +134,22 @@ const SFX_REMOTE: Record<SfxId, string> = {
     'https://assets.mixkit.co/active_storage/sfx/2070/2070-preview.mp3',
 };
 
-/** Game binaries (music, DragonBones, diamond SFX) live in `public/assets/`. */
+/** Game binaries live in `public/assets/` and grouped subfolders. */
 const GAME_ASSETS = `${import.meta.env.BASE_URL}assets`;
-/** Looping gameplay BGM — `public/assets/Dream Sakura_Loop.ogg`. */
-const BGM_URL = `${GAME_ASSETS}/${encodeURIComponent('Dream Sakura_Loop.ogg')}`;
+/** Looping gameplay BGM — `public/assets/music/Dream Sakura_Loop.ogg`. */
+const BGM_URL = `${GAME_ASSETS}/music/${encodeURIComponent('Dream Sakura_Loop.ogg')}`;
 const REST_FLOOR_HOUSE_CANDIDATES = [
-  `${GAME_ASSETS}/isohome.png`,
-  `${GAME_ASSETS}/isohome.png.png`,
-  `${GAME_ASSETS}/${encodeURIComponent('isohome #1.png')}`,
+  `${GAME_ASSETS}/house/isohome.png.png`,
+  `${GAME_ASSETS}/house/${encodeURIComponent('House 1.png')}`,
 ] as const;
-const REST_FLOOR_CLOUD_URL = `${GAME_ASSETS}/Cloud-7.png`;
-const REST_FLOOR_SUPPLIES_URL = `${GAME_ASSETS}/supplies_objects.png`;
+const REST_FLOOR_CLOUD_URL = `${GAME_ASSETS}/objects/Cloud.png`;
+const REST_FLOOR_SUPPLIES_URL = `${GAME_ASSETS}/objects/supplies_objects.png`;
 
 const SFX_LOCAL: Record<SfxId, string> = {
   tongue_shoot: `${import.meta.env.BASE_URL}audio/tongue_shoot.mp3`,
   tongue_hit: `${import.meta.env.BASE_URL}audio/tongue_hit.mp3`,
   collect_coin: `${import.meta.env.BASE_URL}audio/collect_coin.mp3`,
-  collect_diamond: `${GAME_ASSETS}/diamond_collect.mp3`,
+  collect_diamond: `${GAME_ASSETS}/music/diamond_collect.mp3`,
   player_land: `${import.meta.env.BASE_URL}audio/player_land.mp3`,
 };
 
@@ -183,42 +161,91 @@ const SFX_LOCAL: Record<SfxId, string> = {
 type Bg7ParallaxLayerSpec = {
   readonly candidates: readonly string[];
   readonly speed: number;
+  readonly padToTierBounds?: boolean;
 };
 
-const BG7_PARALLAX_LAYERS: readonly Bg7ParallaxLayerSpec[] = [
-  {
-    candidates: [
-      `${GAME_ASSETS}/bg_7_0003_layer_3.jpg`,
-      `${GAME_ASSETS}/bg_7_0003_layer_3.png`,
-    ],
-    speed: 0.1,
-  },
-  {
-    candidates: [
-      `${GAME_ASSETS}/bg_7_0002_layer_2.jpg`,
-      `${GAME_ASSETS}/bg_7_0002_layer_2.png`,
-    ],
-    speed: 0.3,
-  },
-  {
-    candidates: [
-      `${GAME_ASSETS}/bg_7_0001_layer_1.jpg`,
-      `${GAME_ASSETS}/bg_7_0001_layer_1.png`,
-    ],
-    speed: 0.6,
-  },
-  {
-    candidates: [
-      `${GAME_ASSETS}/bg_7_0000_layer_0.jpg`,
-      `${GAME_ASSETS}/bg_7_0000_layer_0.png`,
-    ],
-    speed: 1.0,
-  },
-] as const;
+type BackgroundTierId = '0-1000m' | '1000-2000m' | '2000m';
 
-const BG7_FALLBACK_CANDIDATES = [
-  `${GAME_ASSETS}/bg_7.jpg`,
-  `${GAME_ASSETS}/bg_7.png`,
+type BackgroundTierSpec = {
+  readonly id: BackgroundTierId;
+  readonly minMeters: number;
+  readonly artWidth: number;
+  readonly artHeight: number;
+  readonly layers: readonly Bg7ParallaxLayerSpec[];
+  readonly fallbackCandidates: readonly string[];
+  readonly fallbackSpeed: number;
+};
+
+type LoadedBackgroundTier = {
+  readonly id: BackgroundTierId;
+  readonly layers: readonly { readonly texture: Texture; readonly speed: number }[];
+};
+
+const BACKGROUND_TIERS: readonly BackgroundTierSpec[] = [
+  {
+    id: '0-1000m',
+    minMeters: 0,
+    artWidth: 1456,
+    artHeight: 816,
+    layers: [
+      {
+        candidates: [`${GAME_ASSETS}/0-1000M/bg_7_0003_layer_3.png`],
+        speed: 0.1,
+      },
+      {
+        candidates: [`${GAME_ASSETS}/0-1000M/bg_7_0002_layer_2.png`],
+        speed: 0.3,
+      },
+      {
+        candidates: [`${GAME_ASSETS}/0-1000M/bg_7_0001_layer_1.png`],
+        speed: 0.6,
+      },
+    ],
+    fallbackCandidates: [`${GAME_ASSETS}/0-1000M/bg_7.png`],
+    fallbackSpeed: 0.45,
+  },
+  {
+    id: '1000-2000m',
+    minMeters: 1000,
+    artWidth: 1456,
+    artHeight: 816,
+    layers: [
+      {
+        candidates: [`${GAME_ASSETS}/1K-2KM/bg_4_0002_layer_2.png`],
+        speed: 0.1,
+      },
+      {
+        candidates: [`${GAME_ASSETS}/1K-2KM/bg_4_0001_layer_1.png`],
+        speed: 0.3,
+        padToTierBounds: true,
+      },
+      {
+        candidates: [`${GAME_ASSETS}/1K-2KM/bg_4_0000_layer_0.png`],
+        speed: 1.0,
+      },
+    ],
+    fallbackCandidates: [`${GAME_ASSETS}/1K-2KM/bg_4.png`],
+    fallbackSpeed: 0.45,
+  },
+  {
+    id: '2000m',
+    minMeters: 2000,
+    artWidth: 1456,
+    artHeight: 816,
+    layers: [
+      {
+        candidates: [`${GAME_ASSETS}/2K-3KM/bg_1_layer_3.png`],
+        speed: 0.1,
+      },
+      {
+        candidates: [`${GAME_ASSETS}/2K-3KM/bg_1_layer_2.png`],
+        speed: 0.3,
+        padToTierBounds: true,
+      },
+    ],
+    fallbackCandidates: [`${GAME_ASSETS}/2K-3KM/bg_1.png`],
+    fallbackSpeed: 0.45,
+  },
 ] as const;
 
 /**
@@ -228,14 +255,14 @@ const BG7_FALLBACK_CANDIDATES = [
  * attack into separate files (rather than one combined sheet). Frame counts come from
  * `width / 80`: idle = 7, run = 8, attack = 10.
  */
-const MUSHROOM_IDLE_URL = `${GAME_ASSETS}/Mushroom-Idle.png`;
-const MUSHROOM_RUN_URL = `${GAME_ASSETS}/Mushroom-Run.png`;
-const MUSHROOM_ATTACK_URL = `${GAME_ASSETS}/Mushroom-Attack.png`;
+const MUSHROOM_IDLE_URL = `${GAME_ASSETS}/monsters/Mushroom-Idle.png`;
+const MUSHROOM_RUN_URL = `${GAME_ASSETS}/monsters/Mushroom-Run.png`;
+const MUSHROOM_ATTACK_URL = `${GAME_ASSETS}/monsters/Mushroom-Attack.png`;
 /** Horizontal strip: same frame size as idle/run/attack; plays before `blood.png` burst. */
-const MUSHROOM_DIE_URL = `${GAME_ASSETS}/Mushroom-Die.png`;
+const MUSHROOM_DIE_URL = `${GAME_ASSETS}/monsters/Mushroom-Die.png`;
 const MUSHROOM_DIE_FRAME_COUNT = 16;
-/** 6×6 sheet, first 22 frames = splatter sequence (see `public/assets/blood.png`). */
-const BLOOD_SHEET_URL = `${GAME_ASSETS}/blood.png`;
+/** 6×6 sheet, first 22 frames = splatter sequence. */
+const BLOOD_SHEET_URL = `${GAME_ASSETS}/monsters/blood.png`;
 const BLOOD_SHEET_COLS = 6;
 const BLOOD_EFFECT_FRAME_COUNT = 22;
 const MUSHROOM_DEATH_DIE_FPS = 18;
@@ -287,13 +314,28 @@ const HEALTH_HUD_CLEAR_LEFT_COLUMN_PX = 16;
 const HEALTH_HUD_Y_OFFSET_PX = 6;
 /** Vertical gap between timer text and heart HUD. */
 const HEALTH_BAR_UNDER_TIMER_GAP_PX = 8;
-/** `public/assets/heart_counter-Sheet.png` — 192×992, 31 rows × 192×32 (see `heartHudSteadyFrameIndices`). */
-const HEART_COUNTER_SHEET_URL = `${GAME_ASSETS}/heart_counter-Sheet.png`;
+/** `public/assets/Player staff/heart_counter-Sheet.png` — 192×992, 31 rows × 192×32. */
+const HEART_COUNTER_SHEET_URL = `${GAME_ASSETS}/${encodeURIComponent('Player staff')}/heart_counter-Sheet.png`;
 const HEART_COUNTER_FRAME_W = 192;
 const HEART_COUNTER_FRAME_H = 32;
 const HEART_COUNTER_FRAME_COUNT = 31;
 const HEART_HUD_DISPLAY_WIDTH_PX = 160;
 const HEART_HUD_SCALE = HEART_HUD_DISPLAY_WIDTH_PX / HEART_COUNTER_FRAME_W;
+/** `public/assets/Player staff/mana_counter-Sheet.png` — 208×992, 31 rows × 208×32. */
+const MANA_COUNTER_SHEET_URL = `${GAME_ASSETS}/${encodeURIComponent('Player staff')}/mana_counter-Sheet.png`;
+const MANA_COUNTER_FRAME_W = 208;
+const MANA_COUNTER_FRAME_H = 32;
+const MANA_COUNTER_FRAME_COUNT = 31;
+const MANA_HUD_DISPLAY_WIDTH_PX = HEART_HUD_DISPLAY_WIDTH_PX;
+const MANA_HUD_SCALE = MANA_HUD_DISPLAY_WIDTH_PX / MANA_COUNTER_FRAME_W;
+const MANA_BAR_UNDER_HEALTH_GAP_PX = 2;
+const PLAYER_MAX_MANA = 100;
+const MANA_ALTITUDE_DRAIN_PER_SEC = 0.75;
+const MANA_AIR_DRAIN_PER_SEC = 2.6;
+const MANA_UPWARD_CLIMB_DRAIN_PER_METER = 0.18;
+const MANA_JUMP_COST = 4;
+const MANA_STAND_RECOVERY_PER_SEC = 8;
+const MANA_STAND_STILL_VX_PX = 35;
 const HEART_HUD_PULSE_HZ = 2.8;
 const HEART_HUD_HIT_FLASH_SEC = 0.16;
 
@@ -424,16 +466,6 @@ const DARK_BG_MAX_CHANNEL = 42;
 const COLLECTIBLE_LINES_HALF_GAP_PX = 13;
 /** Vertical offset from the diamond HUD icon row to the shield row (same column as diamond). */
 const COLLECTIBLE_SHIELD_ICON_BELOW_DIAMOND_PX = 22;
-/** Touch-only boost tongue button — sits under Gold/Diamonds (right-aligned). */
-const TONGUE_BOOST_BTN_W = 118;
-const TONGUE_BOOST_BTN_H = 38;
-/**
- * TONGUE combo boost: longer gap between landings, then the chain **resets** after this many seconds
- * (so the sequence cannot run forever from landings alone).
- */
-const TONGUE_COMBO_BOOST_DURATION_SEC = 10;
-/** Landing combo when `stairId` regresses after recycle — must climb ≥ this many px higher (world Y↓). */
-const COMBO_LAND_MIN_WORLD_Y_DELTA_PX = 6;
 const PLATFORM_SCALE = 2.1;
 /** Horizontal repeat width of one grass/dirt block inside `slime-platform.png` (atlas is tiled). */
 const SLIME_PLATFORM_TILE_PX = 46;
@@ -448,16 +480,9 @@ const SCROLL_SPEED_WARMUP_METERS = 300;
 const SCROLL_SPEED_STEP_METERS = 200;
 /** Per milestone delta (3× legacy 0.05 → faster difficulty ramp). */
 const SCROLL_SPEED_STEP_DELTA = 0.15;
-/** Combo / tongue timing: extra chain-window mult from climb height (HUD m), independent of scroll warmup. */
-const COMBO_CLIMB_EASE_METERS_STEP = 160;
-const COMBO_CLIMB_EASE_PER_STEP = 0.12;
-const COMBO_CLIMB_EASE_MAX = 1.25;
-/** Extra combo ease from post-warmup scroll-speed tier (stacks with climb ease). */
-const COMBO_SCROLL_EASE_COEF = 0.34;
-const COMBO_SCROLL_EASE_MAX_STEPS = 6;
-/** Start subtle sustained camera shake once altitude scroll mult ≥ this × base (see `getAltitudeSpeedMultiplier`). */
-const ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD = 3;
-const SPEED_TIER_SHAKE_SEC = 0.2;
+/** Continuous altitude shake disabled; it became visible jitter around the 3000m+ tiers. */
+const ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD = Number.POSITIVE_INFINITY;
+const SPEED_TIER_SHAKE_SEC = 0;
 const SPEED_TIER_UI_FLASH_SEC = 0.22;
 /** Cool lavender pulse — avoids harsh fullscreen white flash (read as glitch on some GPUs). */
 const SPEED_TIER_PULSE_COLOR = 0xb8a0ff;
@@ -524,12 +549,6 @@ const GRAPPLE_MIN_TARGET_DISTANCE_PX = 150;
 const GRAPPLE_VERTICAL_BOOST_VY = -640;
 /** Horizontal easing toward the stair center during tongue pull (× dt). */
 const GRAPPLE_PULL_HORIZONTAL_LERP_PER_SEC = 17;
-/** Gap between TONGUE and 360 boost HUD buttons (screen px). */
-const BOOST_ACTION_BTN_GAP_PX = 8;
-/** Top-right HUD slot for boost buttons (screen px, `PlayScene` / `uiLayer` space). */
-const BOOST_BTN_SCREEN_MARGIN_RIGHT_PX = 14;
-/** Below the scoreboard band — larger Y moves TONGUE/360 further down (still right-aligned). */
-const BOOST_BTN_SCREEN_MARGIN_TOP_PX = 104;
 const GRAPPLE_STOP_ABOVE_PLATFORM_PX = 20;
 const LEVEL_MAX = 100;
 const LEVEL_SCORE_STEP = 1000;
@@ -538,46 +557,39 @@ const LEVEL_PLATFORM_SPEED_PER_LEVEL = 5;
 const LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL = 0.005;
 const LEVEL_PLATFORM_MIN_BASE_WIDTH = 72;
 const LEVEL_MILESTONE_STEP = 10;
-/** After each new level (score tier), short move + jump feel boost. */
-const LEVEL_UP_BOOST_DURATION_SEC = 4.5;
-/** Cap total stacked duration when multiple levels are gained in one score tick. */
-const LEVEL_UP_BOOST_TIME_CAP_SEC = 14;
-const LEVEL_UP_BOOST_JUMP_MUL = 1.2;
-const LEVEL_UP_BOOST_SCROLL_MUL = 1.1;
-/** Spend this much from gold/diamond bank to auto-grant one shield (no world pickup). */
+/** Spend this much from gold/diamond bank to activate one fall-protection shield. */
 const SHIELD_BANK_GOLD = 10;
 const SHIELD_BANK_DIAMOND = 5;
-/** Shield break: teleport climb (few stair gaps) + upward impulse — large values strand the player above the pool. */
-const SHIELD_SUPER_LAUNCH_STAIR_COUNT = 4;
-/**
- * After launch, feet must stay at/under the pool's top tread (world Y grows downward).
- * Max rise uses `feetY - minTopY + this` so feet end near `minTopY` (tiny slack for one frame of vy).
- */
-const SHIELD_LAUNCH_MAX_FEET_ABOVE_TOP_PX = 28;
+/** On fall-save, place the player exactly this many platform gaps above the last recorded platform. */
+const SHIELD_BOUNCE_PLATFORM_RISE_COUNT = 5;
 /** After teleport, recycle passes so low stairs repack above the new camera. */
 const SHIELD_LAUNCH_RECYCLE_PASSES = 28;
-const FLASH_SKILL_BOOST_DURATION_SEC = 4;
+const SHIELD_SAVE_FLASH_SEC = 0.42;
 const JUMP_BUFFER_SEC = 0.1;
-const COMBO_BOOST_JUMP_THRESHOLD = 3;
-const COMBO_BOOST_SPEED_MULT = 1.5;
 /**
- * HUD climb (m): while ×6+ beast combo, Flash skill (tongue / 360 window) stays pegged — deep-run relief,
- * especially on touch where scroll + cadence punish drop-offs.
+ * Combo chain rules:
+ *   - Each successful jump within {@link COMBO_CHAIN_WINDOW_SEC} of the previous one **and**
+ *     starting from a higher world position (y smaller) increments `comboCount`.
+ *   - Jumping in place, falling between jumps, or pausing >= {@link COMBO_CHAIN_WINDOW_SEC} resets it.
+ *   - Streak {@link COMBO_GLOW_STREAK} → character glow + tint pulse turns on.
+ *   - Streak {@link COMBO_SUPER_TONGUE_STREAK} → Super Tongue button appears (one-press freecast +
+ *     {@link SUPER_TONGUE_BUFF_DURATION_SEC} of zero-cooldown follow-up grapples).
  */
-const FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS = 4000;
-/** Extra combo-window / Flash-duration multiplier once deep (stacks with climb + scroll ease caps). */
-const COMBO_DEEP_RUN_EXTRA_ALTITUDE_EASE = 1.75;
-/** Stronger baseline / Flash jumps once deep (HUD m, same threshold as combo peg). */
-const DEEP_RUN_JUMP_MULTIPLIER = 1.42;
-/** Tongue pull / lateral snap vs base grapple tuning (`GRAPPLE_VERTICAL_BOOST_VY`, horizontal lerp). */
-const DEEP_RUN_GRAPPLE_PULL_SPEED_MULT = 4.25;
-const FLASH_TONGUE_COOLDOWN_SPEEDUP = 2;
-const FLASH_BOOST_STAIR_COUNT = 4;
-const FLASH_TONGUE_RAY_WIDTH_MULTIPLIER = 2.4;
-const ACTION360_ATTACH_SEC = 0.72;
-const ACTION360_ROTATE_SEC = 2.6;
-const ACTION360_ROTATIONS = 2;
-const ACTION360_TARGET_STAIRS_UP = 3;
+const COMBO_CHAIN_WINDOW_SEC = 2.0;
+const COMBO_MIN_CLIMB_PX = 6;
+const COMBO_GLOW_STREAK = 15;
+const COMBO_SUPER_TONGUE_STREAK = 22;
+const COMBO_BADGE_X = 12;
+/** Y of badge top — sits below the PAUSE button (matches `HEADER_PAUSE_BTN_H` + gap). */
+const COMBO_BADGE_Y =
+  UI_SAFE_PAD_TOP + UI_HEADER_H + HEADER_PAUSE_BELOW_HEADER_GAP_PX + HEADER_PAUSE_BTN_H + 12;
+/** Super Tongue button layout (X aligned with badge left edge, sits below the badge). */
+const SUPER_TONGUE_BTN_W = COMBO_BADGE_W;
+const SUPER_TONGUE_BTN_H = 44;
+const SUPER_TONGUE_BTN_Y = COMBO_BADGE_Y + COMBO_BADGE_H + 12;
+/** Super Tongue effects (matches the user-confirmed "B" recipe). */
+const SUPER_TONGUE_STAIRS_UP = 4;
+const SUPER_TONGUE_BUFF_DURATION_SEC = 3.0;
 const TOUCH_SWIPE_UP_MIN_PX = 18;
 const TOUCH_SWIPE_JUMP_MIN_DISTANCE_PX = 20;
 const TOUCH_SWIPE_UPWARD_RATIO_MIN = 0.4;
@@ -612,8 +624,14 @@ export class PlayScene implements Scene {
    */
   private backgroundRoot = new Container();
   private readonly bgBackdropFill = new Graphics();
-  /** Back → front: matches `BG7_PARALLAX_LAYERS` order (sky … flowers). */
+  private readonly bgOverlayRoot = new Container();
+  private readonly bgOverlayMask = new Graphics();
+  /** Back → front: matches the active entry from `BACKGROUND_TIERS`. */
   private bgParallaxLayers: { tile: TilingSprite; speed: number }[] = [];
+  private bgOverlayLayers: { tile: TilingSprite; speed: number }[] = [];
+  private loadedBackgroundTiers = new Map<BackgroundTierId, LoadedBackgroundTier>();
+  private activeBackgroundTierId?: BackgroundTierId;
+  private activeOverlayBackgroundTierId?: BackgroundTierId;
   private jelly = new Graphics();
   private fxLayer = new Graphics();
   private platformSpriteLayer = new Container();
@@ -654,7 +672,11 @@ export class PlayScene implements Scene {
   private playerInvulnBlinkPhase = 0;
   private healthHudRoot = new Container();
   private heartCounterTextures: Texture[] = [];
+  private manaCounterTextures: Texture[] = [];
   private heartHudSprite = new Sprite();
+  private manaHudSprite = new Sprite();
+  private playerMana = PLAYER_MAX_MANA;
+  private previousManaDrainY = 0;
   /** Filled segment count (0..10) shown after transitions; matches `heartHudSegmentsFromPlayerHealth`. */
   private heartHudSegmentL = heartHudSegmentsFromPlayerHealth(PLAYER_MAX_HEALTH);
   private heartHudTransTime = 0;
@@ -694,19 +716,13 @@ export class PlayScene implements Scene {
   private collectibleHudGoldText?: Text;
   private collectibleHudDiamondText?: Text;
   private collectibleHudShieldText?: Text;
-  private tongueBoostButtonRoot = new Container();
-  private tongueBoostButtonGfx = new Graphics();
-  private tongueBoostLabel?: Text;
-  private tongueBoostButtonPressed = false;
-  private action360ButtonRoot = new Container();
-  private action360ButtonGfx = new Graphics();
-  private action360ButtonLabel?: Text;
-  private action360ButtonPressed = false;
   /** Player `body.y` at run start — climb height = baseline minus current y (px). */
   private climbBaselineY = 0;
   private windParticles: WindParticle[] = [];
   private windSpawnAcc = 0;
   private climbHudText?: Text;
+  /** New jump-counter HUD line beneath the climb readout. Driven by `this.jumpCount`. */
+  private jumpsHudText?: Text;
   private timerHudText?: Text;
   private hurryBannerRoot = new Container();
   private hurryBannerGfx = new Graphics();
@@ -736,12 +752,6 @@ export class PlayScene implements Scene {
   private deathSubmitted = false;
   /** Latest Top 5 from Firestore (refreshed after each save and when opening leaderboard). */
   private lastLeaderboardTop: LeaderboardEntry[] = [];
-  /** While `runTime < this`, climbing combo expires using `TONGUE_COMBO_BOOST_DURATION_SEC` instead of `COMBO.chainWindowSec`. */
-  private tongueBoostComboExtendUntil = -Infinity;
-  /** When reached, combo boost ends: chain clears (see `expireComboIfNeeded`). Refreshed on each TONGUE boost press. */
-  private tongueBoostComboResetAt: number | null = null;
-  /** Max seconds between landings while TONGUE boost extend is active (set at press, matches `tongueBoostComboResetAt`). */
-  private tongueBoostChainWindowSec: number | null = null;
   private collectibles: Collectible[] = [];
   private goldCount = 0;
   private diamondCount = 0;
@@ -810,18 +820,34 @@ export class PlayScene implements Scene {
   /** Next id assigned to a stair recycled to the top. */
   private nextStairId = 0;
 
-  /** Successful chains within `COMBO.chainWindowSec`; 0 = idle. */
-  private comboChain = 0;
-  private platformJumpChain = 0;
+  /**
+   * Total successful jumps this run. Incremented by `triggerJumpAction`; displayed in the HUD.
+   * Drives the combo chain together with `comboCount` (consecutive climbing jumps only).
+   */
+  private jumpCount = 0;
+  /** Active combo streak length (≥ 2 = badge visible). Reset by expiry, non-climbing jumps, or death. */
+  private comboCount = 0;
+  /** `body.y` at the moment of the last counted jump — used to verify the next jump climbed higher. */
+  private comboLastJumpY = Number.POSITIVE_INFINITY;
+  /** `runTime` at the moment of the last counted jump — used for the chain-window expiry. */
+  private comboLastJumpTime = -1e9;
+  /** Visual badge in the upper-left; created in `setupComboHud`. */
+  private comboBadge?: ComboBadge;
+  /** Lazy WebAudio synth that plays the tier hit on each combo increment. */
+  private comboSynth?: ComboSynth;
+  /** Streak-22 reward: visible only while {@link comboCount} ≥ {@link COMBO_SUPER_TONGUE_STREAK}. */
+  private superTongueBtnRoot = new Container();
+  private superTongueBtnGfx = new Graphics();
+  private superTongueBtnLabel?: Text;
+  private superTongueBtnAvailable = false;
+  private superTongueBtnPulse = 0;
+  /** Seconds left of "free chain grapple" buff after pressing Super Tongue. */
+  private superTongueBuffTime = 0;
   private jumpBufferTimeLeft = 0;
-  private lastChainTime = -1e9;
   private runTime = 0;
   private hurryUpTimeLeft = 0;
   private hurryBannerX = 0;
-  private comboPopups: ComboPopup[] = [];
-  private beastParticles: BeastParticle[] = [];
   private diamondShineSparks: DiamondShineSpark[] = [];
-  private beastParticleSpawnAcc = 0;
   private shakeTime = 0;
   private shakeOffsetX = 0;
   private shakeOffsetY = 0;
@@ -833,23 +859,16 @@ export class PlayScene implements Scene {
   private levelUpParticles: LevelUpParticle[] = [];
   private currentBackgroundColor = 0x000000;
   private levelUpFloatText?: Text;
-  private flashSkillBoostTime = 0;
-  /** Tracks ×6+ combo threshold for one-shot Flash arm only (avoids refreshing boost every frame). */
-  private beastComboAtLeastSixPrev = false;
-  private action360State: Action360State | null = null;
-  private action360Sparks: Action360Spark[] = [];
   private jumpArcAssistTime = 0;
   private jumpArcAssistDuration = 0;
   private jumpArcStartCenterX = 0;
   private jumpArcTargetCenterX = 0;
-  /** Level-up reward: faster scroll + stronger jumps for a few seconds. */
-  private levelUpBoostTime = 0;
   /**
-   * Reserve shield charges from the gold/diamond bank. An active shield lives on
-   * `player.isShielded` and expires or breaks independently.
+   * Fall-protection shield state. An active shield is bought from the gold/diamond bank and is
+   * consumed only by the death-zone fall save.
    */
-  private shieldStock = 0;
-  private shieldTimeLeft = 0;
+  private shieldSaveFlashTime = 0;
+  private lastRecordedPlatform: RecordedPlatform | null = null;
   async init(app: Application): Promise<void> {
     this.app = app;
     this.width = app.screen.width;
@@ -932,9 +951,8 @@ export class PlayScene implements Scene {
     this.input = new InputManager(app);
     this.input.attach();
     this.setupTouchControlsOverlay(app);
-    this.setupTongueBoostButton(app);
-    this.setupAction360Button(app);
     this.setupClimbHud(app);
+    this.setupComboHud();
     this.setupAutoScrollHud();
     this.setupGameOverUi();
     this.touchGlobalAnywhereLock = this.loadTouchGlobalSteeringPreference();
@@ -964,6 +982,7 @@ export class PlayScene implements Scene {
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
     this.tickHeartHud(dt);
     this.enforceHealthInvariant();
+    this.updateMana(dt);
     if (this.gameOver) {
       this.updateScreenShake(dt);
       this.refreshGameOverScoreText();
@@ -976,30 +995,23 @@ export class PlayScene implements Scene {
       return;
     }
     this.runTime += dt;
-    if (this.levelUpBoostTime > 0) {
-      this.levelUpBoostTime = Math.max(0, this.levelUpBoostTime - dt);
-    }
-    this.expireComboIfNeeded();
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
-    this.updateFlashSkillBoost(dt);
-    this.syncBoostHudButtonsVisibility();
     this.updateTouchRipples(dt);
     this.updateGrappleCooldownFeedback();
     this.updateLevelProgress();
     this.updatePlatformDifficulty(dt);
     this.updateLevelUpParticles(dt);
-    this.update360Action(dt);
     this.updateTouchFollowAxis();
     this.input?.smoothTouchJoystickAxis(dt, this.player.body.grounded);
     this.tickPlayerShield(dt);
     this.tickJumpBuffer(dt);
+    this.tickComboHud(dt);
     this.updateRestFloorHoldState();
 
-    const deepPullMul = this.getDeepRunGrapplePullMul();
-    const pullVyCap = GRAPPLE_VERTICAL_BOOST_VY * deepPullMul;
-    const pullHLerp = GRAPPLE_PULL_HORIZONTAL_LERP_PER_SEC * deepPullMul;
+    const pullVyCap = GRAPPLE_VERTICAL_BOOST_VY;
+    const pullHLerp = GRAPPLE_PULL_HORIZONTAL_LERP_PER_SEC;
 
-    if (!this.action360State && this.grapple?.phase === 'extend') {
+    if (this.grapple?.phase === 'extend') {
       this.grapple.extendT += dt;
       if (this.grapple.extendT >= GRAPPLE.extendSec) {
         this.grapple.phase = 'pull';
@@ -1011,7 +1023,7 @@ export class PlayScene implements Scene {
       }
     }
 
-    if (!this.action360State && this.grapple?.phase === 'pull') {
+    if (this.grapple?.phase === 'pull') {
       const body = this.player.body;
       const hookPlatform = this.platforms.find((platform) => platform.stairId === this.grapple?.hookStairId);
       if (!hookPlatform) {
@@ -1031,62 +1043,17 @@ export class PlayScene implements Scene {
           const hookId = this.grapple.hookStairId;
           const grappleGain = Math.max(0, hookId - this.lastScoredStairId);
           if (grappleGain > 0) {
-            const launchSpeed = Math.hypot(body.vx, Math.abs(body.vy));
-            this.feedComboFromGrapple(grappleGain, false, launchSpeed);
-            const mult = this.getComboMultiplier();
-            const delta = grappleGain * mult;
-            this.score += delta * this.getScoreGainMultiplier();
+            this.score += grappleGain;
             this.lastScoredStairId = hookId;
             this.lastScoredLandWorldTopY = Math.min(this.lastScoredLandWorldTopY, hookPlatform.y);
-            this.maybeSpawnComboPopup(mult);
-            this.scoreboard?.onPointsGained(delta);
-            this.maybeTriggerScreenShake(delta, mult);
+            this.scoreboard?.onPointsGained(grappleGain);
+            this.maybeTriggerScreenShake(grappleGain);
           }
           this.grapple = null;
           this.grappleReleaseDampingLeft = GRAPPLE.releaseDampingDurationSec;
         }
       }
     }
-
-    if (this.action360State) {
-      this.currentGroundPlatform = null;
-      this.updateRestFloorHoldState();
-      this.updateCamera(dt);
-      this.maybeAdvanceScrollSpeedTierFeedback();
-      if (!this.shouldPausePlatformGeneration()) {
-        this.recycleStairsOffscreen();
-      }
-      this.syncPlatformSpritesFromPlatforms();
-      this.checkFallGameOver();
-      this.updateRipples(dt);
-      this.updateBeastParticles(dt);
-      this.updateComboPopups(dt);
-      this.updateDiamondShineSparks(dt);
-      this.updateAction360Sparks(dt);
-      this.updateCollectibles(dt);
-      this.tickPlayerInvuln(dt);
-      this.maybePurchaseShieldFromBank();
-      this.updateCollectibleHudSmooth(dt);
-      const mult = this.getComboMultiplier();
-      this.player.update(
-        dt,
-        0,
-        this.highestY < -650,
-        this.grapple,
-        mult >= COMBO.beastModeMinMultiplier,
-        this.player.isShielded,
-      );
-    this.physics.applyWorldBounds(this.player.body, this.worldWidth);
-    this.clampPlayerToCameraViewport();
-    this.tickAltitudePresentation(dt);
-    this.drawDynamicWorld();
-    this.updateSpeedTierUiFlash(dt);
-    this.updateScreenShake(dt);
-    const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
-    this.scoreboard?.update(dt, this.score, mult, heightMeters, this.runTime, this.level);
-    this.syncCollectibleHudPosition();
-    return;
-  }
 
     const axis = this.input?.getHorizontalAxis() ?? 0;
     const pulling = this.grapple?.phase === 'pull';
@@ -1113,7 +1080,7 @@ export class PlayScene implements Scene {
       dt,
       touchAirControl,
       touchGroundMul,
-      this.isFlashSkillBoostActive() ? COMBO_BOOST_SPEED_MULT : 1,
+      this.getManaSpeedMultiplier(),
     );
     if (jumpArcAssistActive) {
       this.jumpArcAssistTime = Math.max(0, this.jumpArcAssistTime - dt);
@@ -1159,20 +1126,16 @@ export class PlayScene implements Scene {
       }
       const p = result.landedPlatform;
       const idDelta = p.stairId - this.lastScoredStairId;
-      const climbedHigherPhysically =
-        p.y < this.lastScoredLandWorldTopY - COMBO_LAND_MIN_WORLD_Y_DELTA_PX;
+      /** Recycle can rotate stair ids backwards; world Y is the true tiebreaker. */
+      const climbedHigherPhysically = p.y < this.lastScoredLandWorldTopY - 6;
       const landGain =
         idDelta > 0 ? idDelta : climbedHigherPhysically ? 1 : 0;
       if (landGain > 0) {
-        this.feedComboFromLand();
-        const mult = this.getComboMultiplier();
-        const delta = landGain * mult;
-        this.score += delta * this.getScoreGainMultiplier();
+        this.score += landGain;
         this.lastScoredStairId = p.stairId;
         this.lastScoredLandWorldTopY = Math.min(this.lastScoredLandWorldTopY, p.y);
-        this.maybeSpawnComboPopup(mult);
-        this.scoreboard?.onPointsGained(delta);
-        this.maybeTriggerScreenShake(delta, mult);
+        this.scoreboard?.onPointsGained(landGain);
+        this.maybeTriggerScreenShake(landGain);
       }
       this.landOn(p);
       this.tryConsumeBufferedJump();
@@ -1190,10 +1153,7 @@ export class PlayScene implements Scene {
     this.syncPlatformSpritesFromPlatforms();
     this.checkFallGameOver();
     this.updateRipples(dt);
-    this.updateBeastParticles(dt);
-    this.updateComboPopups(dt);
     this.updateDiamondShineSparks(dt);
-    this.updateAction360Sparks(dt);
     this.updateCollectibles(dt);
     this.tickPlayerInvuln(dt);
     this.updateMushroomEnemies(dt);
@@ -1205,14 +1165,17 @@ export class PlayScene implements Scene {
     this.refreshAttackButtonCooldownVisual();
     this.maybePurchaseShieldFromBank();
     this.updateCollectibleHudSmooth(dt);
-    const mult = this.getComboMultiplier();
-    const boostVisualActive = this.isFlashSkillBoostActive();
+    /**
+     * `comboActive` lights the avatar's combo accent; `beastMode` enables the orange glow rings
+     * and tint pulse. Streak ≥ 15 turns on both for the persistent "COSMIC+" visual reward.
+     */
+    const comboGlow = this.comboCount >= COMBO_GLOW_STREAK;
     this.player.update(
       dt,
       axis,
-      this.highestY < -650,
+      this.comboCount >= 2,
       this.grapple,
-      boostVisualActive,
+      comboGlow,
       this.player.isShielded,
     );
     this.tickAltitudePresentation(dt);
@@ -1220,7 +1183,7 @@ export class PlayScene implements Scene {
     this.updateSpeedTierUiFlash(dt);
     this.updateScreenShake(dt);
     const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
-    this.scoreboard?.update(dt, this.score, mult, heightMeters, this.runTime, this.level);
+    this.scoreboard?.update(dt, this.score, this.jumpCount, heightMeters, this.runTime, this.level);
     this.syncCollectibleHudPosition();
   }
 
@@ -1239,6 +1202,7 @@ export class PlayScene implements Scene {
     }
     this.layoutCollectibleHud();
     this.layoutClimbHud();
+    this.layoutSuperTongueButton();
     this.layoutAutoScrollHud();
     this.layoutGameOverUi();
     this.layoutHeaderPauseButton();
@@ -1286,9 +1250,10 @@ export class PlayScene implements Scene {
     this.input?.destroy();
     this.player.rotation = 0;
     this.clearPlatformSprites();
-    this.clearFloatingComboUi();
     this.uiLayer.destroy({ children: true });
     this.sfx.dispose();
+    this.comboSynth?.dispose();
+    this.comboSynth = undefined;
     this.stopBackgroundMusic();
     this.tongueArmature?.dispose(true);
     this.tongueArmature = null;
@@ -1297,15 +1262,9 @@ export class PlayScene implements Scene {
   }
 
   private handleActions(): void {
-    if (this.action360State) {
-      return;
-    }
     const wantGrapple = this.input?.consumeGrapple() ?? false;
-    const want360 = this.input?.consumeAction360() ?? false;
     if (wantGrapple && this.canUseTongueGrapple()) {
       this.triggerGrappleAction();
-    } else if (want360 && this.canUseTongueGrapple()) {
-      this.perform360Action();
     }
 
     const jumpPressed = this.input?.consumeJump() ?? false;
@@ -1319,17 +1278,11 @@ export class PlayScene implements Scene {
   private computeGrappleTargetHit():
     | { x: number; y: number; platform: Platform }
     | undefined {
-    const flashBoost = this.isFlashSkillBoostActive();
     const body = this.player.body;
     const shootX = body.x + body.width * 0.5;
     const shootY = body.y + body.height * 0.5;
-    const baseReach = Math.max(350, STAIRS.stepPx * GRAPPLE_VERTICAL_REACH_PLATFORMS + 100);
-    const boostedReach = STAIRS.stepPx * FLASH_BOOST_STAIR_COUNT + 70;
-    const maxReach = flashBoost ? boostedReach : baseReach;
-    const baseRayHalfWidth = Math.max(8, body.width * 0.8);
-    const verticalRayHalfWidth = flashBoost
-      ? baseRayHalfWidth * FLASH_TONGUE_RAY_WIDTH_MULTIPLIER
-      : baseRayHalfWidth;
+    const maxReach = Math.max(350, STAIRS.stepPx * GRAPPLE_VERTICAL_REACH_PLATFORMS + 100);
+    const verticalRayHalfWidth = Math.max(8, body.width * 0.8);
     return Physics.castGrappleTarget(
       this.platforms,
       shootX,
@@ -1337,7 +1290,7 @@ export class PlayScene implements Scene {
       GRAPPLE_MIN_TARGET_DISTANCE_PX,
       maxReach,
       verticalRayHalfWidth,
-      flashBoost,
+      false,
     );
   }
 
@@ -1354,8 +1307,8 @@ export class PlayScene implements Scene {
       pullStartX: this.player.body.x + this.player.body.width * 0.5,
       pullStartY: this.player.body.y + this.player.body.height * 0.5,
     };
-    const cooldownSpeedup = this.isFlashSkillBoostActive() ? FLASH_TONGUE_COOLDOWN_SPEEDUP : 1;
-    this.grappleCooldown = GRAPPLE.cooldownSec / cooldownSpeedup;
+    /** Super Tongue buff window grants follow-up grapples at zero cooldown (recipe B). */
+    this.grappleCooldown = this.superTongueBuffTime > 0 ? 0 : GRAPPLE.cooldownSec;
     this.grappleReloadingLogged = false;
     this.player.onGrappleLaunch();
     this.sfx.play('tongue_shoot', 0.88);
@@ -1415,34 +1368,14 @@ export class PlayScene implements Scene {
     }
   }
 
-  private activateComboBoostFromPlatformJumps(): void {
-    this.flashSkillBoostTime = FLASH_SKILL_BOOST_DURATION_SEC;
-    this.platformJumpChain = 0;
-    this.spawnComboPopup('COMBO BOOST!');
-    this.scoreboard?.triggerBeastBurst();
-  }
-
   private triggerJumpAction(fromRightSwipe = false): boolean {
     if (!this.player.body.grounded || !!this.grapple) {
       return false;
     }
     this.physics.jump(this.player.body);
-    if (!this.isFlashSkillBoostActive()) {
-      this.platformJumpChain += 1;
-      if (this.platformJumpChain >= COMBO_BOOST_JUMP_THRESHOLD) {
-        this.activateComboBoostFromPlatformJumps();
-      }
-    }
-    if (this.isFlashSkillBoostActive()) {
-      const maxBoostJumpHeight = STAIRS.stepPx * FLASH_BOOST_STAIR_COUNT;
-      const maxBoostJumpVy = -Math.sqrt(2 * PHYSICS.gravity * maxBoostJumpHeight);
-      this.player.body.vy = maxBoostJumpVy;
-    } else if (this.levelUpBoostTime > 0) {
-      this.player.body.vy *= LEVEL_UP_BOOST_JUMP_MUL;
-    }
-    if (this.getHudClimbMeters() >= FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS) {
-      this.player.body.vy *= DEEP_RUN_JUMP_MULTIPLIER;
-    }
+    this.setPlayerMana(this.playerMana - MANA_JUMP_COST * (1 + Math.min(2, this.getHudClimbMeters() / 2500)));
+    this.jumpCount += 1;
+    this.registerComboJump();
     if (fromRightSwipe) {
       const body = this.player.body;
       const centerX = this.worldWidth * 0.5;
@@ -1458,6 +1391,49 @@ export class PlayScene implements Scene {
     }
     this.player.onJump();
     return true;
+  }
+
+  /**
+   * Called from each successful `triggerJumpAction`. Implements the streak rules:
+   *  - Within {@link COMBO_CHAIN_WINDOW_SEC} of the previous jump *and* current `body.y`
+   *    is at least {@link COMBO_MIN_CLIMB_PX} higher than the previous jump → `comboCount += 1`.
+   *  - Otherwise the streak resets to 1 (this jump is the new chain anchor).
+   *
+   * On `comboCount >= 2` we play the combo synth + bump the badge (word tier rises every
+   * `COMBO.jumpsPerWord` counted jumps in `game.config`). On `>= COMBO_SUPER_TONGUE_STREAK`
+   * we surface the Super Tongue button.
+   */
+  private registerComboJump(): void {
+    const currentY = this.player.body.y;
+    const withinWindow =
+      this.runTime - this.comboLastJumpTime <= COMBO_CHAIN_WINDOW_SEC;
+    const climbed = currentY < this.comboLastJumpY - COMBO_MIN_CLIMB_PX;
+
+    if (this.comboCount > 0 && withinWindow && climbed) {
+      this.comboCount += 1;
+    } else if (this.comboCount > 0 && withinWindow && !climbed) {
+      /** Same-altitude or downward jump within the window breaks the chain (anti-spam). */
+      this.breakCombo();
+      this.comboCount = 1;
+    } else {
+      /** Cold start or post-expiry — this jump anchors a fresh chain. */
+      this.breakCombo();
+      this.comboCount = 1;
+    }
+
+    this.comboLastJumpY = currentY;
+    this.comboLastJumpTime = this.runTime;
+
+    if (this.comboCount >= 2) {
+      const wordTier = comboStreakToWordTier(this.comboCount);
+      this.comboBadge?.bumpTo(this.comboCount);
+      this.comboSynth?.resume();
+      this.comboSynth?.play(wordTier);
+    }
+
+    if (this.comboCount >= COMBO_SUPER_TONGUE_STREAK) {
+      this.setSuperTongueAvailable(true);
+    }
   }
 
   private createPlatforms(): void {
@@ -1827,9 +1803,9 @@ export class PlayScene implements Scene {
     }
     this.touchControlsLayer.visible = true;
     this.currentGroundPlatform = null;
-    this.clearFloatingComboUi();
     this.score = 0;
     this.lastScoredStairId = -1;
+    this.lastScoredLandWorldTopY = Number.POSITIVE_INFINITY;
     this.cameraX = 0;
     this.cameraY = 0;
     this.activeRestFloorY = null;
@@ -1838,10 +1814,14 @@ export class PlayScene implements Scene {
     this.goldCount = 0;
     this.diamondCount = 0;
     this.collectibles = [];
-    this.comboChain = 0;
-    this.platformJumpChain = 0;
+    this.jumpCount = 0;
+    this.comboCount = 0;
+    this.comboLastJumpY = Number.POSITIVE_INFINITY;
+    this.comboLastJumpTime = -1e9;
+    this.comboBadge?.resetState();
+    this.setSuperTongueAvailable(false);
+    this.superTongueBuffTime = 0;
     this.jumpBufferTimeLeft = 0;
-    this.lastChainTime = -1e9;
     this.runTime = 0;
     this.hurryUpTimeLeft = 0;
     this.paused = false;
@@ -1849,8 +1829,6 @@ export class PlayScene implements Scene {
     this.headerPauseRoot.visible = true;
     this.attackBtnRoot.visible = true;
     this.healthHudRoot.visible = true;
-    this.beastParticles = [];
-    this.beastParticleSpawnAcc = 0;
     this.shakeTime = 0;
     this.shakeOffsetX = 0;
     this.shakeOffsetY = 0;
@@ -1862,22 +1840,18 @@ export class PlayScene implements Scene {
     this.level = 1;
     this.levelUpBannerTime = 0;
     this.levelUpParticles = [];
-    this.action360State = null;
-    this.action360Sparks = [];
     this.player.rotation = 0;
-    this.flashSkillBoostTime = 0;
-    this.beastComboAtLeastSixPrev = false;
     this.windParticles = [];
     this.windSpawnAcc = 0;
-    this.syncBoostHudButtonsVisibility();
     this.jumpArcAssistTime = 0;
     this.jumpArcAssistDuration = 0;
-    this.levelUpBoostTime = 0;
-    this.shieldStock = 0;
-    this.shieldTimeLeft = 0;
+    this.shieldSaveFlashTime = 0;
+    this.lastRecordedPlatform = null;
     this.player.isShielded = false;
     this.playerHealth = PLAYER_MAX_HEALTH;
     this.playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
+    this.playerMana = PLAYER_MAX_MANA;
+    this.previousManaDrainY = this.player.body.y;
     this.playerInvulnTime = 0;
     this.playerInvulnBlinkPhase = 0;
     this.player.alpha = 1;
@@ -1886,9 +1860,6 @@ export class PlayScene implements Scene {
     this.heartHudSegmentL = heartHudSegmentsFromPlayerHealth(this.playerHealth);
     this.heartHudTransFromL = this.heartHudSegmentL;
     this.refreshHealthHud();
-    this.tongueBoostComboExtendUntil = -Infinity;
-    this.tongueBoostComboResetAt = null;
-    this.tongueBoostChainWindowSec = null;
     this.clearMushroomDeathEffects();
     this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
     if (this.levelUpFloatText) {
@@ -1917,297 +1888,6 @@ export class PlayScene implements Scene {
     this.syncScrollSpeedTierBaseline();
   }
 
-  private updateFlashSkillBoost(dt: number): void {
-    const wasBoostActive = this.flashSkillBoostTime > 0;
-    const beastModeActiveNow = this.getComboMultiplier() >= COMBO.beastModeMinMultiplier;
-
-    if (this.flashSkillBoostTime > 0) {
-      this.flashSkillBoostTime = Math.max(0, this.flashSkillBoostTime - dt);
-    }
-    // Arm a single `FLASH_SKILL_BOOST_DURATION_SEC` window when crossing into ×6+, then count down — never
-    // refresh every frame while combo stays high (that trapped glow/jump boost and HUD buttons forever).
-    if (beastModeActiveNow && !this.beastComboAtLeastSixPrev) {
-      this.flashSkillBoostTime = FLASH_SKILL_BOOST_DURATION_SEC * this.getComboWindowAltitudeMultiplier();
-    }
-    this.beastComboAtLeastSixPrev = beastModeActiveNow;
-
-    const deepRun =
-      this.getHudClimbMeters() >= FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS && beastModeActiveNow;
-    if (deepRun) {
-      const peg = FLASH_SKILL_BOOST_DURATION_SEC * this.getComboWindowAltitudeMultiplier();
-      this.flashSkillBoostTime = Math.max(this.flashSkillBoostTime, peg);
-    }
-
-    // Requested behavior: while Combo/Flash boost is active, HP is fully restored.
-    if (this.flashSkillBoostTime > 0 && this.playerHealth < PLAYER_MAX_HEALTH) {
-      this.playerHealth = PLAYER_MAX_HEALTH;
-      this.playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
-      this.refreshHealthHud();
-    }
-
-    if (wasBoostActive && this.flashSkillBoostTime <= 0) {
-      this.platformJumpChain = 0;
-      this.resetBoostAbilitiesToNormal();
-    }
-    this.syncBoostHudButtonsVisibility();
-  }
-
-  private isFlashSkillBoostActive(): boolean {
-    return this.flashSkillBoostTime > 0;
-  }
-
-  private resetBoostAbilitiesToNormal(): void {
-    if (this.action360State) {
-      this.stop360Action(true);
-      return;
-    }
-    if (this.player.body.vy < 0) {
-      const deepJumpMul =
-        this.getHudClimbMeters() >= FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS
-          ? DEEP_RUN_JUMP_MULTIPLIER
-          : 1;
-      const normalJumpVy =
-        -(PHYSICS.baseJump + Math.abs(this.player.body.vx) * PHYSICS.speedJumpBonus) * deepJumpMul;
-      // If boost expired mid-air, clamp remaining upward speed back to normal jump ceiling.
-      this.player.body.vy = Math.max(this.player.body.vy, normalJumpVy);
-    }
-  }
-
-  private getScoreGainMultiplier(): number {
-    return this.action360State?.phase === 'rotate' ? 3 : 1;
-  }
-
-  private perform360Action(): void {
-    if (!this.canUseTongueGrapple() || this.action360State || this.grapple) {
-      return;
-    }
-    const body = this.player.body;
-    const shootX = body.x + body.width * 0.5;
-    const shootY = body.y + body.height * 0.5;
-    const hit = this.find360AttachTarget(shootX, shootY, body.width);
-    if (!hit) {
-      return;
-    }
-    this.action360State = {
-      phase: 'attach',
-      timeLeft: ACTION360_ATTACH_SEC,
-      hookStairId: hit.platform.stairId,
-      hookX: hit.x,
-      hookY: hit.y,
-      orbitRadius: 0,
-      orbitBaseAngle: 0,
-    };
-    this.grapple = {
-      phase: 'extend',
-      targetX: hit.x,
-      targetY: hit.y,
-      extendT: 0,
-      hookStairId: hit.platform.stairId,
-      pullStartX: shootX,
-      pullStartY: shootY,
-    };
-    body.vx = 0;
-    body.vy = 0;
-    body.grounded = false;
-    this.touchPointers.clear();
-    this.input?.clearTouchHolds();
-  }
-
-  private find360AttachTarget(
-    shootX: number,
-    shootY: number,
-    bodyWidth: number,
-  ): { x: number; y: number; platform: Platform } | undefined {
-    const baseStairId =
-      this.currentGroundPlatform?.stairId ??
-      this.platforms
-        .filter((p) => p.y >= this.player.body.y - 8)
-        .reduce((best, p) => (best ? (p.y < best.y ? p : best) : p), undefined as Platform | undefined)
-        ?.stairId ??
-      this.lastScoredStairId;
-    const targetStairId = baseStairId + ACTION360_TARGET_STAIRS_UP;
-    const exactThirdUp = this.platforms.find(
-      (p) => p.stairId === targetStairId && p.y + p.height < shootY,
-    );
-    if (exactThirdUp) {
-      return {
-        x: exactThirdUp.x + exactThirdUp.width * 0.5,
-        y: exactThirdUp.y + exactThirdUp.height - 3,
-        platform: exactThirdUp,
-      };
-    }
-
-    const reach = STAIRS.stepPx * 5.2;
-    const direct = Physics.castGrappleTarget(
-      this.platforms,
-      shootX,
-      shootY,
-      18,
-      reach,
-      Math.max(18, bodyWidth * 2.6),
-      true,
-    );
-    if (direct) {
-      return direct;
-    }
-
-    let best:
-      | {
-          score: number;
-          x: number;
-          y: number;
-          platform: Platform;
-        }
-      | undefined;
-    for (const p of this.platforms) {
-      const bottom = p.y + p.height;
-      if (bottom >= shootY) {
-        continue;
-      }
-      const dy = shootY - bottom;
-      if (dy > reach || dy < 18) {
-        continue;
-      }
-      const px = p.x + p.width * 0.5;
-      const dx = Math.abs(px - shootX);
-      const score = dy * 1.35 + dx * 0.35;
-      if (!best || score < best.score) {
-        best = {
-          score,
-          x: px,
-          y: bottom - 3,
-          platform: p,
-        };
-      }
-    }
-    return best
-      ? { x: best.x, y: best.y, platform: best.platform }
-      : undefined;
-  }
-
-  private update360Action(dt: number): void {
-    const state = this.action360State;
-    if (!state) {
-      this.player.rotation = 0;
-      return;
-    }
-    const body = this.player.body;
-    const attachPlatform = this.platforms.find((p) => p.stairId === state.hookStairId);
-    if (!attachPlatform) {
-      this.stop360Action(false);
-      return;
-    }
-    if (state.phase === 'attach') {
-      state.timeLeft = Math.max(0, state.timeLeft - dt);
-      const attachProgress = 1 - state.timeLeft / ACTION360_ATTACH_SEC;
-      if (this.grapple) {
-        this.grapple.phase = 'extend';
-        this.grapple.extendT = Math.min(GRAPPLE.extendSec, attachProgress * GRAPPLE.extendSec);
-      }
-      body.vx = 0;
-      body.vy = 0;
-      body.grounded = this.player.body.grounded;
-      if (state.timeLeft <= 0) {
-        const centerX = body.x + body.width * 0.5;
-        const centerY = body.y + body.height * 0.5;
-        if (this.grapple) {
-          this.grapple.phase = 'pull';
-          this.grapple.extendT = GRAPPLE.extendSec;
-          this.grapple.pullStartX = centerX;
-          this.grapple.pullStartY = centerY;
-        }
-        state.phase = 'rotate';
-        state.timeLeft = ACTION360_ROTATE_SEC;
-        const ox = centerX - state.hookX;
-        const oy = centerY - state.hookY;
-        const baseRadius = Math.hypot(ox, oy) * 1.62;
-        const minOrbitRadius = Math.max(150, this.height * 0.24);
-        const maxOrbitRadius = Math.max(minOrbitRadius + 20, this.height * 0.42);
-        state.orbitRadius = Math.max(minOrbitRadius, Math.min(maxOrbitRadius, baseRadius));
-        state.orbitBaseAngle = Math.atan2(oy, ox);
-      }
-      this.player.rotation = 0;
-      return;
-    }
-
-    state.timeLeft = Math.max(0, state.timeLeft - dt);
-    const t = 1 - state.timeLeft / ACTION360_ROTATE_SEC;
-    const angle = state.orbitBaseAngle + t * Math.PI * 2 * ACTION360_ROTATIONS;
-    const cx = state.hookX + Math.cos(angle) * state.orbitRadius;
-    const cy = state.hookY + Math.sin(angle) * state.orbitRadius;
-    body.x = cx - body.width * 0.5;
-    body.y = cy - body.height * 0.5;
-    body.vx = 0;
-    body.vy = 0;
-    body.grounded = false;
-    this.player.rotation = angle + Math.PI * 0.5;
-    this.spawnAction360Sparks(state.hookX, state.hookY);
-
-    if (state.timeLeft <= 0) {
-      this.stop360Action(true);
-    }
-  }
-
-  private stop360Action(landOnPlatform: boolean): void {
-    const state = this.action360State;
-    this.action360State = null;
-    this.player.rotation = 0;
-    this.action360Sparks = [];
-    if (landOnPlatform && state) {
-      const platform = this.platforms.find((p) => p.stairId === state.hookStairId);
-      if (platform) {
-        this.player.body.x = platform.x + platform.width * 0.5 - this.player.body.width * 0.5;
-        this.physics.snapToPlatform(this.player.body, platform);
-        this.currentGroundPlatform = platform;
-      }
-    }
-    this.grapple = null;
-    this.flashSkillBoostTime = 0;
-    this.syncBoostHudButtonsVisibility();
-  }
-
-  private spawnAction360Sparks(x: number, y: number): void {
-    for (let i = 0; i < 3; i += 1) {
-      const a = Math.random() * Math.PI * 2;
-      const sp = 70 + Math.random() * 130;
-      this.action360Sparks.push({
-        x: x + (Math.random() - 0.5) * 18,
-        y: y + (Math.random() - 0.5) * 18,
-        vx: Math.cos(a) * sp,
-        vy: Math.sin(a) * sp,
-        age: 0,
-        life: 0.28 + Math.random() * 0.2,
-      });
-    }
-  }
-
-  private updateAction360Sparks(dt: number): void {
-    this.action360Sparks = this.action360Sparks
-      .map((s) => ({
-        ...s,
-        age: s.age + dt,
-        x: s.x + s.vx * dt,
-        y: s.y + s.vy * dt,
-        vx: s.vx * (1 - dt * 2.6),
-        vy: s.vy * (1 - dt * 2.6),
-      }))
-      .filter((s) => s.age < s.life);
-    if (this.action360Sparks.length > 180) {
-      this.action360Sparks.splice(0, this.action360Sparks.length - 180);
-    }
-  }
-
-  private drawAction360Sparks(): void {
-    for (const s of this.action360Sparks) {
-      const u = s.age / s.life;
-      const alpha = (1 - u) * 0.95;
-      const r = 2 + 4 * (1 - u);
-      this.fxLayer.circle(s.x, s.y, r + 2).fill({ color: 0xffaa33, alpha: alpha * 0.25 });
-      this.fxLayer.circle(s.x, s.y, r).fill({ color: 0xffe066, alpha });
-      this.fxLayer.circle(s.x - 0.9, s.y - 0.9, r * 0.38).fill({ color: 0xffffff, alpha: alpha * 0.8 });
-    }
-  }
-
   private checkFallGameOver(): void {
     if (this.isRestFloorHolding()) {
       return;
@@ -2217,7 +1897,6 @@ export class PlayScene implements Scene {
     if (feetY <= deathLineY) {
       return;
     }
-    this.platformJumpChain = 0;
     this.jumpBufferTimeLeft = 0;
     if (this.consumePlayerShield()) {
       this.performShieldSuperLaunch();
@@ -2230,22 +1909,34 @@ export class PlayScene implements Scene {
     this.grapple = null;
     this.grappleCooldown = 0;
     this.grappleReleaseDampingLeft = 0;
+    this.activeRestFloorY = null;
+    this.restFloorHoldY = null;
     this.currentGroundPlatform = null;
-    const desiredRise = STAIRS.stepPx * SHIELD_SUPER_LAUNCH_STAIR_COUNT;
-    let rise = desiredRise;
-    if (this.platforms.length > 0) {
-      const minTopY = Math.min(...this.platforms.map((p) => p.y));
-      const feetY = this.player.body.y + this.player.body.height;
-      const maxRise = feetY - minTopY + SHIELD_LAUNCH_MAX_FEET_ABOVE_TOP_PX;
-      rise = Math.min(desiredRise, Math.max(0, maxRise));
+    /** Shield bounce teleports the player upwards — treat as a fresh chain anchor, not a climb step. */
+    this.breakCombo();
+
+    const anchor = this.lastRecordedPlatform ?? this.platforms[0];
+    if (!anchor) {
+      this.triggerGameOver();
+      return;
     }
-    this.player.body.y -= rise;
-    this.player.body.vy = -Math.min(1750, 920 + rise * 0.38);
-    /** Strong forward speed + no stair under that X reads as “black void”; damp hard after warp. */
-    this.player.body.vx *= 0.32;
+    const targetStairId = anchor.stairId + SHIELD_BOUNCE_PLATFORM_RISE_COUNT;
+    const targetPlatform = this.platforms.find((platform) => platform.stairId === targetStairId);
+    const targetY = targetPlatform?.y ?? anchor.y - STAIRS.stepPx * SHIELD_BOUNCE_PLATFORM_RISE_COUNT;
+    const targetCenterX = targetPlatform
+      ? targetPlatform.x + targetPlatform.width * 0.5
+      : anchor.x + anchor.width * 0.5;
+    this.player.body.x = Math.max(
+      0,
+      Math.min(this.worldWidth - this.player.body.width, targetCenterX - this.player.body.width * 0.5),
+    );
+    this.player.body.y = targetY - this.player.body.height;
+    this.player.body.vx = 0;
+    this.player.body.vy = -980;
     this.player.body.grounded = false;
     this.highestY = Math.min(this.highestY, this.player.body.y);
     this.player.onJump();
+    this.shieldSaveFlashTime = SHIELD_SAVE_FLASH_SEC;
     this.shakeTime = Math.max(this.shakeTime, 0.42);
     this.snapCameraToPlayer();
     for (let i = 0; i < SHIELD_LAUNCH_RECYCLE_PASSES; i += 1) {
@@ -2338,10 +2029,27 @@ export class PlayScene implements Scene {
     this.grappleReloadingLogged = false;
     this.lastScoredStairId = this.platforms[0]?.stairId ?? 0;
     this.lastScoredLandWorldTopY = this.platforms[0]?.y ?? Number.POSITIVE_INFINITY;
+    if (this.platforms[0]) {
+      this.recordLastPlatform(this.platforms[0]);
+    }
     this.player.update(0, 0, false, null, false, this.player.isShielded);
   }
 
+  private recordLastPlatform(platform: Platform): void {
+    this.lastRecordedPlatform = {
+      x: platform.x,
+      y: platform.y,
+      width: platform.width,
+      height: platform.height,
+      stairId: platform.stairId,
+    };
+  }
+
   private landOn(platform: Platform): void {
+    this.recordLastPlatform(platform);
+    if (platform.kind === 'rest') {
+      this.recoverManaFull();
+    }
     if (platform.kind === 'rest') {
       this.activeRestFloorY = platform.y;
       this.restFloorHoldY = platform.y;
@@ -2498,47 +2206,76 @@ export class PlayScene implements Scene {
     throw new Error(`No texture loaded for: ${candidates.join(' | ')}`);
   }
 
-  /**
-   * Builds `TilingSprite` layers (farthest → nearest). All layers must load, else one fallback
-   * tiling sheet. Textures use **repeat** wrap for seamless `tilePosition` scrolling.
-   */
-  private async loadBackgroundTexture(): Promise<void> {
-    for (const { tile } of this.bgParallaxLayers) {
-      this.backgroundRoot.removeChild(tile);
-      tile.destroy({ texture: false });
+  private async loadBackgroundLayerTexture(
+    spec: Bg7ParallaxLayerSpec,
+    tier: BackgroundTierSpec,
+  ): Promise<Texture> {
+    if (!spec.padToTierBounds) {
+      return this.loadTextureFromCandidates(spec.candidates);
     }
-    this.bgParallaxLayers = [];
 
-    const pushTilingLayer = (tex: Texture, speed: number, vw: number, vh: number): void => {
-      this.prepareTextureForInfiniteTile(tex);
-      const tile = new TilingSprite({
-        texture: tex,
-        width: vw,
-        height: vh,
-      });
-      tile.eventMode = 'none';
-      tile.roundPixels = false;
-      this.backgroundRoot.addChild(tile);
-      this.bgParallaxLayers.push({ tile, speed });
-    };
-
-    const vw = Math.max(1, this.worldWidthFromScreen());
-    const vh = Math.max(1, this.worldHeightFromScreen());
-
-    try {
-      for (const spec of BG7_PARALLAX_LAYERS) {
-        const tex = await this.loadTextureFromCandidates(spec.candidates);
-        pushTilingLayer(tex, spec.speed, vw, vh);
-      }
-    } catch {
+    for (const url of spec.candidates) {
       try {
-        const tex = await this.loadTextureFromCandidates(BG7_FALLBACK_CANDIDATES);
-        pushTilingLayer(tex, 0.45, vw, vh);
+        const fallback = (await Assets.load(url)) as Texture;
+        if (fallback.source.width === tier.artWidth && fallback.source.height === tier.artHeight) {
+          return fallback;
+        }
+
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+
+        const canvas = document.createElement('canvas');
+        canvas.width = tier.artWidth;
+        canvas.height = tier.artHeight;
+
+        const context = canvas.getContext('2d');
+        if (!context) {
+          return fallback;
+        }
+
+        context.drawImage(
+          image,
+          0,
+          Math.max(0, tier.artHeight - image.naturalHeight),
+        );
+        return Texture.from(canvas);
       } catch {
-        /* leave empty — solid stage color shows through */
+        /* try next candidate */
       }
     }
 
+    throw new Error(`No texture loaded for: ${spec.candidates.join(' | ')}`);
+  }
+
+  private getBackgroundTierSpecForMeters(meters: number): BackgroundTierSpec {
+    let selected = BACKGROUND_TIERS[0];
+    for (const tier of BACKGROUND_TIERS) {
+      if (meters >= tier.minMeters) {
+        selected = tier;
+      }
+    }
+    return selected;
+  }
+
+  private getLoadedBackgroundTierForMeters(meters: number): LoadedBackgroundTier | undefined {
+    const desired = this.getBackgroundTierSpecForMeters(meters);
+    return this.loadedBackgroundTiers.get(desired.id) ?? this.loadedBackgroundTiers.get(BACKGROUND_TIERS[0].id);
+  }
+
+  private getBackgroundTierSpecById(id: BackgroundTierId): BackgroundTierSpec {
+    return BACKGROUND_TIERS.find((tier) => tier.id === id) ?? BACKGROUND_TIERS[0];
+  }
+
+  private getBackgroundTransitionMeters(viewportHeight: number): number {
+    const viewportBottomWorldY = this.cameraY + viewportHeight;
+    return Math.max(
+      0,
+      (this.climbBaselineY - (viewportBottomWorldY - this.player.body.height)) / 12,
+    );
+  }
+
+  private ensureBackgroundBackdropFill(): void {
     if (!this.backgroundRoot.children.includes(this.bgBackdropFill)) {
       this.backgroundRoot.addChildAt(this.bgBackdropFill, 0);
     } else {
@@ -2546,16 +2283,162 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Slices `heart_counter-Sheet.png` into row frames for the animated HP HUD. */
+  private ensureBackgroundOverlayRoot(): void {
+    if (!this.backgroundRoot.children.includes(this.bgOverlayRoot)) {
+      this.bgOverlayRoot.eventMode = 'none';
+      this.bgOverlayRoot.mask = this.bgOverlayMask;
+      this.backgroundRoot.addChild(this.bgOverlayRoot);
+    }
+    if (!this.backgroundRoot.children.includes(this.bgOverlayMask)) {
+      this.backgroundRoot.addChild(this.bgOverlayMask);
+    }
+    this.backgroundRoot.setChildIndex(this.bgOverlayRoot, this.backgroundRoot.children.length - 1);
+    this.backgroundRoot.setChildIndex(this.bgOverlayMask, this.backgroundRoot.children.length - 1);
+  }
+
+  private clearBackgroundOverlay(): void {
+    for (const { tile } of this.bgOverlayLayers) {
+      this.bgOverlayRoot.removeChild(tile);
+      tile.destroy({ texture: false });
+    }
+    this.bgOverlayLayers = [];
+    this.activeOverlayBackgroundTierId = undefined;
+    this.bgOverlayMask.clear();
+  }
+
+  private rebuildBackgroundLayerTiles(
+    target: Container,
+    layers: readonly { readonly texture: Texture; readonly speed: number }[],
+    out: { tile: TilingSprite; speed: number }[],
+    vw: number,
+    vh: number,
+  ): void {
+    for (const { texture, speed } of layers) {
+      const tile = new TilingSprite({
+        texture,
+        width: vw,
+        height: vh,
+      });
+      tile.eventMode = 'none';
+      tile.roundPixels = false;
+      target.addChild(tile);
+      out.push({ tile, speed });
+    }
+  }
+
+  private rebuildBackgroundTiles(tier: LoadedBackgroundTier, vw: number, vh: number): void {
+    for (const { tile } of this.bgParallaxLayers) {
+      this.backgroundRoot.removeChild(tile);
+      tile.destroy({ texture: false });
+    }
+    this.bgParallaxLayers = [];
+    this.activeBackgroundTierId = tier.id;
+    this.ensureBackgroundBackdropFill();
+    this.rebuildBackgroundLayerTiles(this.backgroundRoot, tier.layers, this.bgParallaxLayers, vw, vh);
+    this.ensureBackgroundOverlayRoot();
+  }
+
+  private rebuildBackgroundOverlay(tier: LoadedBackgroundTier, vw: number, vh: number): void {
+    this.clearBackgroundOverlay();
+    this.activeOverlayBackgroundTierId = tier.id;
+    this.ensureBackgroundOverlayRoot();
+    this.rebuildBackgroundLayerTiles(this.bgOverlayRoot, tier.layers, this.bgOverlayLayers, vw, vh);
+  }
+
+  private syncBackgroundTierForCurrentAltitude(vw: number, vh: number): void {
+    const baseTier = this.getLoadedBackgroundTierForMeters(this.getBackgroundTransitionMeters(vh));
+    if (baseTier && baseTier.id !== this.activeBackgroundTierId) {
+      this.rebuildBackgroundTiles(baseTier, vw, vh);
+    }
+
+    const overlayTier = this.getLoadedBackgroundTierForMeters(this.getHudClimbMeters());
+    if (!overlayTier || !baseTier || overlayTier.id === baseTier.id) {
+      this.clearBackgroundOverlay();
+      return;
+    }
+
+    if (overlayTier.id !== this.activeOverlayBackgroundTierId) {
+      this.rebuildBackgroundOverlay(overlayTier, vw, vh);
+    }
+
+    const overlaySpec = this.getBackgroundTierSpecById(overlayTier.id);
+    const dividerScreenY = this.getRestFloorTopY(overlaySpec.minMeters) - this.cameraY;
+    const clipHeight = Math.max(0, Math.min(vh, dividerScreenY));
+    this.bgOverlayMask.clear();
+    this.bgOverlayMask.rect(0, 0, vw, clipHeight).fill({ color: 0xffffff, alpha: 1 });
+  }
+
+  /**
+   * Builds `TilingSprite` layers (farthest → nearest). Tiers load up front so altitude changes can
+   * swap texture sets instantly: 0-1000M, 1K-2KM, then 2K-3KM.
+   */
+  private async loadBackgroundTexture(): Promise<void> {
+    for (const { tile } of this.bgParallaxLayers) {
+      this.backgroundRoot.removeChild(tile);
+      tile.destroy({ texture: false });
+    }
+    this.bgParallaxLayers = [];
+    this.clearBackgroundOverlay();
+    this.loadedBackgroundTiers.clear();
+    this.activeBackgroundTierId = undefined;
+
+    const vw = Math.max(1, this.worldWidthFromScreen());
+    const vh = Math.max(1, this.worldHeightFromScreen());
+
+    for (const tier of BACKGROUND_TIERS) {
+      const loadedLayers: { texture: Texture; speed: number }[] = [];
+      try {
+        for (const spec of tier.layers) {
+          const tex = await this.loadBackgroundLayerTexture(spec, tier);
+          this.prepareTextureForInfiniteTile(tex);
+          loadedLayers.push({ texture: tex, speed: spec.speed });
+        }
+      } catch {
+        try {
+          const tex = await this.loadTextureFromCandidates(tier.fallbackCandidates);
+          this.prepareTextureForInfiniteTile(tex);
+          loadedLayers.splice(0, loadedLayers.length, { texture: tex, speed: tier.fallbackSpeed });
+        } catch {
+          /* leave tier empty — another loaded tier or solid stage color shows through */
+        }
+      }
+
+      if (loadedLayers.length > 0) {
+        this.loadedBackgroundTiers.set(tier.id, { id: tier.id, layers: loadedLayers });
+      }
+    }
+
+    this.ensureBackgroundBackdropFill();
+    const initialTier = this.getLoadedBackgroundTierForMeters(0);
+    if (initialTier) {
+      this.rebuildBackgroundTiles(initialTier, vw, vh);
+    }
+  }
+
+  /** Slices `heart_counter-Sheet.png` and `mana_counter-Sheet.png` into row frames for the top HUD. */
   private async loadHeartCounterSheet(): Promise<void> {
-    const sheet = (await Assets.load(HEART_COUNTER_SHEET_URL)) as Texture;
-    const source = sheet.source;
+    const [heartSheet, manaSheet] = (await Promise.all([
+      Assets.load(HEART_COUNTER_SHEET_URL),
+      Assets.load(MANA_COUNTER_SHEET_URL),
+    ])) as Texture[];
+    const source = heartSheet.source;
     this.heartCounterTextures = [];
     for (let i = 0; i < HEART_COUNTER_FRAME_COUNT; i += 1) {
       this.heartCounterTextures.push(
         new Texture({
           source,
           frame: new Rectangle(0, i * HEART_COUNTER_FRAME_H, HEART_COUNTER_FRAME_W, HEART_COUNTER_FRAME_H),
+        }),
+      );
+    }
+
+    const manaSource = manaSheet.source;
+    this.manaCounterTextures = [];
+    for (let i = 0; i < MANA_COUNTER_FRAME_COUNT; i += 1) {
+      this.manaCounterTextures.push(
+        new Texture({
+          source: manaSource,
+          frame: new Rectangle(0, i * MANA_COUNTER_FRAME_H, MANA_COUNTER_FRAME_W, MANA_COUNTER_FRAME_H),
         }),
       );
     }
@@ -2570,11 +2453,19 @@ export class PlayScene implements Scene {
     const vw = this.worldWidthFromScreen();
     const vh = this.worldHeightFromScreen();
     this.backgroundRoot.position.set(0, 0);
+    this.syncBackgroundTierForCurrentAltitude(vw, vh);
 
     this.bgBackdropFill.clear();
     this.bgBackdropFill.rect(0, 0, vw, vh).fill({ color: this.currentBackgroundColor, alpha: 1 });
 
     for (const { tile, speed } of this.bgParallaxLayers) {
+      tile.position.set(0, 0);
+      tile.width = vw;
+      tile.height = vh;
+      tile.tilePosition.set(-this.cameraX * speed, -this.cameraY * speed);
+    }
+
+    for (const { tile, speed } of this.bgOverlayLayers) {
       tile.position.set(0, 0);
       tile.width = vw;
       tile.height = vh;
@@ -2611,11 +2502,8 @@ export class PlayScene implements Scene {
     this.applyCameraTransform();
   }
 
-  private maybeTriggerScreenShake(pointsDelta: number, mult: number): void {
-    if (
-      pointsDelta >= SCORE_UI.bigPointsThreshold ||
-      (pointsDelta >= SCORE_UI.shakePointsFloor && mult >= SCORE_UI.shakeMinMultForFloor)
-    ) {
+  private maybeTriggerScreenShake(pointsDelta: number): void {
+    if (pointsDelta >= SCORE_UI.bigPointsThreshold) {
       this.shakeTime = Math.max(this.shakeTime, SCORE_UI.shakeDurationSec);
     }
   }
@@ -2624,167 +2512,6 @@ export class PlayScene implements Scene {
     this.ripples = this.ripples
       .map((ripple) => ({ ...ripple, age: ripple.age + dt }))
       .filter((ripple) => ripple.age < 0.8);
-  }
-
-  private expireComboIfNeeded(): void {
-    if (this.tongueBoostComboResetAt !== null && this.runTime >= this.tongueBoostComboResetAt) {
-      this.tongueBoostComboResetAt = null;
-      this.tongueBoostComboExtendUntil = -Infinity;
-      this.tongueBoostChainWindowSec = null;
-      this.comboChain = 0;
-      this.lastChainTime = -1e9;
-      return;
-    }
-    if (this.comboChain <= 0) {
-      return;
-    }
-    const altEase = this.getComboWindowAltitudeMultiplier();
-    const chainWindowSec =
-      this.runTime < this.tongueBoostComboExtendUntil
-        ? (this.tongueBoostChainWindowSec ?? TONGUE_COMBO_BOOST_DURATION_SEC)
-        : COMBO.chainWindowSec * altEase;
-    if (this.runTime - this.lastChainTime > chainWindowSec) {
-      this.comboChain = 0;
-    }
-  }
-
-  private getComboMultiplier(): number {
-    if (this.comboChain <= 0) {
-      return 1;
-    }
-
-    return Math.min(COMBO.maxMultiplier, this.comboChain);
-  }
-
-  private feedComboFromLand(): void {
-    this.comboChain += 1;
-    this.lastChainTime = this.runTime;
-  }
-
-  private feedComboFromGrapple(
-    grappleGain: number,
-    peakBonus: boolean,
-    launchSpeed: number,
-  ): void {
-    let add = 1 + Math.max(0, grappleGain - 1);
-    const launchNeed = COMBO.highLaunchSpeedPx / this.getComboWindowAltitudeMultiplier();
-    if (peakBonus && launchSpeed >= launchNeed) {
-      add += 1;
-    }
-
-    this.comboChain += add;
-    this.lastChainTime = this.runTime;
-  }
-
-  private maybeSpawnComboPopup(mult: number): void {
-    if (mult < 2) {
-      return;
-    }
-
-    if (mult === SCORE_UI.apexComboMultiplier) {
-      this.scoreboard?.triggerApexBurst();
-    }
-
-    if (mult >= COMBO.beastModeMinMultiplier) {
-      this.scoreboard?.triggerBeastBurst();
-    }
-
-    const wordIndex = Math.min(
-      COMBO.words.length - 1,
-      Math.max(0, mult - 2),
-    );
-    this.spawnComboPopup(COMBO.words[wordIndex]);
-  }
-
-  private spawnComboPopup(text: string): void {
-    const wx = this.player.body.x + this.player.body.width * 0.5;
-    const wy = this.player.body.y + this.player.body.height * 0.4;
-    const label = new Text({
-      text,
-      style: {
-        fill: '#fff5e6',
-        fontFamily: 'Arial Black, Impact, sans-serif',
-        fontSize: 28,
-        stroke: { color: '#4a1530', width: 5 },
-        dropShadow: {
-          alpha: 0.55,
-          angle: Math.PI / 4,
-          blur: 4,
-          color: '#ff2288',
-          distance: 3,
-        },
-      },
-    });
-    label.anchor.set(0.5);
-    label.position.set(wx, wy);
-    label.scale.set(0.35);
-    label.alpha = 1;
-    this.world.addChild(label);
-    this.comboPopups.push({ label, t: 0, wx, wy });
-  }
-
-  private updateComboPopups(dt: number): void {
-    const life = COMBO.floatLifeSec;
-    const next: ComboPopup[] = [];
-
-    for (const p of this.comboPopups) {
-      p.t += dt;
-      const u = p.t / life;
-      if (u >= 1) {
-        p.label.destroy();
-        continue;
-      }
-
-      const popT = Math.min(1, p.t / COMBO.popInSec);
-      const popScale = 0.4 + 0.8 * Math.sin((popT * Math.PI) / 2);
-      const drift = COMBO.floatDriftPxPerSec * p.t;
-      p.label.position.set(p.wx, p.wy - drift);
-      p.label.alpha = 1 - u * u;
-      p.label.scale.set(popScale * (1 - 0.12 * u));
-
-      next.push(p);
-    }
-
-    this.comboPopups = next;
-  }
-
-  private updateBeastParticles(dt: number): void {
-    const beast = this.isFlashSkillBoostActive();
-    const spd = Math.hypot(this.player.body.vx, this.player.body.vy);
-
-    if (beast && spd >= COMBO.beastParticleMinSpeed) {
-      this.beastParticleSpawnAcc += dt;
-      while (this.beastParticleSpawnAcc >= COMBO.beastParticleSpawnIntervalSec) {
-        this.beastParticleSpawnAcc -= COMBO.beastParticleSpawnIntervalSec;
-        const px =
-          this.player.body.x +
-          this.player.body.width * 0.5 +
-          (Math.random() - 0.5) * 36;
-        const py =
-          this.player.body.y +
-          this.player.body.height * 0.5 +
-          (Math.random() - 0.5) * 28;
-        this.beastParticles.push({ x: px, y: py, age: 0 });
-      }
-    } else {
-      this.beastParticleSpawnAcc = 0;
-    }
-
-    this.beastParticles = this.beastParticles
-      .map((p) => ({ ...p, age: p.age + dt }))
-      .filter((p) => p.age < COMBO.beastParticleLifeSec);
-
-    if (this.beastParticles.length > 40) {
-      this.beastParticles.splice(0, this.beastParticles.length - 40);
-    }
-  }
-
-  private clearFloatingComboUi(): void {
-    for (const p of this.comboPopups) {
-      p.label.destroy();
-    }
-
-    this.comboPopups = [];
   }
 
   private startBackgroundMusic(): void {
@@ -2914,14 +2641,7 @@ export class PlayScene implements Scene {
       return;
     }
     const previousMilestone = Math.floor(this.level / LEVEL_MILESTONE_STEP);
-    const prevLevel = this.level;
-    const gained = nextLevel - prevLevel;
     this.level = nextLevel;
-    /** Combo boost: extend duration for each level tier crossed in one update (capped). */
-    this.levelUpBoostTime = Math.min(
-      LEVEL_UP_BOOST_TIME_CAP_SEC,
-      this.levelUpBoostTime + LEVEL_UP_BOOST_DURATION_SEC * gained,
-    );
     this.levelUpBannerTime = 1;
     this.spawnLevelUpParticles();
     this.scoreboard?.setLevel(this.level);
@@ -3023,6 +2743,35 @@ export class PlayScene implements Scene {
     }
   }
 
+  private drawShieldSaveEffect(): void {
+    if (this.shieldSaveFlashTime <= 0) {
+      return;
+    }
+
+    const u = this.shieldSaveFlashTime / SHIELD_SAVE_FLASH_SEC;
+    const cx = this.player.body.x + this.player.body.width * 0.5;
+    const cy = this.player.body.y + this.player.body.height * 0.45;
+    const radius = 32 + (1 - u) * 42;
+    this.fxLayer.circle(cx, cy, radius).stroke({
+      color: 0x66ccff,
+      alpha: u * 0.9,
+      width: 4,
+    });
+    this.fxLayer.circle(cx, cy, radius * 0.72).fill({
+      color: 0x66ccff,
+      alpha: u * 0.12,
+    });
+    this.fxLayer
+      .moveTo(cx, cy - 28)
+      .lineTo(cx + 24, cy - 4)
+      .lineTo(cx + 13, cy + 30)
+      .lineTo(cx, cy + 42)
+      .lineTo(cx - 13, cy + 30)
+      .lineTo(cx - 24, cy - 4)
+      .closePath()
+      .stroke({ color: 0xc8ffff, alpha: u * 0.95, width: 3 });
+  }
+
   private getBackgroundColorForLevel(level: number): number {
     void level;
     return UI_BG_BLACK;
@@ -3038,13 +2787,6 @@ export class PlayScene implements Scene {
     return this.getClimbHeightPx() / 12;
   }
 
-  /** Faster tongue pull + lateral snap in deep runs (same HUD threshold as combo peg). */
-  private getDeepRunGrapplePullMul(): number {
-    return this.getHudClimbMeters() >= FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS
-      ? DEEP_RUN_GRAPPLE_PULL_SPEED_MULT
-      : 1;
-  }
-
   /**
    * Scroll / difficulty multiplier: 1× until `SCROLL_SPEED_WARMUP_METERS`, then +`SCROLL_SPEED_STEP_DELTA`
    * each `SCROLL_SPEED_STEP_METERS` (no cap; delta tripled vs legacy for faster scaling).
@@ -3058,35 +2800,8 @@ export class PlayScene implements Scene {
     return 1 + SCROLL_SPEED_STEP_DELTA * steps;
   }
 
-  /**
-   * Widen combo / tongue timing as you climb: direct climb-height ease plus post-warmup scroll tier
-   * (faster world still gets more chain window so boosts stay achievable).
-   */
-  private getComboWindowAltitudeMultiplier(): number {
-    const m = Math.max(0, this.getHudClimbMeters());
-    const climbSteps = Math.floor(m / COMBO_CLIMB_EASE_METERS_STEP);
-    const climbEase = Math.min(COMBO_CLIMB_EASE_MAX, COMBO_CLIMB_EASE_PER_STEP * climbSteps);
-
-    const scrollMult = this.getAltitudeSpeedMultiplier();
-    const scrollSteps = Math.min(
-      COMBO_SCROLL_EASE_MAX_STEPS,
-      Math.max(0, scrollMult - 1),
-    );
-    const scrollEase = COMBO_SCROLL_EASE_COEF * scrollSteps;
-
-    const deepEase =
-      m >= FLASH_SKILL_PERPETUAL_AFTER_HUD_METERS ? COMBO_DEEP_RUN_EXTRA_ALTITUDE_EASE : 0;
-    return 1 + climbEase + scrollEase + deepEase;
-  }
-
-  private getLevelUpBoostScrollMul(): number {
-    return this.levelUpBoostTime > 0 ? LEVEL_UP_BOOST_SCROLL_MUL : 1;
-  }
-
   private getCameraScrollSpeedPx(): number {
-    return (
-      AUTO_SCROLL_BASE_SPEED_PX * this.getAltitudeSpeedMultiplier() * this.getLevelUpBoostScrollMul()
-    );
+    return AUTO_SCROLL_BASE_SPEED_PX * this.getAltitudeSpeedMultiplier();
   }
 
   /** Tier index for speed feedback; 0 = warmup, 1 = first step above warmup, … */
@@ -3144,11 +2859,7 @@ export class PlayScene implements Scene {
    * Effective platform drift speed (px/s): scales with climb height (same multiplier as camera scroll).
    */
   private getBaseScrollSpeedPx(): number {
-    return (
-      this.getLevelScrollSpeedPx() *
-      this.getAltitudeSpeedMultiplier() *
-      this.getLevelUpBoostScrollMul()
-    );
+    return this.getLevelScrollSpeedPx() * this.getAltitudeSpeedMultiplier();
   }
 
   private drawStaticWorld(): void {
@@ -3190,26 +2901,17 @@ export class PlayScene implements Scene {
     if (drawProceduralTongue) {
       const mouth = this.getMouthWorld();
       const tip = this.getTongueTipWorld(mouth);
-      const beastMode = this.getComboMultiplier() >= COMBO.beastModeMinMultiplier;
       if (this.tongueDbReady && this.tongueArmature) {
-        this.syncTongueArmatureToGrapple(mouth, tip, beastMode);
+        this.syncTongueArmatureToGrapple(mouth, tip, false);
       } else {
-        this.drawGrappleTongue(mouth, tip, beastMode);
+        this.drawGrappleTongue(mouth, tip, false);
       }
     }
 
     this.drawCollectibles();
     this.drawDiamondShineSparks();
-    this.drawAction360Sparks();
     this.drawLevelUpParticles();
-
-    for (const p of this.beastParticles) {
-      const u = p.age / COMBO.beastParticleLifeSec;
-      const alpha = (1 - u) * 0.5;
-      const r = 6 + 10 * (1 - u);
-      this.fxLayer.circle(p.x, p.y, r).fill({ color: 0xff9933, alpha });
-      this.fxLayer.circle(p.x - 2, p.y - 2, r * 0.45).fill({ color: 0xffeeaa, alpha: alpha * 0.9 });
-    }
+    this.drawShieldSaveEffect();
   }
 
   private getMouthWorld(): { x: number; y: number } {
@@ -3269,93 +2971,10 @@ export class PlayScene implements Scene {
     this.drawCollectibleIcons();
   }
 
-  /** Tongue grapple is only available during Flash skill boost (beast combo activation window). */
+  /** Grapple is available whenever it is not on cooldown (no skill-gating layer). */
   private canUseTongueGrapple(): boolean {
-    return this.isFlashSkillBoostActive();
+    return true;
   }
-
-  private setupTongueBoostButton(app: Application): void {
-    void app;
-    this.tongueBoostButtonRoot.zIndex = 1002;
-    this.tongueBoostButtonGfx.eventMode = 'static';
-    this.tongueBoostButtonGfx.cursor = 'pointer';
-    this.tongueBoostLabel = new Text({
-      text: 'TONGUE',
-      style: this.createNeonGoldTextStyle(12, 2),
-    });
-    this.tongueBoostLabel.anchor.set(0.5);
-    this.tongueBoostLabel.position.set(TONGUE_BOOST_BTN_W * 0.5, TONGUE_BOOST_BTN_H * 0.5);
-    this.tongueBoostLabel.eventMode = 'none';
-    this.tongueBoostButtonRoot.addChild(this.tongueBoostButtonGfx, this.tongueBoostLabel);
-    this.tongueBoostButtonGfx.on('pointerdown', this.handleTongueBoostButtonDown);
-    this.tongueBoostButtonGfx.on('pointerup', this.handleTongueBoostButtonUp);
-    this.tongueBoostButtonGfx.on('pointerupoutside', this.handleTongueBoostButtonUp);
-    this.tongueBoostButtonGfx.on('pointercancel', this.handleTongueBoostButtonUp);
-    this.uiLayer.addChild(this.tongueBoostButtonRoot);
-    this.redrawTongueBoostButton(false);
-    this.syncBoostHudButtonsVisibility();
-  }
-
-  private setupAction360Button(app: Application): void {
-    void app;
-    this.action360ButtonRoot.zIndex = 1001;
-    this.action360ButtonGfx.eventMode = 'static';
-    this.action360ButtonGfx.cursor = 'pointer';
-    this.action360ButtonLabel = new Text({
-      text: '360',
-      style: this.createNeonGoldTextStyle(12, 2),
-    });
-    this.action360ButtonLabel.anchor.set(0.5);
-    this.action360ButtonLabel.position.set(TONGUE_BOOST_BTN_W * 0.5, TONGUE_BOOST_BTN_H * 0.5);
-    this.action360ButtonLabel.eventMode = 'none';
-    this.action360ButtonRoot.addChild(this.action360ButtonGfx, this.action360ButtonLabel);
-    this.action360ButtonGfx.on('pointerdown', this.handleAction360ButtonDown);
-    this.action360ButtonGfx.on('pointerup', this.handleAction360ButtonUp);
-    this.action360ButtonGfx.on('pointerupoutside', this.handleAction360ButtonUp);
-    this.action360ButtonGfx.on('pointercancel', this.handleAction360ButtonUp);
-    this.uiLayer.addChild(this.action360ButtonRoot);
-    this.redrawAction360Button(false);
-    this.syncBoostHudButtonsVisibility();
-  }
-
-  private redrawAction360Button(pressed: boolean): void {
-    const gfx = this.action360ButtonGfx;
-    gfx.clear();
-    const accent = UI_NEON_GREEN;
-    const boost = pressed ? 1.25 : 1;
-    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).fill({
-      color: UI_PANEL_PURPLE,
-      alpha: pressed ? 0.9 : 0.78,
-    });
-    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).stroke({
-      color: accent,
-      alpha: pressed ? 0.98 : 0.85,
-      width: pressed ? 2.4 : 2,
-    });
-    gfx.roundRect(2, 2, TONGUE_BOOST_BTN_W - 4, TONGUE_BOOST_BTN_H - 4, 8).stroke({
-      color: accent,
-      alpha: 0.22 * boost,
-      width: 1,
-    });
-    if (this.action360ButtonLabel) {
-      this.action360ButtonLabel.alpha = pressed ? 1 : 0.92;
-    }
-  }
-
-  private readonly handleAction360ButtonDown = (event: FederatedPointerEvent): void => {
-    if (!this.isFlashSkillBoostActive()) {
-      return;
-    }
-    event.stopPropagation();
-    this.action360ButtonPressed = true;
-    this.redrawAction360Button(true);
-    this.perform360Action();
-  };
-
-  private readonly handleAction360ButtonUp = (): void => {
-    this.action360ButtonPressed = false;
-    this.redrawAction360Button(false);
-  };
 
   private setupClimbHud(app: Application): void {
     void app;
@@ -3367,24 +2986,231 @@ export class PlayScene implements Scene {
     this.climbHudText.zIndex = 1003;
     this.climbHudText.alpha = 0.9;
     this.uiLayer.addChild(this.climbHudText);
+
+    this.jumpsHudText = new Text({
+      text: '↑ 0',
+      style: this.createNeonGoldTextStyle(17, 3),
+    });
+    this.jumpsHudText.anchor.set(1, 0);
+    this.jumpsHudText.zIndex = 1003;
+    this.jumpsHudText.alpha = 0.95;
+    this.uiLayer.addChild(this.jumpsHudText);
+
     this.layoutClimbHud();
     this.refreshClimbHudText();
   }
 
   private layoutClimbHud(): void {
-    if (!this.climbHudText) {
-      return;
+    if (this.climbHudText) {
+      this.climbHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + 34);
     }
-    this.climbHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + 34);
+    if (this.jumpsHudText) {
+      this.jumpsHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + 54);
+    }
   }
 
   private refreshClimbHudText(): void {
-    if (!this.climbHudText) {
+    if (this.climbHudText) {
+      const mult = this.getAltitudeSpeedMultiplier();
+      const mApprox = Math.round(this.getClimbHeightPx() / 12);
+      this.climbHudText.text = `${mApprox}M  |  SPD x${mult.toFixed(2)}`;
+    }
+    if (this.jumpsHudText) {
+      this.jumpsHudText.text = `↑ ${this.jumpCount}`;
+    }
+  }
+
+  /**
+   * Mounts the combo badge and the Super Tongue button into `uiLayer`. The badge is hidden
+   * until the first chain jump (`bumpTo`); the Super Tongue button is hidden until streak ≥
+   * {@link COMBO_SUPER_TONGUE_STREAK}.
+   */
+  private setupComboHud(): void {
+    this.comboBadge = new ComboBadge();
+    this.comboBadge.zIndex = 1004;
+    /** Position is the badge **center** because the inner pivot is the geometric center. */
+    this.comboBadge.position.set(
+      COMBO_BADGE_X + COMBO_BADGE_W * 0.5,
+      COMBO_BADGE_Y + COMBO_BADGE_H * 0.5,
+    );
+    this.uiLayer.addChild(this.comboBadge);
+
+    this.comboSynth = new ComboSynth();
+
+    this.superTongueBtnRoot.zIndex = 1005;
+    this.superTongueBtnRoot.visible = false;
+    this.superTongueBtnGfx.eventMode = 'static';
+    this.superTongueBtnGfx.cursor = 'pointer';
+    this.superTongueBtnLabel = new Text({
+      text: 'SUPER TONGUE',
+      style: this.createNeonGoldTextStyle(15, 3),
+    });
+    this.superTongueBtnLabel.anchor.set(0.5);
+    this.superTongueBtnLabel.position.set(SUPER_TONGUE_BTN_W * 0.5, SUPER_TONGUE_BTN_H * 0.5);
+    this.superTongueBtnLabel.eventMode = 'none';
+    this.superTongueBtnRoot.addChild(this.superTongueBtnGfx, this.superTongueBtnLabel);
+    this.superTongueBtnGfx.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.fireSuperTongue();
+    });
+    this.uiLayer.addChild(this.superTongueBtnRoot);
+    this.layoutSuperTongueButton();
+    this.drawSuperTongueButton();
+  }
+
+  private layoutSuperTongueButton(): void {
+    this.superTongueBtnRoot.position.set(COMBO_BADGE_X, SUPER_TONGUE_BTN_Y);
+    this.superTongueBtnGfx.hitArea = new Rectangle(0, 0, SUPER_TONGUE_BTN_W, SUPER_TONGUE_BTN_H);
+  }
+
+  private drawSuperTongueButton(): void {
+    const gfx = this.superTongueBtnGfx;
+    gfx.clear();
+    const pulse = 0.5 + 0.5 * Math.sin(this.superTongueBtnPulse * 6);
+    const accent = pulse > 0.5 ? 0xffd700 : 0xff9900;
+    gfx.roundRect(0, 0, SUPER_TONGUE_BTN_W, SUPER_TONGUE_BTN_H, 12).fill({
+      color: 0x2a0040,
+      alpha: 0.92,
+    });
+    gfx.roundRect(0, 0, SUPER_TONGUE_BTN_W, SUPER_TONGUE_BTN_H, 12).stroke({
+      width: 3,
+      color: accent,
+      alpha: 0.95,
+    });
+    gfx.roundRect(3, 3, SUPER_TONGUE_BTN_W - 6, SUPER_TONGUE_BTN_H - 6, 9).stroke({
+      width: 1.4,
+      color: accent,
+      alpha: 0.4 + 0.3 * pulse,
+    });
+  }
+
+  /**
+   * Tick combo expiry (no-jump window) + advance badge animations. Also drives the Super Tongue
+   * button pulse/visibility and counts down its post-press buff timer.
+   */
+  private tickComboHud(dt: number): void {
+    if (this.comboCount > 0 && this.runTime - this.comboLastJumpTime > COMBO_CHAIN_WINDOW_SEC) {
+      this.breakCombo();
+    }
+    this.comboBadge?.tick(dt);
+    this.superTongueBtnPulse += dt;
+    if (this.superTongueBtnAvailable) {
+      this.drawSuperTongueButton();
+    }
+    if (this.superTongueBuffTime > 0) {
+      this.superTongueBuffTime = Math.max(0, this.superTongueBuffTime - dt);
+    }
+  }
+
+  /** Streak reset path — called by expiry, non-climbing jumps, fall save, or death. */
+  private breakCombo(): void {
+    if (this.comboCount === 0 && !this.superTongueBtnAvailable) {
       return;
     }
-    const mult = this.getAltitudeSpeedMultiplier();
-    const mApprox = Math.round(this.getClimbHeightPx() / 12);
-    this.climbHudText.text = `${mApprox}M  |  SPD x${mult.toFixed(2)}`;
+    this.comboCount = 0;
+    this.comboBadge?.expire();
+    this.setSuperTongueAvailable(false);
+  }
+
+  /** Show / hide the Super Tongue HUD button. Also resets the buff if going from available → not. */
+  private setSuperTongueAvailable(available: boolean): void {
+    if (available === this.superTongueBtnAvailable) {
+      return;
+    }
+    this.superTongueBtnAvailable = available;
+    this.superTongueBtnRoot.visible = available;
+    if (!available) {
+      this.superTongueBuffTime = 0;
+    } else {
+      this.superTongueBtnPulse = 0;
+      this.drawSuperTongueButton();
+    }
+  }
+
+  /**
+   * Streak-22 reward action. Fires an instant grapple ~{@link SUPER_TONGUE_STAIRS_UP} stairs above
+   * the player and grants {@link SUPER_TONGUE_BUFF_DURATION_SEC} of zero-cooldown grapples after.
+   * Does not break the combo — the player should be rewarded for using the unlock, not punished.
+   */
+  private fireSuperTongue(): void {
+    if (!this.superTongueBtnAvailable || this.grapple) {
+      return;
+    }
+    const hit = this.findSuperTongueTarget();
+    if (!hit) {
+      return;
+    }
+    this.grappleCooldown = 0;
+    this.beginGrappleFromHit(hit);
+    this.superTongueBuffTime = SUPER_TONGUE_BUFF_DURATION_SEC;
+    /**
+     * Pressing the unlocked button is a positive action: extend the chain window so the player has
+     * time to land + jump again before expiry, and play the next tier hit on the badge so the
+     * audio/visual response is immediate (the actual grapple flight can take >1s).
+     */
+    this.comboLastJumpTime = this.runTime;
+    /** Super Tongue counts as one combo step (grants progression toward the next tier word). */
+    this.comboCount += 1;
+    const wordTier = comboStreakToWordTier(this.comboCount);
+    this.comboBadge?.bumpTo(this.comboCount);
+    this.comboSynth?.play(wordTier);
+    /** Mid-air shake + camera punch makes the moment feel earned. */
+    this.shakeTime = Math.max(this.shakeTime, 0.18);
+  }
+
+  /**
+   * Pick the platform roughly {@link SUPER_TONGUE_STAIRS_UP} stairs above the player's current
+   * footing (current stair or last scored stair as fallback). Falls back to a wide overhead
+   * raycast if the exact stair was recycled out.
+   */
+  private findSuperTongueTarget():
+    | { x: number; y: number; platform: Platform }
+    | undefined {
+    const baseStairId =
+      this.currentGroundPlatform?.stairId ??
+      this.platforms
+        .filter((p) => p.y >= this.player.body.y - 8)
+        .reduce(
+          (best, p) => (best ? (p.y < best.y ? p : best) : p),
+          undefined as Platform | undefined,
+        )?.stairId ??
+      this.lastScoredStairId;
+    const targetStairId = baseStairId + SUPER_TONGUE_STAIRS_UP;
+    const exact = this.platforms.find(
+      (p) =>
+        p.stairId === targetStairId && p.y + p.height < this.player.body.y,
+    );
+    if (exact) {
+      return {
+        x: exact.x + exact.width * 0.5,
+        y: exact.y + exact.height - 3,
+        platform: exact,
+      };
+    }
+    /** Recycle moved the exact target away — pick the closest stair within an extended reach. */
+    const reach = STAIRS.stepPx * (SUPER_TONGUE_STAIRS_UP + 2);
+    let best:
+      | { score: number; x: number; y: number; platform: Platform }
+      | undefined;
+    const shootX = this.player.body.x + this.player.body.width * 0.5;
+    const shootY = this.player.body.y + this.player.body.height * 0.5;
+    for (const p of this.platforms) {
+      const bottom = p.y + p.height;
+      if (bottom >= shootY) {
+        continue;
+      }
+      const dy = shootY - bottom;
+      if (dy > reach || dy < 18) {
+        continue;
+      }
+      const px = p.x + p.width * 0.5;
+      const dx = Math.abs(px - shootX);
+      const score = dy * 1.3 + dx * 0.3;
+      if (!best || score < best.score) {
+        best = { score, x: px, y: bottom - 3, platform: p };
+      }
+    }
+    return best ? { x: best.x, y: best.y, platform: best.platform } : undefined;
   }
 
   private createNeonGoldTextStyle(size: number, strokeWidth: number): TextStyle {
@@ -4133,16 +3959,24 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Top HUD: animated `heart_counter-Sheet` (pulse + hit flash). */
+  /** Top HUD: animated HP and Mana counters stacked below the timer. */
   private setupHealthHud(): void {
-    this.healthHudRoot.zIndex = 1004;
+    this.healthHudRoot.zIndex = 1006;
     this.healthHudRoot.sortableChildren = false;
     this.healthHudRoot.eventMode = 'none';
     this.heartHudSprite.eventMode = 'none';
     this.heartHudSprite.roundPixels = RENDER.pixelArt;
     this.heartHudSprite.texture = this.heartCounterTextures[0] ?? Texture.EMPTY;
     this.heartHudSprite.scale.set(HEART_HUD_SCALE);
-    this.healthHudRoot.addChild(this.heartHudSprite);
+    this.manaHudSprite.eventMode = 'none';
+    this.manaHudSprite.roundPixels = RENDER.pixelArt;
+    this.manaHudSprite.texture = this.manaCounterTextures[0] ?? Texture.EMPTY;
+    this.manaHudSprite.scale.set(MANA_HUD_SCALE);
+    this.manaHudSprite.position.set(
+      0,
+      HEART_COUNTER_FRAME_H * HEART_HUD_SCALE + MANA_BAR_UNDER_HEALTH_GAP_PX,
+    );
+    this.healthHudRoot.addChild(this.heartHudSprite, this.manaHudSprite);
     this.uiLayer.addChild(this.healthHudRoot);
     this.layoutHealthHud();
     this.refreshHealthHud();
@@ -4151,9 +3985,10 @@ export class PlayScene implements Scene {
   private layoutHealthHud(): void {
     if (this.timerHudText) {
       const timerBottomY = this.timerHudText.position.y + this.timerHudText.height;
+      const stackWidth = Math.max(HEART_HUD_DISPLAY_WIDTH_PX, MANA_HUD_DISPLAY_WIDTH_PX);
       const heartX =
         this.timerHudText.position.x -
-        HEART_HUD_DISPLAY_WIDTH_PX * 0.5 +
+        stackWidth * 0.5 +
         HEALTH_HUD_CLEAR_LEFT_COLUMN_PX;
       const barY = timerBottomY + HEALTH_BAR_UNDER_TIMER_GAP_PX;
       this.healthHudRoot.position.set(heartX, barY);
@@ -4177,7 +4012,74 @@ export class PlayScene implements Scene {
     this.heartHudSegmentL = newL;
   }
 
+  private getManaPercent(): number {
+    return Math.max(0, Math.min(1, this.playerMana / PLAYER_MAX_MANA));
+  }
+
+  /**
+   * Disabled per design: low mana no longer slows the character.
+   * Kept as a no-op so the call site in `applyHorizontalInput` stays stable for future re-enable.
+   */
+  private getManaSpeedMultiplier(): number {
+    return 1;
+  }
+
+  private getManaDamageMultiplier(): number {
+    return this.getManaPercent() < 0.3 ? 2 : 1;
+  }
+
+  private setPlayerMana(value: number): void {
+    this.playerMana = Math.max(0, Math.min(PLAYER_MAX_MANA, value));
+  }
+
+  private recoverManaFull(): void {
+    this.setPlayerMana(PLAYER_MAX_MANA);
+  }
+
+  private updateMana(dt: number): void {
+    if (this.gameOver) {
+      this.previousManaDrainY = this.player.body.y;
+      return;
+    }
+
+    let nextMana = this.playerMana;
+    const altitudeFactor = 1 + Math.min(3, this.getHudClimbMeters() / 2000);
+    const climbedUpPx = Math.max(0, this.previousManaDrainY - this.player.body.y);
+    if (climbedUpPx > 0) {
+      nextMana -= (climbedUpPx / 12) * MANA_UPWARD_CLIMB_DRAIN_PER_METER * altitudeFactor;
+    }
+    if (!this.player.body.grounded) {
+      nextMana -= MANA_AIR_DRAIN_PER_SEC * altitudeFactor * dt;
+    }
+    nextMana -= MANA_ALTITUDE_DRAIN_PER_SEC * altitudeFactor * dt;
+
+    const standingStill =
+      this.player.body.grounded &&
+      !this.isRestFloorHolding() &&
+      Math.abs(this.player.body.vx) <= MANA_STAND_STILL_VX_PX &&
+      !this.grapple;
+    if (standingStill) {
+      nextMana += MANA_STAND_RECOVERY_PER_SEC * dt;
+    }
+    if (this.isRestFloorHolding()) {
+      nextMana = PLAYER_MAX_MANA;
+    }
+
+    this.setPlayerMana(nextMana);
+    this.previousManaDrainY = this.player.body.y;
+  }
+
   private tickHeartHud(dt: number): void {
+    this.heartHudPulseAcc += dt;
+    const pulse = Math.floor(this.heartHudPulseAcc * HEART_HUD_PULSE_HZ * 2) % 2;
+    if (this.manaCounterTextures.length > 0) {
+      const emptyFrame = MANA_COUNTER_FRAME_COUNT - 1;
+      const filledSegments = Math.max(0, Math.min(10, Math.round(this.getManaPercent() * 10)));
+      const baseFrame = filledSegments <= 0 ? emptyFrame : (10 - filledSegments) * 3;
+      const frame = filledSegments >= 10 ? (pulse === 0 ? 0 : 1) : baseFrame;
+      this.manaHudSprite.texture = this.manaCounterTextures[Math.min(emptyFrame, frame)];
+    }
+
     if (this.heartCounterTextures.length === 0) {
       return;
     }
@@ -4187,9 +4089,7 @@ export class PlayScene implements Scene {
       this.heartHudSprite.texture = this.heartCounterTextures[idx];
       return;
     }
-    this.heartHudPulseAcc += dt;
     const pair = heartHudSteadyFrameIndices(this.heartHudSegmentL);
-    const pulse = Math.floor(this.heartHudPulseAcc * HEART_HUD_PULSE_HZ * 2) % 2;
     const idx = pulse === 0 ? pair[0] : pair[1];
     this.heartHudSprite.texture = this.heartCounterTextures[idx];
   }
@@ -4207,19 +4107,11 @@ export class PlayScene implements Scene {
 
   private activatePlayerShield(): void {
     this.player.isShielded = true;
-    this.shieldTimeLeft = COLLECTIBLES.shieldDurationSec;
     this.refreshCollectibleHudText();
   }
 
   private tickPlayerShield(dt: number): void {
-    if (!this.player.isShielded) {
-      return;
-    }
-    this.shieldTimeLeft = Math.max(0, this.shieldTimeLeft - dt);
-    if (this.shieldTimeLeft <= 0) {
-      this.player.isShielded = false;
-      this.refreshCollectibleHudText();
-    }
+    this.shieldSaveFlashTime = Math.max(0, this.shieldSaveFlashTime - dt);
   }
 
   private consumePlayerShield(): boolean {
@@ -4227,11 +4119,6 @@ export class PlayScene implements Scene {
       return false;
     }
     this.player.isShielded = false;
-    this.shieldTimeLeft = 0;
-    this.playerInvulnTime = PLAYER_INVULN_SEC;
-    this.playerInvulnBlinkPhase = 0;
-    this.player.alpha = 1;
-    this.shakeTime = Math.max(this.shakeTime, 0.24);
     this.refreshCollectibleHudText();
     return true;
   }
@@ -4248,10 +4135,10 @@ export class PlayScene implements Scene {
     if (this.playerInvulnTime > 0) {
       return false;
     }
-    if (this.consumePlayerShield()) {
-      return true;
-    }
-    this.playerHealth = Math.max(0, this.playerHealth - MUSHROOM_DAMAGE_PER_HIT);
+    this.playerHealth = Math.max(
+      0,
+      this.playerHealth - MUSHROOM_DAMAGE_PER_HIT * this.getManaDamageMultiplier(),
+    );
     this.playerHealthCeilingThisRun = this.playerHealth;
     this.playerInvulnTime = PLAYER_INVULN_SEC;
     this.playerInvulnBlinkPhase = 0;
@@ -4434,6 +4321,7 @@ export class PlayScene implements Scene {
       return;
     }
     this.gameOver = true;
+    this.breakCombo();
     this.speedTierUiFlashTime = 0;
     this.speedPulseGfx.visible = false;
     this.speedPulseGfx.alpha = 1;
@@ -4620,85 +4508,6 @@ export class PlayScene implements Scene {
       });
     }
   }
-
-  /** Positions TONGUE (right) and 360 (left) under the top header. */
-  private layoutBoostHudButtons(): void {
-    const tongueRightX = this.width - BOOST_BTN_SCREEN_MARGIN_RIGHT_PX;
-    const by = UI_SAFE_PAD_TOP + UI_HEADER_H + 8;
-    const tongueLeftX = tongueRightX - TONGUE_BOOST_BTN_W;
-    const action360RightX = tongueLeftX - BOOST_ACTION_BTN_GAP_PX;
-    this.action360ButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
-    this.action360ButtonRoot.position.set(action360RightX, by);
-    this.action360ButtonGfx.hitArea = new Rectangle(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H);
-    this.tongueBoostButtonRoot.pivot.set(TONGUE_BOOST_BTN_W, 0);
-    this.tongueBoostButtonRoot.position.set(tongueRightX, by);
-    this.tongueBoostButtonGfx.hitArea = new Rectangle(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H);
-  }
-
-  private redrawTongueBoostButton(pressed: boolean): void {
-    const gfx = this.tongueBoostButtonGfx;
-    gfx.clear();
-    const gold = UI_NEON_GREEN;
-    const boost = pressed ? 1.25 : 1;
-    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).fill({
-      color: UI_PANEL_PURPLE,
-      alpha: pressed ? 0.9 : 0.78,
-    });
-    gfx.roundRect(0, 0, TONGUE_BOOST_BTN_W, TONGUE_BOOST_BTN_H, 10).stroke({
-      color: gold,
-      alpha: pressed ? 0.98 : 0.85,
-      width: pressed ? 2.4 : 2,
-    });
-    gfx.roundRect(2, 2, TONGUE_BOOST_BTN_W - 4, TONGUE_BOOST_BTN_H - 4, 8).stroke({
-      color: gold,
-      alpha: 0.22 * boost,
-      width: 1,
-    });
-    if (this.tongueBoostLabel) {
-      this.tongueBoostLabel.alpha = pressed ? 1 : 0.92;
-    }
-  }
-
-  private syncBoostHudButtonsVisibility(): void {
-    const show = this.isFlashSkillBoostActive();
-    this.tongueBoostButtonRoot.visible = show;
-    this.action360ButtonRoot.visible = show;
-    if (!show) {
-      this.tongueBoostButtonPressed = false;
-      this.redrawTongueBoostButton(false);
-      this.action360ButtonPressed = false;
-      this.redrawAction360Button(false);
-    }
-  }
-
-  private applyTongueBoostButtonAction(): void {
-    if (!this.isFlashSkillBoostActive()) {
-      return;
-    }
-    const d = TONGUE_COMBO_BOOST_DURATION_SEC * this.getComboWindowAltitudeMultiplier();
-    this.tongueBoostChainWindowSec = d;
-    this.tongueBoostComboExtendUntil = this.runTime + d;
-    this.tongueBoostComboResetAt = this.runTime + d;
-    this.feedComboFromLand();
-    const mult = this.getComboMultiplier();
-    this.maybeSpawnComboPopup(mult);
-    this.triggerGrappleAction();
-  }
-
-  private readonly handleTongueBoostButtonDown = (event: FederatedPointerEvent): void => {
-    if (!this.isFlashSkillBoostActive()) {
-      return;
-    }
-    event.stopPropagation();
-    this.tongueBoostButtonPressed = true;
-    this.redrawTongueBoostButton(true);
-    this.applyTongueBoostButtonAction();
-  };
-
-  private readonly handleTongueBoostButtonUp = (): void => {
-    this.tongueBoostButtonPressed = false;
-    this.redrawTongueBoostButton(false);
-  };
 
   private setupTouchControlsOverlay(app: Application): void {
     if (!this.input?.isTouchControlsActive()) {
@@ -4898,11 +4707,10 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Top header placement for collectible counters and bottom placement for boost buttons. */
+  /** Top header placement for collectible counters. */
   private syncCollectibleHudPosition(): void {
     this.collectibleHudRoot.pivot.set(0, 0.5);
     this.collectibleHudRoot.position.set(26, UI_HEADER_INFO_ROW_Y);
-    this.layoutBoostHudButtons();
   }
 
   private layoutCollectibleHud(): void {
@@ -4917,9 +4725,9 @@ export class PlayScene implements Scene {
     this.collectibleHudShieldText?.position.set(28, shieldRowY);
   }
 
-  /** HUD count includes the active shield plus any reserve bank charges. */
+  /** HUD count shows the currently active one-use fall shield. */
   private getShieldHudStock(): number {
-    return this.shieldStock + (this.player.isShielded ? 1 : 0);
+    return this.player.isShielded ? 1 : 0;
   }
 
   private refreshCollectibleHudText(): void {
@@ -5029,34 +4837,24 @@ export class PlayScene implements Scene {
     return COLLECTIBLES.shieldPickupPoints;
   }
 
-  /** While bank has 10+ gold and 5+ diamonds, spend and add shield charges (capped). No refill at end of fall launch. */
+  /** Auto-activate one fall-protection shield when the bank can pay the 10 Gold / 5 Diamond cost. */
   private maybePurchaseShieldFromBank(): void {
-    const maxStock = 99;
-    let gained = 0;
-    while (
-      this.shieldStock < maxStock &&
-      this.goldCount >= SHIELD_BANK_GOLD &&
-      this.diamondCount >= SHIELD_BANK_DIAMOND
+    if (
+      this.player.isShielded ||
+      this.goldCount < SHIELD_BANK_GOLD ||
+      this.diamondCount < SHIELD_BANK_DIAMOND
     ) {
-      this.goldCount -= SHIELD_BANK_GOLD;
-      this.diamondCount -= SHIELD_BANK_DIAMOND;
-      this.shieldStock += 1;
-      gained += 1;
-      const add = COLLECTIBLES.shieldPickupPoints;
-      this.score += add * this.getScoreGainMultiplier();
-      this.scoreboard?.onPointsGained(add);
+      return;
     }
-    if (gained > 0) {
-      if (!this.player.isShielded && this.shieldStock > 0) {
-        this.shieldStock -= 1;
-        this.activatePlayerShield();
-      }
-      this.sfx.play('collect_diamond', 0.72);
-      this.collectibleHudBump = 1;
-      this.hudGoldShown = this.goldCount;
-      this.hudDiamondShown = this.diamondCount;
-      this.refreshCollectibleHudText();
-    }
+
+    this.goldCount -= SHIELD_BANK_GOLD;
+    this.diamondCount -= SHIELD_BANK_DIAMOND;
+    this.activatePlayerShield();
+    this.sfx.play('collect_diamond', 0.72);
+    this.collectibleHudBump = 1;
+    this.hudGoldShown = this.goldCount;
+    this.hudDiamondShown = this.diamondCount;
+    this.refreshCollectibleHudText();
   }
 
   private spawnCollectibleField(): void {
@@ -5165,7 +4963,7 @@ export class PlayScene implements Scene {
       return;
     }
     const add = this.getCollectiblePoints(c.kind);
-    this.score += add * this.getScoreGainMultiplier();
+    this.score += add;
     this.scoreboard?.onPointsGained(add);
     if (c.kind === 'coin') {
       this.goldCount += 1;
@@ -5175,7 +4973,7 @@ export class PlayScene implements Scene {
       this.sfx.play('collect_diamond', 0.92);
       this.spawnDiamondCollectShine(pos.x, pos.y);
     } else {
-      this.activatePlayerShield();
+      this.maybePurchaseShieldFromBank();
       this.sfx.play('collect_diamond', 0.92);
       this.spawnDiamondCollectShine(pos.x, pos.y);
     }
@@ -6179,13 +5977,6 @@ export class PlayScene implements Scene {
       sprite.scale.y = MUSHROOM_SPRITE_SCALE;
 
       if (this.mushroomHitsPlayer(wx, wy)) {
-        // Flash / beast combo boost: body contact vaporizes mushrooms (matches the pulsing
-        // “charged” look on the avatar). No HP loss while boost is active.
-        if (this.isFlashSkillBoostActive()) {
-          this.destroyMushroomEnemy(i);
-          i -= 1;
-          continue;
-        }
         if (this.damagePlayer()) {
           // Stop scanning this frame — `damagePlayer` already updated invuln/UI; subsequent
           // overlaps in the same frame would be wasted (one hit per swing window is enough).

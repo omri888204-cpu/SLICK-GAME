@@ -5,8 +5,6 @@ export class InputManager {
   private keys = new Set<string>();
   private jumpQueued = false;
   private grappleQueued = false;
-  /** Boost-mode 360 skill (keyboard); cleared each frame via `consumeAction360`. */
-  private action360Queued = false;
   /** Melee attack input — keyboard (F) or virtual button. Drained each frame by `consumeAttack`. */
   private attackQueued = false;
   private readonly touchControlsEnabled = InputManager.detectTouchControls();
@@ -71,12 +69,6 @@ export class InputManager {
   consumeGrapple(): boolean {
     const queued = this.grappleQueued;
     this.grappleQueued = false;
-    return queued;
-  }
-
-  consumeAction360(): boolean {
-    const queued = this.action360Queued;
-    this.action360Queued = false;
     return queued;
   }
 
@@ -181,10 +173,6 @@ export class InputManager {
 
     if (event.code === 'KeyE' && !event.repeat) {
       this.grappleQueued = true;
-    }
-
-    if (event.code === 'KeyQ' && !event.repeat) {
-      this.action360Queued = true;
     }
 
     if (event.code === 'KeyF' && !event.repeat) {

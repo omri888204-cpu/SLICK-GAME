@@ -150,31 +150,23 @@ export const GRAPPLE = {
   artExtraTiltScale: 0.28,
 };
 
-/** Beast-mode combo: chain window, score multiplier, floating shoutouts. */
+/**
+ * Jump tracking — new minimal system. Counts the player's successful jumps for HUD display.
+ * Combo/Flash/Tongue-Boost/360 layered systems were removed; future combo work hangs off this counter.
+ */
+export const JUMP_TRACKING = {
+  /** Reset every run; only `triggerJumpAction` increments. */
+  resetOnRunStart: true,
+} as const;
+
+/** Combo chain HUD: tier words + synth (see PlayScene + ComboBadge). */
 export const COMBO = {
-  chainWindowSec: 2,
-  maxMultiplier: 7,
-  words: [
-    'STICKY!',
-    'SNAP!',
-    'LIZARD MODE!',
-    'APEX!',
-    'UNSTOPPABLE!',
-    'PREDATOR!',
-  ] as const,
-  /** Peak grapple + launch speed above this (px/s, with vy weighted) counts as “high velocity”. */
-  highLaunchSpeedPx: 920,
-  floatLifeSec: 1.05,
-  floatDriftPxPerSec: 72,
-  popInSec: 0.14,
-  /** Combo mult at or above this enables beast visuals (tongue + trail). “> x5” → 6+. */
-  beastModeMinMultiplier: 6,
-  beastTongueOutline: 0xff4400,
-  beastTongueFill: 0xffcc33,
-  beastParticleLifeSec: 0.45,
-  beastParticleSpawnIntervalSec: 0.04,
-  beastParticleMinSpeed: 220,
-};
+  /**
+   * Chain jumps at `comboCount` ≥ 2 before the badge advances to the next word
+   * (`QUICK!` → `SLICK!` → …).
+   */
+  jumpsPerWord: 6,
+} as const;
 
 /** Procedural infinite stairs + run reset thresholds. */
 export const STAIRS = {
@@ -268,9 +260,7 @@ export const SCORE_UI = {
   shakeMaxPx: 4.8,
   bigPointsThreshold: 14,
   shakePointsFloor: 8,
-  shakeMinMultForFloor: 5,
   climbBloomSaturationMeters: 380,
-  apexComboMultiplier: 5,
   punchDurationSec: 0.2,
   punchPeakScale: 1.52,
   punchMaxRotationRad: (5 * Math.PI) / 180,

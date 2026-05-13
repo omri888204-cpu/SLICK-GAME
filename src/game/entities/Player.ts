@@ -14,12 +14,12 @@ export enum PlayerState {
 }
 
 /**
- * Spritesheet layout — `public/assets/character_spritesheet.png` is an 800×280 sheet
+ * Spritesheet layout — `public/assets/Player staff/character_spritesheet.png` is an 800×280 sheet
  * arranged as 8 columns × 7 rows of 100×40 frames. The user-facing spec describes
  * 48×48 frames but the asset itself uses 100×40 cells; what matters for animation is
  * that the row mapping below matches their intent (idle = row 0, run = row 1, jump = row 2).
  */
-const SPRITESHEET_URL = `${import.meta.env.BASE_URL}assets/character_spritesheet.png`;
+const SPRITESHEET_URL = `${import.meta.env.BASE_URL}assets/${encodeURIComponent('Player staff')}/character_spritesheet.png`;
 const FRAME_W = 100;
 const FRAME_H = 40;
 const IDLE_ROW = 0;
