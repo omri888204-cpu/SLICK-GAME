@@ -500,8 +500,8 @@ const REST_FLOOR_HOUSE_SCREEN_X_RATIO = 0.8;
 /** Below this screen width (phones/small viewports) we render the house and clouds smaller so they're not cropped. */
 const REST_FLOOR_PROPS_MOBILE_SCREEN_W = 600;
 const REST_FLOOR_HOUSE_SCALE_DESKTOP = 0.8;
-const REST_FLOOR_HOUSE_SCALE_MOBILE = 0.5;
-const REST_FLOOR_HOUSE_SINK_PX = 0;
+const REST_FLOOR_HOUSE_SCALE_MOBILE = 0.68;
+const REST_FLOOR_HOUSE_SINK_PX = 10;
 const REST_FLOOR_CLOUD_DEPTH = 90;
 const REST_FLOOR_CLOUD_WIDTH_PX = 580;
 const REST_FLOOR_CLOUD_SINK_PX = 10;
