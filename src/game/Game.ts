@@ -3,6 +3,7 @@ import { RENDER } from '../config/game.config';
 import { BootScene } from './scenes/BootScene';
 import { MenuScene } from './scenes/MenuScene';
 import { PlayScene } from './scenes/PlayScene';
+import { clearLeaderboardCollection } from './services/leaderboard';
 import type { Scene } from './scenes/Scene';
 
 export class Game {
@@ -46,6 +47,15 @@ export class Game {
     this.applyFitScale();
     this.app.ticker.add((ticker) => this.activeScene?.update(ticker));
     window.addEventListener('resize', this.handleResize);
+
+    if (import.meta.env.VITE_CLEAR_LEADERBOARD_ON_BOOT === 'true') {
+      try {
+        const deleted = await clearLeaderboardCollection();
+        console.info('[Game] VITE_CLEAR_LEADERBOARD_ON_BOOT: cleared leaderboard docs', deleted);
+      } catch (err) {
+        console.error('[Game] leaderboard clear on boot failed', err);
+      }
+    }
 
     await this.changeScene(
       new BootScene(() => this.changeScene(new MenuScene(() => this.changeScene(new PlayScene())))),

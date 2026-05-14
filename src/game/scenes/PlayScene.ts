@@ -480,6 +480,13 @@ const SCROLL_SPEED_WARMUP_METERS = 300;
 const SCROLL_SPEED_STEP_METERS = 200;
 /** Per milestone delta (3× legacy 0.05 → faster difficulty ramp). */
 const SCROLL_SPEED_STEP_DELTA = 0.15;
+/**
+ * Extra scroll / drift multiplier from run time (stacks with altitude). Avoids a soft ceiling around ~×5
+ * when climb height stalls against auto-scroll so late runs keep getting faster.
+ */
+const SCROLL_SPEED_RUNTIME_START_SEC = 40;
+const SCROLL_SPEED_RUNTIME_STEP_SEC = 30;
+const SCROLL_SPEED_RUNTIME_DELTA = 0.05;
 /** Continuous altitude shake disabled; it became visible jitter around the 3000m+ tiers. */
 const ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD = Number.POSITIVE_INFINITY;
 const SPEED_TIER_SHAKE_SEC = 0;
@@ -585,14 +592,19 @@ const COMBO_MIN_CLIMB_PX = 6;
 const SUPER_JUMP_VY_SCALE = 2;
 const SUPER_JUMP_SPARK_COUNT = 14;
 /** After `PULL UP`, window to tap `SUPER JUMP` for extra score bonus (combo uses normal jump rules). */
-const SKILL_CHAIN_WINDOW_SEC = 2.35;
+const SKILL_CHAIN_WINDOW_SEC = 5.35;
 const SKILL_CHAIN_BASE_SCORE = 160;
 const SKILL_CHAIN_SCORE_PER_COMBO = 32;
 /** Extra time after mega jump before the combo chain can expire (air time + next landing). */
 const SUPER_JUMP_COMBO_GRACE_EXTEND_SEC = 2.0;
+/**
+ * Feet vs stair-top line test during SUPER JUMP (world Y, px). Smooths float noise and single-frame
+ * micro-movement without risking double-count (stair gaps ≫ this value).
+ */
+const SUPER_JUMP_STAIR_CROSS_EPS = 3;
 const COMBO_GLOW_STREAK = 15;
 /** Grounded jumps before the skill pair unlocks (both buttons; counter resets after mega jump / expiry). */
-const PULL_UP_JUMPS_REQUIRED = 8;
+const PULL_UP_JUMPS_REQUIRED = 6;
 /** Combo HUD anchor X; Y is computed under the skill pair in `layoutComboHudRoot`. */
 const COMBO_HUD_SCREEN_X = 20;
 /** Vertical gap between skill buttons strip and combo badge. */
@@ -1156,6 +1168,7 @@ export class PlayScene implements Scene {
 
     const gravityScale = pulling ? 0 : this.getGravityScaleForLevel();
     const wasGrounded = this.player.body.grounded;
+    const preBodyX = this.player.body.x;
     const prePhysicsFeetY = this.player.body.y + this.player.body.height;
     const result = this.physics.update(
       this.player.body,
@@ -1167,10 +1180,16 @@ export class PlayScene implements Scene {
 
     if (this.superJumpStairTrackActive) {
       const postFeetY = this.player.body.y + this.player.body.height;
+      const postBodyX = this.player.body.x;
       if (this.player.body.vy >= 0) {
         this.superJumpStairTrackActive = false;
-      } else if (postFeetY < prePhysicsFeetY) {
-        this.applySuperJumpAscendingStairCombo(prePhysicsFeetY, postFeetY);
+      } else {
+        this.applySuperJumpAscendingStairCombo(
+          prePhysicsFeetY,
+          postFeetY,
+          preBodyX,
+          postBodyX,
+        );
       }
     }
 
@@ -1511,19 +1530,45 @@ export class PlayScene implements Scene {
   }
 
   /**
+   * True if, at some horizontal body position along the frame sweep (before → after physics),
+   * the feet band matches {@link playerBodyOverlapsPlatform} (narrower X vs landing).
+   */
+  private superJumpFeetBandSweptOverlapsPlatform(
+    prevBodyX: number,
+    currBodyX: number,
+    bodyWidth: number,
+    platform: Platform,
+  ): boolean {
+    const x0 = Math.min(prevBodyX, currBodyX);
+    const x1 = Math.max(prevBodyX, currBodyX);
+    return x1 > platform.x - bodyWidth * 0.42 && x0 < platform.x + platform.width;
+  }
+
+  /**
    * Each stair top crossed while ascending on a mega jump (feet move upward through `platform.y`)
    * adds one combo step. Launch stair is pre-seeded into {@link superJumpCrossedStairIds} so leaving
    * it does not double-count the takeoff already handled by {@link registerComboJump}.
+   * Uses a horizontal sweep so fast sideways motion in one frame does not miss a stair the feet crossed.
    */
-  private applySuperJumpAscendingStairCombo(prevFeetY: number, currFeetY: number): void {
+  private applySuperJumpAscendingStairCombo(
+    prevFeetY: number,
+    currFeetY: number,
+    prevBodyX: number,
+    currBodyX: number,
+  ): void {
     if (currFeetY >= prevFeetY) {
       return;
     }
+    const eps = SUPER_JUMP_STAIR_CROSS_EPS;
+    const w = this.player.body.width;
     for (const platform of this.platforms) {
-      if (!this.playerBodyOverlapsPlatform(platform)) {
+      if (!this.superJumpFeetBandSweptOverlapsPlatform(prevBodyX, currBodyX, w, platform)) {
         continue;
       }
-      const crossedUpward = currFeetY < platform.y && prevFeetY >= platform.y;
+      const top = platform.y;
+      const crossedUpward =
+        currFeetY < top + eps &&
+        prevFeetY >= top - eps;
       if (!crossedUpward || this.superJumpCrossedStairIds.has(platform.stairId)) {
         continue;
       }
@@ -3028,28 +3073,34 @@ export class PlayScene implements Scene {
 
   /**
    * Scroll / difficulty multiplier: 1× until `SCROLL_SPEED_WARMUP_METERS`, then +`SCROLL_SPEED_STEP_DELTA`
-   * each `SCROLL_SPEED_STEP_METERS` (no cap; delta tripled vs legacy for faster scaling).
+   * each `SCROLL_SPEED_STEP_METERS`, plus {@link SCROLL_SPEED_RUNTIME_DELTA} every `SCROLL_SPEED_RUNTIME_STEP_SEC`
+   * after `SCROLL_SPEED_RUNTIME_START_SEC` (uncaps perceived speed when altitude gain stalls).
    */
   private getAltitudeSpeedMultiplier(): number {
     const m = this.getHudClimbMeters();
-    if (m <= SCROLL_SPEED_WARMUP_METERS) {
-      return 1;
+    let altitudeMult = 1;
+    if (m > SCROLL_SPEED_WARMUP_METERS) {
+      const steps = Math.floor((m - SCROLL_SPEED_WARMUP_METERS) / SCROLL_SPEED_STEP_METERS);
+      altitudeMult = 1 + SCROLL_SPEED_STEP_DELTA * steps;
     }
-    const steps = Math.floor((m - SCROLL_SPEED_WARMUP_METERS) / SCROLL_SPEED_STEP_METERS);
-    return 1 + SCROLL_SPEED_STEP_DELTA * steps;
+    const runtimeSteps = Math.max(
+      0,
+      Math.floor((this.runTime - SCROLL_SPEED_RUNTIME_START_SEC) / SCROLL_SPEED_RUNTIME_STEP_SEC),
+    );
+    return altitudeMult + SCROLL_SPEED_RUNTIME_DELTA * runtimeSteps;
   }
 
   private getCameraScrollSpeedPx(): number {
     return AUTO_SCROLL_BASE_SPEED_PX * this.getAltitudeSpeedMultiplier();
   }
 
-  /** Tier index for speed feedback; 0 = warmup, 1 = first step above warmup, … */
+  /** Tier index for speed feedback; tracks whole {@link SCROLL_SPEED_STEP_DELTA} steps of {@link getAltitudeSpeedMultiplier} (altitude + runtime). */
   private getScrollSpeedTier(): number {
-    const m = this.getHudClimbMeters();
-    if (m <= SCROLL_SPEED_WARMUP_METERS) {
+    const mult = this.getAltitudeSpeedMultiplier();
+    if (mult <= 1.0001) {
       return 0;
     }
-    return Math.floor((m - SCROLL_SPEED_WARMUP_METERS) / SCROLL_SPEED_STEP_METERS);
+    return Math.floor((mult - 1) / SCROLL_SPEED_STEP_DELTA);
   }
 
   private syncScrollSpeedTierBaseline(): void {
@@ -3292,7 +3343,7 @@ export class PlayScene implements Scene {
     this.skillPairRoot.sortableChildren = true;
     this.skillPairRoot.visible = false;
     this.skillPairRoot.scale.set(PULL_UP_BTN_SCALE);
-    this.skillPairRoot.alpha = 0.9;
+    this.skillPairRoot.alpha = 0.85;
 
     this.superJumpBtnRoot.position.set(0, 0);
     this.superJumpBtnGfx.cursor = 'pointer';

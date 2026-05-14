@@ -6,55 +6,136 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  writeBatch,
 } from 'firebase/firestore';
 import { db } from '../../firebase.js';
 
+/** One saved run for Firestore + HUD (sorted by {@link LeaderboardEntry.totalScore}). */
 export type LeaderboardEntry = {
   nickname: string;
-  score: number;
+  /** Composite points — primary leaderboard sort. */
+  totalScore: number;
+  /** Max climb height for that run (HUD meters). */
+  maxHeightMeters: number;
+  /** Peak jump-chain counter reached during that run. */
+  bestCombo: number;
   createdAtMs: number;
 };
 
 /** Firestore collection id — must match Firebase rules / console. */
 export const LEADERBOARD_COLLECTION = 'leaderboard';
 
+export type SaveLeaderboardRunPayload = {
+  nickname: string;
+  totalScore: number;
+  maxHeightMeters: number;
+  bestCombo: number;
+};
+
 /**
- * Persist one run to Firestore: nickname + score (meters) + server timestamp.
+ * Persist one run. Firestore fields: `nickname`, `totalScore`, `maxHeightMeters`, `bestCombo`, `createdAt`.
+ *
+ * **One-time wipe:** set `VITE_CLEAR_LEADERBOARD_ON_BOOT=true`, rebuild, open the game once, then remove the flag.
  */
-export async function saveScore(nickname: string, score: number): Promise<void> {
-  const cleanNick = nickname.trim().slice(0, 20) || 'Player';
-  const payload = {
+export async function saveLeaderboardRun(payload: SaveLeaderboardRunPayload): Promise<void> {
+  const cleanNick = payload.nickname.trim().slice(0, 20) || 'Player';
+  const doc = {
     nickname: cleanNick,
-    score: Math.max(0, Math.floor(score)),
+    totalScore: Math.max(0, Math.floor(payload.totalScore)),
+    maxHeightMeters: Math.max(0, Math.floor(payload.maxHeightMeters)),
+    bestCombo: Math.max(0, Math.floor(payload.bestCombo)),
     createdAt: serverTimestamp(),
   };
-  console.info('[leaderboard] saveScore → addDoc', {
-    collection: 'leaderboard',
-    nickname: cleanNick,
-    score: payload.score,
+  console.info('[leaderboard] saveLeaderboardRun → addDoc', {
+    collection: LEADERBOARD_COLLECTION,
+    ...doc,
+    createdAt: '[serverTimestamp]',
   });
-  await addDoc(collection(db, 'leaderboard'), payload);
+  await addDoc(collection(db, LEADERBOARD_COLLECTION), doc);
 }
 
-/** @deprecated Use `saveScore` */
+/** @deprecated Prefer {@link saveLeaderboardRun} — legacy meter-only payload. */
+export async function saveScore(nickname: string, score: number): Promise<void> {
+  await saveLeaderboardRun({
+    nickname,
+    totalScore: score,
+    maxHeightMeters: score,
+    bestCombo: 0,
+  });
+}
+
+/** @deprecated Use {@link saveLeaderboardRun} */
 export const submitLeaderboardScore = saveScore;
+
+/** Delete every document in {@link LEADERBOARD_COLLECTION} (batched, 500/writeBatch). */
+export async function clearLeaderboardCollection(): Promise<number> {
+  const snap = await getDocs(collection(db, LEADERBOARD_COLLECTION));
+  const docs = snap.docs;
+  let deleted = 0;
+  const BATCH = 500;
+  for (let i = 0; i < docs.length; i += BATCH) {
+    const batch = writeBatch(db);
+    const chunk = docs.slice(i, i + BATCH);
+    for (const d of chunk) {
+      batch.delete(d.ref);
+    }
+    await batch.commit();
+    deleted += chunk.length;
+  }
+  console.info('[leaderboard] clearLeaderboardCollection deleted', deleted);
+  return deleted;
+}
+
+function parseLeaderboardDoc(data: Record<string, unknown>): LeaderboardEntry {
+  const nickname = typeof data.nickname === 'string' ? data.nickname : 'Player';
+
+  const totalScoreRaw = data.totalScore;
+  const legacyScore = data.score;
+  let totalScore = 0;
+  if (typeof totalScoreRaw === 'number' && Number.isFinite(totalScoreRaw)) {
+    totalScore = totalScoreRaw;
+  } else if (typeof legacyScore === 'number' && Number.isFinite(legacyScore)) {
+    totalScore = legacyScore;
+  }
+
+  const maxRaw = data.maxHeightMeters;
+  let maxHeightMeters = typeof maxRaw === 'number' && Number.isFinite(maxRaw) ? maxRaw : 0;
+  if (
+    maxHeightMeters === 0 &&
+    typeof legacyScore === 'number' &&
+    Number.isFinite(legacyScore) &&
+    typeof totalScoreRaw !== 'number'
+  ) {
+    /** Legacy docs stored meters as `score` only. */
+    maxHeightMeters = legacyScore;
+  }
+
+  const bc = data.bestCombo;
+  const bestCombo = typeof bc === 'number' && Number.isFinite(bc) ? bc : 0;
+
+  const createdAtMs =
+    typeof data.createdAt === 'object' &&
+    data.createdAt !== null &&
+    'toMillis' in data.createdAt &&
+    typeof (data.createdAt as { toMillis: () => number }).toMillis === 'function'
+      ? (data.createdAt as { toMillis: () => number }).toMillis()
+      : Date.now();
+
+  return {
+    nickname,
+    totalScore: Math.max(0, Math.floor(totalScore)),
+    maxHeightMeters: Math.max(0, Math.floor(maxHeightMeters)),
+    bestCombo: Math.max(0, Math.floor(bestCombo)),
+    createdAtMs,
+  };
+}
 
 export async function fetchTopLeaderboard(limitCount = 5): Promise<LeaderboardEntry[]> {
   const q = query(
     collection(db, LEADERBOARD_COLLECTION),
-    orderBy('score', 'desc'),
+    orderBy('totalScore', 'desc'),
     limit(limitCount),
   );
   const snapshot = await getDocs(q);
-  return snapshot.docs.map((docSnap) => {
-    const data = docSnap.data();
-    return {
-      nickname: typeof data.nickname === 'string' ? data.nickname : 'Player',
-      score: typeof data.score === 'number' ? data.score : 0,
-      createdAtMs:
-        typeof data.createdAt?.toMillis === 'function'
-          ? data.createdAt.toMillis()
-          : Date.now(),
-    };
-  });
+  return snapshot.docs.map((docSnap) => parseLeaderboardDoc(docSnap.data() as Record<string, unknown>));
 }
