@@ -3,7 +3,7 @@ import { RENDER } from '../config/game.config';
 import { BootScene } from './scenes/BootScene';
 import { MenuScene } from './scenes/MenuScene';
 import { PlayScene } from './scenes/PlayScene';
-import { clearLeaderboardCollection } from './services/leaderboard';
+import { clearLeaderboardDatabase, tryOneTimeScheduledLeaderboardPurge } from './services/leaderboard';
 import type { Scene } from './scenes/Scene';
 
 export class Game {
@@ -48,13 +48,16 @@ export class Game {
     this.app.ticker.add((ticker) => this.activeScene?.update(ticker));
     window.addEventListener('resize', this.handleResize);
 
-    if (import.meta.env.VITE_CLEAR_LEADERBOARD_ON_BOOT === 'true') {
-      try {
-        const deleted = await clearLeaderboardCollection();
-        console.info('[Game] VITE_CLEAR_LEADERBOARD_ON_BOOT: cleared leaderboard collections', deleted);
-      } catch (err) {
-        console.error('[Game] leaderboard clear on boot failed', err);
+    try {
+      const didScheduledPurge = await tryOneTimeScheduledLeaderboardPurge();
+      if (import.meta.env.VITE_CLEAR_LEADERBOARD_ON_BOOT === 'true') {
+        await clearLeaderboardDatabase();
+        if (!didScheduledPurge) {
+          console.info('Leaderboard database has been fully cleared');
+        }
       }
+    } catch (err) {
+      console.error('[Game] leaderboard bootstrap purge failed', err);
     }
 
     if (import.meta.env.DEV) {
@@ -62,7 +65,7 @@ export class Game {
         window as unknown as {
           skyClimberClearLeaderboard?: () => Promise<number>;
         }
-      ).skyClimberClearLeaderboard = () => clearLeaderboardCollection();
+      ).skyClimberClearLeaderboard = () => clearLeaderboardDatabase();
     }
 
     await this.changeScene(

@@ -23,14 +23,27 @@ export type LeaderboardEntry = {
   createdAtMs: number;
 };
 
+/** Rows shown on the leaderboard UI and capped Firestore reads (`orderBy totalScore`, `limit`). */
+export const LEADERBOARD_DISPLAY_LIMIT = 5;
+
 /**
  * Primary Firestore collection (must match Firebase Rules + any composite indexes).
  * Fields: `nickname`, `totalScore`, `maxHeightMeters`, `bestCombo`, `createdAt`.
  */
 export const LEADERBOARD_COLLECTION = 'leaderboard';
 
-/** Older experiments / migrations; wiped by {@link clearLeaderboardCollection}. */
+/** Older experiments / migrations; wiped by {@link clearLeaderboardDatabase}. */
 export const LEADERBOARD_COLLECTION_ALT = 'global_top_runs';
+
+/** Legacy Firebase path name — emptied together with `{@link LEADERBOARD_COLLECTION}`. */
+export const LEADERBOARD_SCORES_COLLECTION_LEGACY = 'scores';
+
+/** All Firestore buckets deleted by bootstrap / purge (batch `delete`). */
+export const LEADERBOARD_CLEARABLE_COLLECTIONS = [
+  LEADERBOARD_COLLECTION,
+  LEADERBOARD_COLLECTION_ALT,
+  LEADERBOARD_SCORES_COLLECTION_LEGACY,
+] as const;
 
 export type SaveLeaderboardRunPayload = {
   nickname: string;
@@ -40,9 +53,10 @@ export type SaveLeaderboardRunPayload = {
 };
 
 /**
- * Persist one run. Firestore fields: `nickname`, `totalScore`, `maxHeightMeters`, `bestCombo`, `createdAt`.
+ * Persist one run that already qualifies as a global top-{@link LEADERBOARD_DISPLAY_LIMIT} entry.
+ * Fields: `nickname`, `totalScore`, `maxHeightMeters`, `bestCombo`, `createdAt`.
  *
- * **One-time wipe:** set `VITE_CLEAR_LEADERBOARD_ON_BOOT=true`, rebuild, open the game once, then remove the flag.
+ * **Purging legacy rows:** set `VITE_LEADERBOARD_ONE_TIME_PURGE` until you redeploy without it (see {@link tryOneTimeScheduledLeaderboardPurge}); or briefly `VITE_CLEAR_LEADERBOARD_ON_BOOT=true`.
  */
 export async function saveLeaderboardRun(payload: SaveLeaderboardRunPayload): Promise<void> {
   const cleanNick = payload.nickname.trim().slice(0, 20) || 'Player';
@@ -100,14 +114,43 @@ async function deleteAllDocsInCollection(collectionId: string): Promise<number> 
 }
 
 /**
- * Deletes every document in {@link LEADERBOARD_COLLECTION} and {@link LEADERBOARD_COLLECTION_ALT}.
+ * Batch-deletes **every document** under {@link LEADERBOARD_CLEARABLE_COLLECTIONS} (`delete()` on each ref).
  */
-export async function clearLeaderboardCollection(): Promise<number> {
-  const main = await deleteAllDocsInCollection(LEADERBOARD_COLLECTION);
-  const alt = await deleteAllDocsInCollection(LEADERBOARD_COLLECTION_ALT);
-  const total = main + alt;
-  console.info('[leaderboard] clearLeaderboardCollection deleted', { main, alt, total });
+export async function clearLeaderboardDatabase(): Promise<number> {
+  let total = 0;
+  for (const cid of LEADERBOARD_CLEARABLE_COLLECTIONS) {
+    total += await deleteAllDocsInCollection(cid);
+  }
   return total;
+}
+
+/** @alias {@link clearLeaderboardDatabase} */
+export async function clearLeaderboardCollection(): Promise<number> {
+  return clearLeaderboardDatabase();
+}
+
+/**
+ * When `import.meta.env.VITE_LEADERBOARD_ONE_TIME_PURGE` is non-empty, wipes leaderboard buckets **on every startup**
+ * until you remove the env string and rebuild — briefly use for a controlled rollout or local QA only.
+ *
+ * Prints: Leaderboard database has been fully cleared
+ */
+export async function tryOneTimeScheduledLeaderboardPurge(): Promise<boolean> {
+  const sentinel =
+    typeof import.meta.env.VITE_LEADERBOARD_ONE_TIME_PURGE === 'string'
+      ? import.meta.env.VITE_LEADERBOARD_ONE_TIME_PURGE.trim()
+      : '';
+  if (!sentinel) {
+    return false;
+  }
+  try {
+    await clearLeaderboardDatabase();
+    console.info('Leaderboard database has been fully cleared');
+    return true;
+  } catch (err) {
+    console.error('[leaderboard] scheduled one-time purge failed', err);
+    return false;
+  }
 }
 
 function parseLeaderboardDoc(data: Record<string, unknown>): LeaderboardEntry {
@@ -169,17 +212,32 @@ export function compareLeaderboardRank(a: LeaderboardEntry, b: LeaderboardEntry)
 }
 
 /**
- * Ensures the row the player just submitted appears in the HUD even if Firestore read is delayed or empty.
+ * After a qualifying save, merges the submitted run into `remote` for immediate UI parity with Firestore.
  */
 export function mergeSessionIntoTop(
   remote: LeaderboardEntry[],
   session: LeaderboardEntry,
-  limitCount: number,
+  limitCount = LEADERBOARD_DISPLAY_LIMIT,
 ): LeaderboardEntry[] {
   return [...remote, session].sort(compareLeaderboardRank).slice(0, limitCount);
 }
 
-export async function fetchTopLeaderboard(limitCount = 5): Promise<LeaderboardEntry[]> {
+/**
+ * True if `session` is one of the best `limitCount` runs among `remote ∪ {session}` (same ranking as the UI).
+ * Used to avoid saving or locally merging runs that cannot appear on the leaderboard.
+ */
+export function sessionQualifiesForTop(
+  remote: LeaderboardEntry[],
+  session: LeaderboardEntry,
+  limitCount = LEADERBOARD_DISPLAY_LIMIT,
+): boolean {
+  const combined = [...remote, session];
+  combined.sort(compareLeaderboardRank);
+  const top = combined.slice(0, limitCount);
+  return top.includes(session);
+}
+
+export async function fetchTopLeaderboard(limitCount = LEADERBOARD_DISPLAY_LIMIT): Promise<LeaderboardEntry[]> {
   const col = collection(db, LEADERBOARD_COLLECTION);
   try {
     const q = query(col, orderBy('totalScore', 'desc'), limit(limitCount));

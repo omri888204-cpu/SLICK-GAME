@@ -33,8 +33,10 @@ import { ComboSynth } from '../audio/ComboSynth';
 import { Player } from '../entities/Player';
 import {
   fetchTopLeaderboard,
+  LEADERBOARD_DISPLAY_LIMIT,
   mergeSessionIntoTop,
   saveLeaderboardRun,
+  sessionQualifiesForTop,
   subscribeTopLeaderboard,
   type LeaderboardEntry,
 } from '../services/leaderboard';
@@ -797,13 +799,14 @@ export class PlayScene implements Scene {
   private leaderboardCloseBtn = new Graphics();
   private leaderboardCloseLabel?: Text;
   private leaderboardLoadingText?: Text;
+  private leaderboardEmptyHint?: Text;
   private finalMetersAtDeath = 0;
   /** Peak HUD climb (m) this run — for leaderboard max height. */
   private peakClimbMetersThisRun = 0;
   /** Peak {@link comboCount} this run — for leaderboard best combo. */
   private peakComboThisRun = 0;
   private deathSubmitted = false;
-  /** Latest Top 5 from Firestore — kept fresh via {@link subscribeTopLeaderboard} while PlayScene lives. */
+  /** Latest remote top N from Firestore — kept fresh via {@link subscribeTopLeaderboard} while PlayScene lives. */
   private lastLeaderboardTop: LeaderboardEntry[] = [];
   private leaderboardUnsubscribe: (() => void) | null = null;
   private collectibles: Collectible[] = [];
@@ -2020,7 +2023,6 @@ export class PlayScene implements Scene {
     this.peakClimbMetersThisRun = 0;
     this.peakComboThisRun = 0;
     this.deathSubmitted = false;
-    this.lastLeaderboardTop = [];
     this.gameOverOverlay.visible = false;
     this.leaderboardOverlay.visible = false;
     this.scoreSavedHintTimeLeft = 0;
@@ -4109,6 +4111,13 @@ export class PlayScene implements Scene {
     });
     this.leaderboardLoadingText.anchor.set(0.5);
     this.leaderboardLoadingText.eventMode = 'none';
+    this.leaderboardEmptyHint = new Text({
+      text: 'No scores yet',
+      style: this.createNeonGoldTextStyle(20, 2),
+    });
+    this.leaderboardEmptyHint.anchor.set(0.5);
+    this.leaderboardEmptyHint.visible = false;
+    this.leaderboardEmptyHint.eventMode = 'none';
 
     this.leaderboardCloseBtn.eventMode = 'static';
     this.leaderboardCloseBtn.cursor = 'pointer';
@@ -4131,6 +4140,7 @@ export class PlayScene implements Scene {
       this.leaderboardTitle,
       this.leaderboardSubtitle,
       this.leaderboardLoadingText,
+      this.leaderboardEmptyHint,
       this.leaderboardCloseBtn,
       this.leaderboardCloseLabel,
     );
@@ -4771,33 +4781,43 @@ export class PlayScene implements Scene {
     const tablePad = 22;
     const rowW = panelW - tablePad * 2;
     const rowX = px + tablePad;
-    const data = entries.slice(0, 5);
-    for (let i = 0; i < 5; i += 1) {
-      const y = rowsStartY + i * rowH;
-      const bg = i % 2 === 0 ? 0x12001d : 0x000000;
-      this.leaderboardPanel.roundRect(rowX, y, rowW, rowH - 8, 10).fill({ color: bg, alpha: 0.78 });
-      this.leaderboardPanel.roundRect(rowX, y, rowW, rowH - 8, 10).stroke({
-        color: UI_NEON_GREEN,
-        width: 1,
-        alpha: 0.35,
-      });
-      const entry = data[i];
-      const placeLabel = i === 0 ? '#1 ★' : `#${i + 1}`;
-      const line = entry
-        ? `${placeLabel} ${entry.nickname.toUpperCase()}\n${entry.totalScore.toLocaleString()} pts · ${entry.maxHeightMeters.toLocaleString()} m · combo ${entry.bestCombo}`
-        : loading
-          ? `${placeLabel} …loading`
-          : `${placeLabel} —`;
-      const padX = 10;
-      const innerW = rowW - padX * 2;
-      const rowText = new Text({
-        text: line,
-        style: this.createLeaderboardRowTextStyle(innerW),
-      });
-      rowText.anchor.set(0, 0.5);
-      rowText.position.set(rowX + padX, y + (rowH - 8) * 0.5);
-      this.leaderboardRows.push(rowText);
-      this.leaderboardOverlay.addChild(rowText);
+    const data = entries.slice(0, LEADERBOARD_DISPLAY_LIMIT);
+    const showEmptyState = entries.length === 0 && !loading;
+
+    if (this.leaderboardEmptyHint) {
+      this.leaderboardEmptyHint.visible = showEmptyState;
+      const emptyY = rowsStartY + LEADERBOARD_DISPLAY_LIMIT * rowH * 0.45;
+      this.leaderboardEmptyHint.position.set(overlayW * 0.5, emptyY);
+    }
+
+    if (!showEmptyState) {
+      for (let i = 0; i < LEADERBOARD_DISPLAY_LIMIT; i += 1) {
+        const y = rowsStartY + i * rowH;
+        const bg = i % 2 === 0 ? 0x12001d : 0x000000;
+        this.leaderboardPanel.roundRect(rowX, y, rowW, rowH - 8, 10).fill({ color: bg, alpha: 0.78 });
+        this.leaderboardPanel.roundRect(rowX, y, rowW, rowH - 8, 10).stroke({
+          color: UI_NEON_GREEN,
+          width: 1,
+          alpha: 0.35,
+        });
+        const entry = data[i];
+        const placeLabel = i === 0 ? '#1 ★' : `#${i + 1}`;
+        const line = entry
+          ? `${placeLabel} ${entry.nickname.toUpperCase()}\n${entry.totalScore.toLocaleString()} pts · ${entry.maxHeightMeters.toLocaleString()} m · combo ${entry.bestCombo}`
+          : loading
+            ? `${placeLabel} …loading`
+            : `${placeLabel} —`;
+        const padX = 10;
+        const innerW = rowW - padX * 2;
+        const rowText = new Text({
+          text: line,
+          style: this.createLeaderboardRowTextStyle(innerW),
+        });
+        rowText.anchor.set(0, 0.5);
+        rowText.position.set(rowX + padX, y + (rowH - 8) * 0.5);
+        this.leaderboardRows.push(rowText);
+        this.leaderboardOverlay.addChild(rowText);
+      }
     }
 
     const closeW = Math.min(240, panelW - 48);
@@ -4897,6 +4917,20 @@ export class PlayScene implements Scene {
         createdAtMs: Date.now(),
       };
       void (async () => {
+        let remote: LeaderboardEntry[];
+        try {
+          remote = await fetchTopLeaderboard(LEADERBOARD_DISPLAY_LIMIT);
+        } catch (fetchErr) {
+          console.error(
+            '[PlayScene] leaderboard qualifying fetch failed — run not saved',
+            fetchErr,
+          );
+          return;
+        }
+        if (!sessionQualifiesForTop(remote, sessionRow, LEADERBOARD_DISPLAY_LIMIT)) {
+          console.info('[PlayScene] leaderboard run below top five — not saved', sessionRow);
+          return;
+        }
         try {
           await saveLeaderboardRun({
             nickname,
@@ -4906,15 +4940,21 @@ export class PlayScene implements Scene {
           });
           console.info('[PlayScene] leaderboard run saved', sessionRow);
           this.showScoreSavedHint();
-          this.lastLeaderboardTop = mergeSessionIntoTop(this.lastLeaderboardTop, sessionRow, 5);
+          this.lastLeaderboardTop = mergeSessionIntoTop(remote, sessionRow, LEADERBOARD_DISPLAY_LIMIT);
           if (this.leaderboardOverlay.visible) {
             this.renderLeaderboardShell(this.lastLeaderboardTop, false);
           }
         } catch (err) {
           console.error('[PlayScene] leaderboard save failed', err);
-          this.lastLeaderboardTop = mergeSessionIntoTop([], sessionRow, 5);
           if (this.leaderboardOverlay.visible) {
-            this.renderLeaderboardShell(this.lastLeaderboardTop, false);
+            void fetchTopLeaderboard(LEADERBOARD_DISPLAY_LIMIT)
+              .then((top) => {
+                this.lastLeaderboardTop = top;
+                if (this.leaderboardOverlay.visible) {
+                  this.renderLeaderboardShell(top, false);
+                }
+              })
+              .catch(() => {});
           }
         }
       })();
@@ -4926,7 +4966,7 @@ export class PlayScene implements Scene {
       return;
     }
     this.leaderboardUnsubscribe = subscribeTopLeaderboard(
-      5,
+      LEADERBOARD_DISPLAY_LIMIT,
       (entries) => {
         this.lastLeaderboardTop = entries;
         if (this.leaderboardOverlay.visible) {
@@ -4934,7 +4974,7 @@ export class PlayScene implements Scene {
         }
       },
       () => {
-        void fetchTopLeaderboard(5)
+        void fetchTopLeaderboard(LEADERBOARD_DISPLAY_LIMIT)
           .then((top) => {
             this.lastLeaderboardTop = top;
             if (this.leaderboardOverlay.visible) {
@@ -4950,7 +4990,7 @@ export class PlayScene implements Scene {
     this.startLeaderboardRealtimeSubscription();
     this.leaderboardOverlay.visible = true;
     this.renderLeaderboardShell(this.lastLeaderboardTop, this.lastLeaderboardTop.length === 0);
-    void fetchTopLeaderboard(5)
+    void fetchTopLeaderboard(LEADERBOARD_DISPLAY_LIMIT)
       .then((top) => {
         this.lastLeaderboardTop = top;
         if (this.leaderboardOverlay.visible) {

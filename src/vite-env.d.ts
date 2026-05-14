@@ -1,6 +1,10 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  /** Set `"true"` once to wipe Firestore collections `leaderboard` + `global_top_runs` at startup (then rebuild without it). */
+  /**
+   * Wipes `leaderboard` + legacy collections on **every load** until you delete this env and rebuild.
+   */
+  readonly VITE_LEADERBOARD_ONE_TIME_PURGE?: string;
+  /** Deletes leaderboard buckets on every startup until removed — prefer sentinel purge when possible. */
   readonly VITE_CLEAR_LEADERBOARD_ON_BOOT?: string;
 }
