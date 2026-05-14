@@ -579,13 +579,14 @@ const COMBO_CHAIN_WINDOW_SEC = 2.0;
 const COMBO_MIN_CLIMB_PX = 6;
 const COMBO_GLOW_STREAK = 15;
 const COMBO_SUPER_TONGUE_STREAK = 22;
-/** Combo badge top-left (screen px); single source — keep compact, away from center. */
+/** Combo HUD anchor (screen px, top-left of unscaled layout). `comboHudRoot` applies scale. */
 const COMBO_HUD_SCREEN_X = 20;
-const COMBO_HUD_SCREEN_Y = 140;
-/** Super Tongue button layout (X aligned with badge left edge, sits below the badge). */
+const COMBO_HUD_SCREEN_Y = 150;
+/** Uniform scale for badge + Super Tongue strip (screen-fixed via `uiLayer`, not `world`). */
+const COMBO_HUD_ROOT_SCALE = 0.3;
+/** Super Tongue button layout (width matches badge art). Local Y = below badge in `comboHudRoot`. */
 const SUPER_TONGUE_BTN_W = COMBO_BADGE_W;
 const SUPER_TONGUE_BTN_H = 44;
-const SUPER_TONGUE_BTN_Y = COMBO_HUD_SCREEN_Y + COMBO_BADGE_H + 12;
 /** Super Tongue effects (matches the user-confirmed "B" recipe). */
 const SUPER_TONGUE_STAIRS_UP = 4;
 const SUPER_TONGUE_BUFF_DURATION_SEC = 3.0;
@@ -832,6 +833,8 @@ export class PlayScene implements Scene {
   private comboLastJumpTime = -1e9;
   /** Visual badge in the upper-left; created in `setupComboHud`. */
   private comboBadge?: ComboBadge;
+  /** Wraps badge + Super Tongue; scaled — stays screen-fixed (parent `uiLayer`, never `world`). */
+  private comboHudRoot = new Container();
   /** Lazy WebAudio synth that plays the tier hit on each combo increment. */
   private comboSynth?: ComboSynth;
   /** Streak-22 reward: visible only while {@link comboCount} ≥ {@link COMBO_SUPER_TONGUE_STREAK}. */
@@ -1201,6 +1204,7 @@ export class PlayScene implements Scene {
     }
     this.layoutCollectibleHud();
     this.layoutClimbHud();
+    this.layoutComboHudRoot();
     this.layoutSuperTongueButton();
     this.layoutAutoScrollHud();
     this.layoutGameOverUi();
@@ -3020,23 +3024,32 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Mounts the combo badge and the Super Tongue button into `uiLayer`. The badge is hidden
+   * Combo UI lives under `uiLayer` only (never under `world` / `gameShake`) — fixed on screen while climbing,
+   * equivalent to Phaser `scrollFactor(0)` / camera‑fixed HUD.
+   */
+  private layoutComboHudRoot(): void {
+    this.comboHudRoot.position.set(COMBO_HUD_SCREEN_X, COMBO_HUD_SCREEN_Y);
+    this.comboHudRoot.scale.set(COMBO_HUD_ROOT_SCALE);
+  }
+
+  /**
+   * Mounts the combo badge and the Super Tongue button into `comboHudRoot` → `uiLayer`. The badge is hidden
    * until the first chain jump (`bumpTo`); the Super Tongue button is hidden until streak ≥
    * {@link COMBO_SUPER_TONGUE_STREAK}.
    */
   private setupComboHud(): void {
+    this.comboHudRoot.eventMode = 'none';
+    this.comboHudRoot.sortableChildren = true;
+    this.comboHudRoot.zIndex = 1004;
+
     this.comboBadge = new ComboBadge();
-    this.comboBadge.zIndex = 1004;
+    this.comboBadge.zIndex = 1;
     /** Position is the badge **center** because the inner pivot is the geometric center. */
-    this.comboBadge.position.set(
-      COMBO_HUD_SCREEN_X + COMBO_BADGE_W * 0.5,
-      COMBO_HUD_SCREEN_Y + COMBO_BADGE_H * 0.5,
-    );
-    this.uiLayer.addChild(this.comboBadge);
+    this.comboBadge.position.set(COMBO_BADGE_W * 0.5, COMBO_BADGE_H * 0.5);
 
     this.comboSynth = new ComboSynth();
 
-    this.superTongueBtnRoot.zIndex = 1005;
+    this.superTongueBtnRoot.zIndex = 2;
     this.superTongueBtnRoot.visible = false;
     this.superTongueBtnGfx.eventMode = 'static';
     this.superTongueBtnGfx.cursor = 'pointer';
@@ -3052,13 +3065,16 @@ export class PlayScene implements Scene {
       event.stopPropagation();
       this.fireSuperTongue();
     });
-    this.uiLayer.addChild(this.superTongueBtnRoot);
+
+    this.comboHudRoot.addChild(this.comboBadge, this.superTongueBtnRoot);
+    this.uiLayer.addChild(this.comboHudRoot);
+    this.layoutComboHudRoot();
     this.layoutSuperTongueButton();
     this.drawSuperTongueButton();
   }
 
   private layoutSuperTongueButton(): void {
-    this.superTongueBtnRoot.position.set(COMBO_HUD_SCREEN_X, SUPER_TONGUE_BTN_Y);
+    this.superTongueBtnRoot.position.set(0, COMBO_BADGE_H + 12);
     this.superTongueBtnGfx.hitArea = new Rectangle(0, 0, SUPER_TONGUE_BTN_W, SUPER_TONGUE_BTN_H);
   }
 
