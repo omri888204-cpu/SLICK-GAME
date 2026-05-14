@@ -176,8 +176,8 @@ export const STAIRS = {
   /** Vertical gap between step tops (larger climb cadence for clearer jumps). */
   stepPx: 172,
   platformHeight: 28,
-  /** When a platform’s top is this far below the camera, recycle it to the top. */
-  recycleBelowScreenPx: 220,
+  /** When a platform’s top is this far below the viewport bottom (world space), recycle it to the top. */
+  recycleBelowScreenPx: 500,
   /** Fallback: player feet past bottom of view + this → reset (only if fewer than `safetyStairBufferDrops` steps below). */
   fallDeathBelowViewportPx: 140,
   /**

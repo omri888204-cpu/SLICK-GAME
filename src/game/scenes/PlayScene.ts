@@ -74,14 +74,6 @@ type LevelUpParticle = {
   life: number;
 };
 
-type RecordedPlatform = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  stairId: number;
-};
-
 type TouchPointerTrack = {
   side: 'left' | 'right';
   startX: number;
@@ -535,9 +527,21 @@ const HURRY_BANNER_H = 46;
 const HURRY_BANNER_SLIDE_SPEED = 760;
 const OVERLAY_BG_ALPHA = 0.72;
 const WORLD_BOUNDS_X = 0;
-const WORLD_BOUNDS_Y = -1000000;
+/** Room for ≥100 000 HUD meters (÷12 px/m) relative to baseline without leaving the playable band while rebasing catches up. */
+const WORLD_BOUNDS_Y = -2_500_000;
 const WORLD_BOUNDS_W = 1400;
-const WORLD_BOUNDS_H = 1001000;
+const WORLD_BOUNDS_H = 2_501_000;
+/** Remove disposable world objects this far below the bottom of the camera view (see {@link PlayScene.cullDisposableWorldFarBelowViewport}). */
+const VIEWPORT_BOTTOM_CULL_EXTRA_PX = 500;
+/**
+ * Periodic floating-origin shift: applied while `player.body.y` dips below {@link WORLD_REBASE_LOW_WATER_Y}.
+ * Uses a multiple of 12 px so HUD integer meters stay stable across rebases when derived from deltas.
+ */
+const WORLD_REBASE_SHIFT_PX = 360_000;
+const WORLD_REBASE_LOW_WATER_Y = -340_000;
+/** Cap transient VFX allocations after each 1000 m milestone sweep ({@link maybeRunPeriodicPoolMaintenance}). */
+const MAX_LEVEL_UP_PARTICLES_AFTER_CLEANUP = 48;
+const MAX_COMBO_SUPER_JUMP_PARTICLES_AFTER_CLEANUP = 40;
 /** Screen-space inset (px) from each side; converted to world px via zoom for spawn + player clamp. */
 const VIEWPORT_SAFE_MARGIN_SCREEN_PX = 40;
 /** When true, stairs spawn in a band around the player (world X) so they stay on-screen on mobile. */
@@ -598,8 +602,6 @@ const SHIELD_BANK_GOLD = 10;
 const SHIELD_BANK_DIAMOND = 5;
 /** On fall-save, place the player exactly this many platform gaps above the last recorded platform. */
 const SHIELD_BOUNCE_PLATFORM_RISE_COUNT = 5;
-/** After teleport, recycle passes so low stairs repack above the new camera. */
-const SHIELD_LAUNCH_RECYCLE_PASSES = 28;
 const SHIELD_SAVE_FLASH_SEC = 0.42;
 const JUMP_BUFFER_SEC = 0.1;
 /**
@@ -814,6 +816,8 @@ export class PlayScene implements Scene {
   private lastLeaderboardTop: LeaderboardEntry[] = [];
   private leaderboardUnsubscribe: (() => void) | null = null;
   private collectibles: Collectible[] = [];
+  /** Last-milestone sweep (⌊max climb m / 1000⌋) — see {@link maybeRunPeriodicPoolMaintenance}. */
+  private lastPoolSweepKmBand = -1;
   private goldCount = 0;
   private diamondCount = 0;
   /**
@@ -873,7 +877,6 @@ export class PlayScene implements Scene {
   private cameraFrozenUntilFirstFloor0Jump = true;
   private activeRestFloorY: number | null = null;
   private restFloorHoldY: number | null = null;
-  private highestY = 0;
   private grappleCooldown = 0;
   private grapple: ActiveGrapple | null = null;
   private grappleReleaseDampingLeft = 0;
@@ -961,7 +964,11 @@ export class PlayScene implements Scene {
    * consumed only by the death-zone fall save.
    */
   private shieldSaveFlashTime = 0;
-  private lastRecordedPlatform: RecordedPlatform | null = null;
+  /**
+   * Last platform the player **stood on** (live object reference — survives stair recycle id churn so
+   * fall-shield relaunch resolves the actual deck underfoot).
+   */
+  private lastLandedPlatform: Platform | null = null;
   async init(app: Application): Promise<void> {
     this.app = app;
     this.width = app.screen.width;
@@ -1263,10 +1270,13 @@ export class PlayScene implements Scene {
     this.updateRestFloorHoldState();
     this.updateCamera(dt);
     this.maybeAdvanceScrollSpeedTierFeedback();
+    this.maybeRebaseWorldVerticalOrigin();
     this.clampPlayerToCameraViewport();
     if (!this.shouldPausePlatformGeneration()) {
       this.recycleStairsOffscreen();
     }
+    this.maybeRunPeriodicPoolMaintenance();
+    this.cullDisposableWorldFarBelowViewport();
     this.syncPlatformSpritesFromPlatforms();
     this.checkFallGameOver();
     this.updateRipples(dt);
@@ -1300,7 +1310,7 @@ export class PlayScene implements Scene {
     this.updateScreenShake(dt);
     this.recomputeDerivedTotalScore();
     this.updateLevelProgress();
-    const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
+    const heightMeters = Math.max(0, Math.floor(this.getHudClimbMeters()), Math.floor(this.getBestLandedClimbMeters()));
     this.scoreboard?.update(dt, this.score, this.jumpCount, heightMeters, this.runTime, this.level);
     this.syncCollectibleHudPosition();
   }
@@ -2041,7 +2051,7 @@ export class PlayScene implements Scene {
     this.cameraFrozenUntilFirstFloor0Jump = true;
     this.activeRestFloorY = null;
     this.restFloorHoldY = null;
-    this.highestY = 0;
+    this.lastPoolSweepKmBand = -1;
     this.goldCount = 0;
     this.diamondCount = 0;
     this.collectibles = [];
@@ -2085,7 +2095,7 @@ export class PlayScene implements Scene {
     this.jumpArcAssistTime = 0;
     this.jumpArcAssistDuration = 0;
     this.shieldSaveFlashTime = 0;
-    this.lastRecordedPlatform = null;
+    this.lastLandedPlatform = null;
     this.player.isShielded = false;
     this.playerHealth = PLAYER_MAX_HEALTH;
     this.playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
@@ -2153,7 +2163,10 @@ export class PlayScene implements Scene {
     /** Shield bounce teleports the player upwards — treat as a fresh chain anchor, not a climb step. */
     this.breakCombo();
 
-    const anchor = this.lastRecordedPlatform ?? this.platforms[0];
+    const anchor =
+      this.lastLandedPlatform !== null && this.platforms.includes(this.lastLandedPlatform)
+        ? this.lastLandedPlatform
+        : this.platforms[0];
     if (!anchor) {
       this.triggerGameOver();
       return;
@@ -2172,14 +2185,10 @@ export class PlayScene implements Scene {
     this.player.body.vx = 0;
     this.player.body.vy = -980;
     this.player.body.grounded = false;
-    this.highestY = Math.min(this.highestY, this.player.body.y);
     this.player.onJump();
     this.shieldSaveFlashTime = SHIELD_SAVE_FLASH_SEC;
     this.shakeTime = Math.max(this.shakeTime, 0.42);
     this.snapCameraToPlayer();
-    for (let i = 0; i < SHIELD_LAUNCH_RECYCLE_PASSES; i += 1) {
-      this.recycleStairsOffscreen();
-    }
     this.syncPlatformSpritesFromPlatforms();
     const cx = this.player.body.x + this.player.body.width * 0.5;
     const cy = this.player.body.y + this.player.body.height * 0.45;
@@ -2200,6 +2209,160 @@ export class PlayScene implements Scene {
   /** Single source of truth for the bottom of the camera view in world space (death check + hazard art). */
   private getDeathPlaneWorldY(): number {
     return this.cameraY + this.worldHeightFromScreen();
+  }
+
+  /** Floating origin: keep stair / body Y in a moderate range so far climbs stay stable in JS + Pixi. */
+  private maybeRebaseWorldVerticalOrigin(): void {
+    if (
+      this.shouldPausePlatformGeneration() ||
+      this.gameOver ||
+      this.cameraFrozenUntilFirstFloor0Jump
+    ) {
+      return;
+    }
+    let iterations = 0;
+    while (
+      this.player.body.y < WORLD_REBASE_LOW_WATER_Y &&
+      iterations < 16
+    ) {
+      this.applyUniformWorldYOffset(WORLD_REBASE_SHIFT_PX);
+      iterations += 1;
+    }
+  }
+
+  /**
+   * Applies the same +ΔY to every live world-space Y we own so climb metrics that use `climbBaseline − body`
+   * stay unchanged while absolute coordinates move.
+   */
+  private applyUniformWorldYOffset(deltaY: number): void {
+    for (const p of this.platforms) {
+      p.y += deltaY;
+    }
+
+    const b = this.player.body;
+    b.y += deltaY;
+    this.climbBaselineY += deltaY;
+    this.cameraY += deltaY;
+
+    if (this.activeRestFloorY !== null) {
+      this.activeRestFloorY += deltaY;
+    }
+    if (this.restFloorHoldY !== null) {
+      this.restFloorHoldY += deltaY;
+    }
+    if (this.lastScoredLandWorldTopY !== Number.POSITIVE_INFINITY) {
+      this.lastScoredLandWorldTopY += deltaY;
+    }
+    if (Number.isFinite(this.comboLastJumpY)) {
+      this.comboLastJumpY += deltaY;
+    }
+
+    const g = this.grapple;
+    if (g) {
+      g.targetY += deltaY;
+      g.pullStartY += deltaY;
+    }
+
+    for (const r of this.ripples) {
+      r.y += deltaY;
+    }
+    for (const s of this.diamondShineSparks) {
+      s.y += deltaY;
+    }
+    for (const p of this.levelUpParticles) {
+      p.y += deltaY;
+    }
+    for (const p of this.comboSuperJumpParticles) {
+      p.y += deltaY;
+    }
+    for (const w of this.windParticles) {
+      w.y += deltaY;
+    }
+    for (const e of this.mushroomDeathEffects) {
+      e.sprite.position.y += deltaY;
+    }
+
+    this.world.position.set(-this.cameraX, -this.cameraY);
+    this.layoutBackground();
+  }
+
+  /** World-Y threshold: anything farther below the camera bottom than this is culled aggressively. */
+  private getCullBelowWorldY(): number {
+    return this.getDeathPlaneWorldY() + VIEWPORT_BOTTOM_CULL_EXTRA_PX;
+  }
+
+  /**
+   * Stairs recycle through {@link recycleStairsOffscreen}; this pass tears down pooled VFX and enemies whose
+   * anchors sit well below the view so memory stays flat on long climbs.
+   */
+  private cullDisposableWorldFarBelowViewport(): void {
+    const yCut = this.getCullBelowWorldY();
+
+    this.ripples = this.ripples.filter((r) => r.y <= yCut);
+    this.diamondShineSparks = this.diamondShineSparks.filter((s) => s.y <= yCut);
+    this.windParticles = this.windParticles.filter((w) => w.y <= yCut);
+
+    for (let i = this.levelUpParticles.length - 1; i >= 0; i -= 1) {
+      if (this.levelUpParticles[i].y > yCut) {
+        this.levelUpParticles.splice(i, 1);
+      }
+    }
+    for (let i = this.comboSuperJumpParticles.length - 1; i >= 0; i -= 1) {
+      if (this.comboSuperJumpParticles[i].y > yCut) {
+        this.comboSuperJumpParticles.splice(i, 1);
+      }
+    }
+
+    for (let i = this.mushroomDeathEffects.length - 1; i >= 0; i -= 1) {
+      const e = this.mushroomDeathEffects[i];
+      if (e.sprite.position.y > yCut) {
+        e.sprite.destroy();
+        this.mushroomDeathEffects.splice(i, 1);
+      }
+    }
+
+    for (let i = this.mushroomEnemies.length - 1; i >= 0; i -= 1) {
+      const enemy = this.mushroomEnemies[i];
+      const platform = this.platforms[enemy.platformIdx];
+      if (platform !== undefined && platform.y > yCut) {
+        this.removeMushroomEnemyQuiet(i);
+      }
+    }
+  }
+
+  private removeMushroomEnemyQuiet(index: number): void {
+    if (index < 0 || index >= this.mushroomEnemies.length) {
+      return;
+    }
+    const sprite = this.mushroomEnemySprites[index];
+    if (sprite) {
+      this.mushroomEnemyLayer.removeChild(sprite);
+      sprite.destroy();
+    }
+    this.mushroomEnemies.splice(index, 1);
+    this.mushroomEnemySprites.splice(index, 1);
+  }
+
+  /** Every 1000 climb meters, tighten transient particle pools so allocations do not creep upward. */
+  private maybeRunPeriodicPoolMaintenance(): void {
+    const m = Math.max(this.getHudClimbMeters(), this.getBestLandedClimbMeters());
+    const band = Math.floor(Math.max(0, m) / 1000);
+    if (band <= this.lastPoolSweepKmBand) {
+      return;
+    }
+    this.lastPoolSweepKmBand = band;
+    const yCut = this.getCullBelowWorldY();
+    this.ripples = this.ripples.filter((r) => r.y <= yCut);
+    this.diamondShineSparks = this.diamondShineSparks.slice(-64);
+    this.windParticles = this.windParticles.slice(0, ALTITUDE_WIND_MAX_PARTICLES);
+    if (this.levelUpParticles.length > MAX_LEVEL_UP_PARTICLES_AFTER_CLEANUP) {
+      this.levelUpParticles = this.levelUpParticles.slice(-MAX_LEVEL_UP_PARTICLES_AFTER_CLEANUP);
+    }
+    if (this.comboSuperJumpParticles.length > MAX_COMBO_SUPER_JUMP_PARTICLES_AFTER_CLEANUP) {
+      this.comboSuperJumpParticles = this.comboSuperJumpParticles.slice(
+        -MAX_COMBO_SUPER_JUMP_PARTICLES_AFTER_CLEANUP,
+      );
+    }
   }
 
   private isRestFloorHolding(): boolean {
@@ -2277,24 +2440,15 @@ export class PlayScene implements Scene {
     this.grappleReloadingLogged = false;
     this.lastScoredStairId = this.platforms[0]?.stairId ?? 0;
     this.lastScoredLandWorldTopY = this.platforms[0]?.y ?? Number.POSITIVE_INFINITY;
-    if (this.platforms[0]) {
-      this.recordLastPlatform(this.platforms[0]);
+    const deck = this.platforms[0];
+    if (deck) {
+      this.lastLandedPlatform = deck;
     }
     this.player.update(0, 0, false, null, false, this.player.isShielded);
   }
 
-  private recordLastPlatform(platform: Platform): void {
-    this.lastRecordedPlatform = {
-      x: platform.x,
-      y: platform.y,
-      width: platform.width,
-      height: platform.height,
-      stairId: platform.stairId,
-    };
-  }
-
   private landOn(platform: Platform): void {
-    this.recordLastPlatform(platform);
+    this.lastLandedPlatform = platform;
     if (platform.kind === 'rest') {
       this.activeRestFloorY = platform.y;
       this.restFloorHoldY = platform.y;
@@ -2354,6 +2508,9 @@ export class PlayScene implements Scene {
 
     this.platforms = nextPlatforms;
     this.currentGroundPlatform = restPlatform;
+    if (this.lastLandedPlatform !== null && !this.platforms.includes(this.lastLandedPlatform)) {
+      this.lastLandedPlatform = restPlatform;
+    }
     if (this.grapple && !this.platforms.some((platform) => platform.stairId === this.grapple?.hookStairId)) {
       this.grapple = null;
     }
@@ -2413,7 +2570,6 @@ export class PlayScene implements Scene {
   }
 
   private updateCamera(dt: number): void {
-    this.highestY = Math.min(this.highestY, this.player.body.y);
 
     const viewportW = this.worldWidthFromScreen();
     const viewportH = this.worldHeightFromScreen();
@@ -4529,11 +4685,15 @@ export class PlayScene implements Scene {
     const hy1 = pb.y - PLAYER_ATTACK_VERT_PAD_PX;
     const hy2 = pb.y + pb.height + PLAYER_ATTACK_VERT_PAD_PX;
 
+    const yCull = this.getCullBelowWorldY();
     const halfW = MUSHROOM_HITBOX_W * 0.5;
     for (let i = this.mushroomEnemies.length - 1; i >= 0; i -= 1) {
       const enemy = this.mushroomEnemies[i];
       const platform = this.platforms[enemy.platformIdx];
       if (!platform) {
+        continue;
+      }
+      if (platform.y > yCull) {
         continue;
       }
       const ex = platform.x + enemy.along * platform.width;
@@ -4738,6 +4898,10 @@ export class PlayScene implements Scene {
     this.shieldSaveFlashTime = Math.max(0, this.shieldSaveFlashTime - dt);
   }
 
+  /**
+   * One-shot fall-save: only {@link checkFallGameOver} may call this, after feet cross the viewport-bottom
+   * death hazard. Does **not** run during stair recycle, tongue, or pickups (see {@link performShieldSuperLaunch}).
+   */
   private consumePlayerShield(): boolean {
     if (!this.player.isShielded) {
       return false;
@@ -4919,7 +5083,11 @@ export class PlayScene implements Scene {
     this.headerPauseRoot.visible = false;
     this.attackBtnRoot.visible = false;
     this.healthHudRoot.visible = false;
-    this.finalMetersAtDeath = Math.max(0, Math.floor(-this.highestY / 12));
+    this.finalMetersAtDeath = Math.max(
+      0,
+      Math.floor(this.getHudClimbMeters()),
+      Math.floor(this.getBestLandedClimbMeters()),
+    );
     this.peakClimbMetersThisRun = Math.max(
       this.peakClimbMetersThisRun,
       this.finalMetersAtDeath,
@@ -5158,6 +5326,7 @@ export class PlayScene implements Scene {
 
   private updateWindParticles(dt: number): void {
     const leftCull = this.cameraX - 260;
+    const bottomCull = this.getCullBelowWorldY();
     this.windParticles = this.windParticles
       .map((p) => ({
         ...p,
@@ -5165,7 +5334,7 @@ export class PlayScene implements Scene {
         x: p.x + p.vx * dt,
         y: p.y + p.vy * dt,
       }))
-      .filter((p) => p.age < p.life && p.x > leftCull);
+      .filter((p) => p.age < p.life && p.x > leftCull && p.y <= bottomCull);
   }
 
   private drawWindParticles(): void {
@@ -5635,7 +5804,14 @@ export class PlayScene implements Scene {
       this.sfx.play('collect_diamond', 0.92);
       this.spawnDiamondCollectShine(pos.x, pos.y);
     } else {
-      this.maybePurchaseShieldFromBank();
+      /** World shield pickup — unrelated to gold/diamond bank auto-shield ({@link maybePurchaseShieldFromBank}). */
+      if (!this.player.isShielded) {
+        this.activatePlayerShield();
+        this.score += COLLECTIBLES.shieldPickupPoints;
+        this.recomputeDerivedTotalScore();
+      } else {
+        this.goldCount += 3;
+      }
       this.sfx.play('collect_diamond', 0.92);
       this.spawnDiamondCollectShine(pos.x, pos.y);
     }
@@ -6592,12 +6768,17 @@ export class PlayScene implements Scene {
     const pb = this.player.body;
     const playerCx = pb.x + pb.width * 0.5;
     const playerGrounded = pb.grounded;
+    const yCull = this.getCullBelowWorldY();
 
     for (let i = 0; i < this.mushroomEnemies.length; i += 1) {
       const enemy = this.mushroomEnemies[i];
       const platform = this.platforms[enemy.platformIdx];
       const sprite = this.mushroomEnemySprites[i];
       if (!platform || !sprite) {
+        continue;
+      }
+      if (platform.y > yCull) {
+        sprite.visible = false;
         continue;
       }
       if (!this.canMushroomOccupyPlatform(platform)) {
@@ -6663,6 +6844,9 @@ export class PlayScene implements Scene {
       const platform = this.platforms[enemy.platformIdx];
       const sprite = this.mushroomEnemySprites[i];
       if (!platform || !sprite || !sprite.visible || !this.canMushroomOccupyPlatform(platform)) {
+        continue;
+      }
+      if (platform.y > yCull) {
         continue;
       }
       const wx = platform.x + enemy.along * platform.width;
