@@ -297,7 +297,8 @@ const MUSHROOM_EDGE_MARGIN = 0.06;
 const MUSHROOM_EDGE_PAUSE_SEC = 0.32;
 const MUSHROOM_ATTACK_RANGE_PX = 220;
 /** First platform index that may carry an enemy. Skips the starting platform (index 0). */
-const MUSHROOM_PLATFORM_START_INDEX = 2;
+/** First stair index that may host a mushroom — skips Floor 0 spawn deck + early climb. */
+const MUSHROOM_PLATFORM_START_INDEX = 5;
 const MUSHROOM_PLATFORM_STRIDE = 3;
 
 /** Player melee attack — virtual button (bottom-right) + KeyF, plays the attack row of the character spritesheet. */
@@ -571,20 +572,24 @@ const JUMP_BUFFER_SEC = 0.1;
  *     starting from a higher world position (y smaller) increments `comboCount`.
  *   - Jumping in place, falling between jumps, or pausing >= {@link COMBO_CHAIN_WINDOW_SEC} resets it.
  *   - Streak {@link COMBO_GLOW_STREAK} → character glow + tint pulse turns on.
- *
- * Skill pair (`SUPER JUMP` + `PULL UP`) HUD unlock: {@link PULL_UP_JUMPS_REQUIRED} grounded jumps
- * (`pullUpJumpsAccum`). Pull-up uses {@link SUPER_TONGUE_BUFF_DURATION_SEC}; mega jump uses manual button only.
+ *   - Skill pair (`SUPER JUMP` + `PULL UP`): {@link PULL_UP_JUMPS_REQUIRED} grounded jumps (`pullUpJumpsAccum`).
+ *   - Mega jump uses {@link registerComboJump} like normal hops (`skipClimbCheck`) plus post-jump grace
+ *     ({@link SUPER_JUMP_COMBO_GRACE_EXTEND_SEC}) so the chain survives longer air time.
+ *   - During SUPER JUMP ascent, each distinct stair top crossed under the player (horizontal overlap)
+ *     adds another combo step ({@link applySuperJumpAscendingStairCombo}); landing re-syncs the climb
+ *     anchor (`comboLastJumpY`) so the next grounded jump chains normally.
  */
 const COMBO_CHAIN_WINDOW_SEC = 2.0;
 const COMBO_MIN_CLIMB_PX = 6;
 /** Manual SUPER JUMP only (`SUPER_JUMP_VY_SCALE`× upward vs normal jump formula). */
 const SUPER_JUMP_VY_SCALE = 2;
 const SUPER_JUMP_SPARK_COUNT = 14;
-/** After `PULL UP`, window to tap `SUPER JUMP` for chain bonus + combo multiply. */
+/** After `PULL UP`, window to tap `SUPER JUMP` for extra score bonus (combo uses normal jump rules). */
 const SKILL_CHAIN_WINDOW_SEC = 2.35;
-const SKILL_CHAIN_COMBO_MULTIPLIER = 2;
 const SKILL_CHAIN_BASE_SCORE = 160;
 const SKILL_CHAIN_SCORE_PER_COMBO = 32;
+/** Extra time after mega jump before the combo chain can expire (air time + next landing). */
+const SUPER_JUMP_COMBO_GRACE_EXTEND_SEC = 2.0;
 const COMBO_GLOW_STREAK = 15;
 /** Grounded jumps before the skill pair unlocks (both buttons; counter resets after mega jump / expiry). */
 const PULL_UP_JUMPS_REQUIRED = 8;
@@ -819,6 +824,11 @@ export class PlayScene implements Scene {
   private worldMaxY = 0;
   private cameraX = 0;
   private cameraY = 0;
+  /**
+   * Until the first jump off the Floor 0 spawn deck (`kind === 'spawn'`), skip auto-scroll and
+   * vertical follow — framing stays at {@link snapCameraToPlayer} after each reset.
+   */
+  private cameraFrozenUntilFirstFloor0Jump = true;
   private activeRestFloorY: number | null = null;
   private restFloorHoldY: number | null = null;
   private highestY = 0;
@@ -845,6 +855,14 @@ export class PlayScene implements Scene {
   private comboLastJumpY = Number.POSITIVE_INFINITY;
   /** `runTime` at the moment of the last counted jump — used for the chain-window expiry. */
   private comboLastJumpTime = -1e9;
+  /** Until this `runTime`, combo timeout is suspended after a mega jump (see {@link SUPER_JUMP_COMBO_GRACE_EXTEND_SEC}). */
+  private superJumpComboGraceUntil = Number.NEGATIVE_INFINITY;
+  /** True after SUPER JUMP until first landing — re-sync climb anchor after mid-air stair combo ticks. */
+  private megaJumpReanchorComboOnLanding = false;
+  /** While true and `vy < 0`, feet crossing platform tops upward award combo (mega jump only). */
+  private superJumpStairTrackActive = false;
+  /** Stair ids already counted for this mega jump arc (includes launch stair — skipped for increments). */
+  private readonly superJumpCrossedStairIds = new Set<number>();
   /** Visual badge in the upper-left; created in `setupComboHud`. */
   private comboBadge?: ComboBadge;
   /** Wraps combo badge only; scaled — stays screen-fixed (parent `uiLayer`, never `world`). */
@@ -1138,6 +1156,7 @@ export class PlayScene implements Scene {
 
     const gravityScale = pulling ? 0 : this.getGravityScaleForLevel();
     const wasGrounded = this.player.body.grounded;
+    const prePhysicsFeetY = this.player.body.y + this.player.body.height;
     const result = this.physics.update(
       this.player.body,
       this.platforms,
@@ -1145,6 +1164,16 @@ export class PlayScene implements Scene {
       dt,
       gravityScale,
     );
+
+    if (this.superJumpStairTrackActive) {
+      const postFeetY = this.player.body.y + this.player.body.height;
+      if (this.player.body.vy >= 0) {
+        this.superJumpStairTrackActive = false;
+      } else if (postFeetY < prePhysicsFeetY) {
+        this.applySuperJumpAscendingStairCombo(prePhysicsFeetY, postFeetY);
+      }
+    }
+
     if (result.landedPlatform) {
       this.currentGroundPlatform = result.landedPlatform;
       this.player.onLand(result.impactVy);
@@ -1164,6 +1193,16 @@ export class PlayScene implements Scene {
         this.lastScoredLandWorldTopY = Math.min(this.lastScoredLandWorldTopY, p.y);
         this.scoreboard?.onPointsGained(landGain);
         this.maybeTriggerScreenShake(landGain);
+      }
+      if (this.megaJumpReanchorComboOnLanding) {
+        /**
+         * Standalone grounded jumps compare against {@link comboLastJumpY}. Setting it equal to
+         * `body.y` makes the next hop read as same-altitude (`climbed` false) and breaks the chain.
+         * Bias downward (+Y) so the first post–mega jump counts as climbing without weakening normal rules.
+         */
+        this.comboLastJumpY = this.player.body.y + COMBO_MIN_CLIMB_PX + 1;
+        this.comboLastJumpTime = this.runTime;
+        this.megaJumpReanchorComboOnLanding = false;
       }
       this.landOn(p);
       this.tryConsumeBufferedJump();
@@ -1401,6 +1440,7 @@ export class PlayScene implements Scene {
     if (!this.player.body.grounded || !!this.grapple) {
       return false;
     }
+    this.maybeEndFloor0IntroCameraFreeze();
     this.physics.jump(this.player.body);
     this.jumpCount += 1;
     this.registerComboJump();
@@ -1431,15 +1471,16 @@ export class PlayScene implements Scene {
    * On `comboCount >= 2` we play the combo synth + bump the badge (word tier rises every
    * `COMBO.jumpsPerWord` counted jumps in `game.config`).
    */
-  private registerComboJump(): void {
+  private registerComboJump(opts?: { skipClimbCheck?: boolean }): void {
     const currentY = this.player.body.y;
     const withinWindow =
       this.runTime - this.comboLastJumpTime <= COMBO_CHAIN_WINDOW_SEC;
     const climbed = currentY < this.comboLastJumpY - COMBO_MIN_CLIMB_PX;
+    const countsAsClimb = opts?.skipClimbCheck ? true : climbed;
 
-    if (this.comboCount > 0 && withinWindow && climbed) {
+    if (this.comboCount > 0 && withinWindow && countsAsClimb) {
       this.comboCount += 1;
-    } else if (this.comboCount > 0 && withinWindow && !climbed) {
+    } else if (this.comboCount > 0 && withinWindow && !countsAsClimb) {
       /** Same-altitude or downward jump within the window breaks the chain (anti-spam). */
       this.breakCombo();
       this.comboCount = 1;
@@ -1452,6 +1493,54 @@ export class PlayScene implements Scene {
     this.comboLastJumpY = currentY;
     this.comboLastJumpTime = this.runTime;
 
+    if (this.comboCount >= 2) {
+      const wordTier = comboStreakToWordTier(this.comboCount);
+      this.comboBadge?.bumpTo(this.comboCount);
+      this.comboSynth?.resume();
+      this.comboSynth?.play(wordTier);
+    }
+  }
+
+  /** Same horizontal overlap rule as {@link Physics.resolvePlatformLanding} (narrower feet band). */
+  private playerBodyOverlapsPlatform(platform: Platform): boolean {
+    const body = this.player.body;
+    return (
+      body.x + body.width * 0.42 > platform.x &&
+      body.x < platform.x + platform.width
+    );
+  }
+
+  /**
+   * Each stair top crossed while ascending on a mega jump (feet move upward through `platform.y`)
+   * adds one combo step. Launch stair is pre-seeded into {@link superJumpCrossedStairIds} so leaving
+   * it does not double-count the takeoff already handled by {@link registerComboJump}.
+   */
+  private applySuperJumpAscendingStairCombo(prevFeetY: number, currFeetY: number): void {
+    if (currFeetY >= prevFeetY) {
+      return;
+    }
+    for (const platform of this.platforms) {
+      if (!this.playerBodyOverlapsPlatform(platform)) {
+        continue;
+      }
+      const crossedUpward = currFeetY < platform.y && prevFeetY >= platform.y;
+      if (!crossedUpward || this.superJumpCrossedStairIds.has(platform.stairId)) {
+        continue;
+      }
+      this.superJumpCrossedStairIds.add(platform.stairId);
+      this.incrementComboForSuperJumpStairPass();
+    }
+  }
+
+  /** One combo step from clearing a stair plane during SUPER JUMP ascent (no climb/window rules). */
+  private incrementComboForSuperJumpStairPass(): void {
+    this.comboCount += 1;
+    this.comboLastJumpY = this.player.body.y;
+    this.comboLastJumpTime = this.runTime;
+    this.superJumpComboGraceUntil = Math.max(
+      this.superJumpComboGraceUntil,
+      this.runTime + SUPER_JUMP_COMBO_GRACE_EXTEND_SEC,
+    );
     if (this.comboCount >= 2) {
       const wordTier = comboStreakToWordTier(this.comboCount);
       this.comboBadge?.bumpTo(this.comboCount);
@@ -1493,13 +1582,16 @@ export class PlayScene implements Scene {
         driftDir: Math.random() < 0.5 ? -1 : 1,
         driftVx: 0,
         stairId: index,
-        kind: 'normal',
+        kind: index === 0 ? 'spawn' : 'normal',
       };
       this.applyResponsivePlatformWidth(platform);
       if (index === 0) {
-        const ideal = layoutCamX + viewportW * 0.5 - platform.width * 0.5;
-        const { minX, maxX } = this.getPlatformSpawnHorizontalRange(platform.width, layoutCamX);
-        platform.x = Math.max(minX, Math.min(ideal, maxX));
+        /** Wide Floor 0 deck — span comes from {@link getFloorZeroSpawnPlatformBounds}; skip narrow stair centering. */
+        if (platform.kind !== 'spawn') {
+          const ideal = layoutCamX + viewportW * 0.5 - platform.width * 0.5;
+          const { minX, maxX } = this.getPlatformSpawnHorizontalRange(platform.width, layoutCamX);
+          platform.x = Math.max(minX, Math.min(ideal, maxX));
+        }
       } else {
         platform.x = this.computePlatformSpawnX(index, platform.width, layoutCamX);
       }
@@ -1628,6 +1720,13 @@ export class PlayScene implements Scene {
       this.updatePlatformBodyFromScale(platform);
       return;
     }
+    if (platform.kind === 'spawn') {
+      const bounds = this.getFloorZeroSpawnPlatformBounds();
+      platform.x = bounds.x;
+      platform.width = bounds.width;
+      this.updatePlatformBodyFromScale(platform);
+      return;
+    }
     const springPhaseMul = this.getSpringPhasePlatformWidthMul(platform.stairId);
     platform.width =
       platform.baseWidth *
@@ -1732,6 +1831,10 @@ export class PlayScene implements Scene {
       return;
     }
     this.applyResponsivePlatformWidth(p);
+    /** Wide Floor 0 deck — X/width already tied to camera in {@link getFloorZeroSpawnPlatformBounds}. */
+    if (p.kind === 'spawn') {
+      return;
+    }
     const vw = this.worldWidthFromScreen();
     const ideal = this.cameraX + vw * 0.5 - p.width * 0.5;
     const { minX, maxX } = this.getPlatformSpawnHorizontalRange(p.width);
@@ -1749,7 +1852,8 @@ export class PlayScene implements Scene {
     }
     const b = this.player.body;
     b.x = Math.round(p.x + p.width * 0.5 - b.width * 0.5);
-    b.y = Math.round(this.worldMaxY - 100 - b.height);
+    /** Same slight air gap as legacy spawn — feet a few px above the deck top (`worldMaxY - 100` when stair 0 sat at `worldMaxY - 96`). */
+    b.y = Math.round(p.y - b.height - 4);
   }
 
   private updatePlatformBodyFromScale(platform: Platform): void {
@@ -1764,6 +1868,13 @@ export class PlayScene implements Scene {
     for (const p of this.platforms) {
       if (p.kind === 'rest') {
         const bounds = this.getRestFloorPlatformBounds();
+        p.x = bounds.x;
+        p.width = bounds.width;
+        this.updatePlatformBodyFromScale(p);
+        continue;
+      }
+      if (p.kind === 'spawn') {
+        const bounds = this.getFloorZeroSpawnPlatformBounds();
         p.x = bounds.x;
         p.width = bounds.width;
         this.updatePlatformBodyFromScale(p);
@@ -1793,7 +1904,7 @@ export class PlayScene implements Scene {
         continue;
       }
 
-      if (platform.kind === 'rest') {
+      if (platform.kind === 'rest' || platform.kind === 'spawn') {
         root.visible = false;
         continue;
       }
@@ -1843,6 +1954,7 @@ export class PlayScene implements Scene {
     this.lastScoredLandWorldTopY = Number.POSITIVE_INFINITY;
     this.cameraX = 0;
     this.cameraY = 0;
+    this.cameraFrozenUntilFirstFloor0Jump = true;
     this.activeRestFloorY = null;
     this.restFloorHoldY = null;
     this.highestY = 0;
@@ -1853,6 +1965,10 @@ export class PlayScene implements Scene {
     this.comboCount = 0;
     this.comboLastJumpY = Number.POSITIVE_INFINITY;
     this.comboLastJumpTime = -1e9;
+    this.superJumpComboGraceUntil = Number.NEGATIVE_INFINITY;
+    this.megaJumpReanchorComboOnLanding = false;
+    this.superJumpStairTrackActive = false;
+    this.superJumpCrossedStairIds.clear();
     this.comboBadge?.resetState();
     this.pullUpJumpsAccum = 0;
     this.setSkillPairAvailable(false);
@@ -2056,6 +2172,11 @@ export class PlayScene implements Scene {
     };
   }
 
+  /** Match {@link getRestFloorPlatformBounds} — shared wide span for Floor 0 spawn deck (no rest-floor gameplay hooks). */
+  private getFloorZeroSpawnPlatformBounds(): { x: number; width: number } {
+    return this.getRestFloorPlatformBounds();
+  }
+
   private resetPlayer(): void {
     this.snapPlayerOntoStairZero();
     this.player.body.vx = 0;
@@ -2181,6 +2302,27 @@ export class PlayScene implements Scene {
     this.spawnMushroomEnemies();
   }
 
+  /** Grounded on {@link platforms}[0] when it is the wide Floor 0 spawn deck (feet band matches physics landing). */
+  private isPlayerGroundedOnFloor0SpawnDeck(): boolean {
+    const deck = this.platforms[0];
+    if (!deck || deck.kind !== 'spawn' || !this.player.body.grounded) {
+      return false;
+    }
+    const b = this.player.body;
+    const feetY = b.y + b.height;
+    if (feetY < deck.y - 10 || feetY > deck.y + deck.height + 14) {
+      return false;
+    }
+    return b.x + b.width * 0.42 > deck.x && b.x < deck.x + deck.width;
+  }
+
+  private maybeEndFloor0IntroCameraFreeze(): void {
+    if (!this.cameraFrozenUntilFirstFloor0Jump || !this.isPlayerGroundedOnFloor0SpawnDeck()) {
+      return;
+    }
+    this.cameraFrozenUntilFirstFloor0Jump = false;
+  }
+
   private updateCamera(dt: number): void {
     this.highestY = Math.min(this.highestY, this.player.body.y);
 
@@ -2188,6 +2330,13 @@ export class PlayScene implements Scene {
     const viewportH = this.worldHeightFromScreen();
     const playerCy = this.player.body.y + this.player.body.height * 0.5;
     this.cameraX = (this.worldWidth - viewportW) * 0.5;
+    if (this.cameraFrozenUntilFirstFloor0Jump) {
+      const maxCamXFrozen = Math.max(0, this.worldWidth - viewportW);
+      this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamXFrozen));
+      this.world.position.set(-this.cameraX, -this.cameraY);
+      this.layoutBackground();
+      return;
+    }
     if (this.isRestFloorHolding()) {
       const maxCamX = Math.max(0, this.worldWidth - viewportW);
       this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
@@ -2700,6 +2849,14 @@ export class PlayScene implements Scene {
     for (const p of this.platforms) {
       if (p.kind === 'rest') {
         const bounds = this.getRestFloorPlatformBounds();
+        p.x = bounds.x;
+        p.width = bounds.width;
+        p.driftVx = 0;
+        this.updatePlatformBodyFromScale(p);
+        continue;
+      }
+      if (p.kind === 'spawn') {
+        const bounds = this.getFloorZeroSpawnPlatformBounds();
         p.x = bounds.x;
         p.width = bounds.width;
         p.driftVx = 0;
@@ -3238,8 +3395,11 @@ export class PlayScene implements Scene {
       !this.skillSuperJumpSpent &&
       this.skillChainWindowEnd > 0 &&
       this.runTime <= this.skillChainWindowEnd;
+    const superJumpGrace =
+      this.comboCount > 0 && this.runTime <= this.superJumpComboGraceUntil;
     if (
       !skillChainGrace &&
+      !superJumpGrace &&
       this.comboCount > 0 &&
       this.runTime - this.comboLastJumpTime > COMBO_CHAIN_WINDOW_SEC
     ) {
@@ -3299,9 +3459,16 @@ export class PlayScene implements Scene {
   /** Streak reset path — called by expiry, non-climbing jumps, fall save, or death. */
   private breakCombo(): void {
     if (this.comboCount === 0 && !this.skillPairAvailable && !this.skillPullUpSpent) {
+      this.superJumpStairTrackActive = false;
+      this.superJumpCrossedStairIds.clear();
+      this.megaJumpReanchorComboOnLanding = false;
       return;
     }
     this.comboCount = 0;
+    this.superJumpComboGraceUntil = Number.NEGATIVE_INFINITY;
+    this.megaJumpReanchorComboOnLanding = false;
+    this.superJumpStairTrackActive = false;
+    this.superJumpCrossedStairIds.clear();
     this.comboBadge?.expire();
   }
 
@@ -3367,8 +3534,9 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Manual mega jump (`SUPER_JUMP_VY_SCALE`× upward vs normal jump). Chain bonus if used soon after
-   * {@link fireSuperTongue}.
+   * Manual mega jump (`SUPER_JUMP_VY_SCALE`× upward). Combo: {@link registerComboJump} on takeoff
+   * (`skipClimbCheck`), then one extra combo per stair top crossed while ascending (horizontal overlap).
+   * Pull-up → mega within {@link SKILL_CHAIN_WINDOW_SEC} adds a score bonus only.
    */
   private fireManualSuperJump(): void {
     if (!this.skillPairAvailable || this.skillSuperJumpSpent) {
@@ -3386,28 +3554,38 @@ export class PlayScene implements Scene {
       this.skillChainWindowEnd > 0 &&
       this.runTime <= this.skillChainWindowEnd;
 
+    const launchPlatform = this.currentGroundPlatform;
+
+    this.maybeEndFloor0IntroCameraFreeze();
     this.physics.jump(this.player.body);
     this.player.body.vy *= SUPER_JUMP_VY_SCALE;
     this.jumpCount += 1;
 
+    /**
+     * Combo registration must run **before** mega-jump stair tracking: a cold chain calls
+     * {@link breakCombo}, which clears {@link superJumpStairTrackActive} / {@link superJumpCrossedStairIds}
+     * / {@link megaJumpReanchorComboOnLanding}. Those flags are set immediately after.
+     */
+    this.registerComboJump({ skipClimbCheck: true });
+
+    this.superJumpCrossedStairIds.clear();
+    if (launchPlatform) {
+      this.superJumpCrossedStairIds.add(launchPlatform.stairId);
+    }
+    this.superJumpStairTrackActive = true;
+    this.megaJumpReanchorComboOnLanding = true;
+
     if (chained) {
-      this.comboLastJumpTime = this.runTime;
-      this.comboLastJumpY = this.player.body.y;
-      const multiplied = Math.max(
-        this.comboCount + 1,
-        Math.floor(this.comboCount * SKILL_CHAIN_COMBO_MULTIPLIER),
-      );
-      this.comboCount = multiplied;
       const bonus = SKILL_CHAIN_BASE_SCORE + this.comboCount * SKILL_CHAIN_SCORE_PER_COMBO;
       this.score += bonus;
       this.scoreboard?.onPointsGained(bonus);
       this.maybeTriggerScreenShake(Math.min(10, 2 + Math.floor(bonus / 35)));
-      const tier = comboStreakToWordTier(this.comboCount);
+    }
+
+    this.superJumpComboGraceUntil = this.runTime + SUPER_JUMP_COMBO_GRACE_EXTEND_SEC;
+
+    if (this.comboCount >= 2) {
       this.comboBadge?.bumpTo(this.comboCount);
-      this.comboSynth?.resume();
-      this.comboSynth?.play(tier);
-    } else {
-      this.registerComboJump();
     }
 
     this.spawnComboSuperJumpParticles();
@@ -5457,7 +5635,7 @@ export class PlayScene implements Scene {
   }
 
   private drawCrystalPlatform(platform: Platform): void {
-    if (platform.kind === 'rest') {
+    if (platform.kind === 'rest' || platform.kind === 'spawn') {
       this.drawRestFloorPlatform(platform);
       return;
     }
@@ -5469,31 +5647,36 @@ export class PlayScene implements Scene {
   }
 
   private drawRestFloorPlatform(platform: Platform): void {
+    const spawnDeck = platform.kind === 'spawn';
     const h = Math.max(platform.height * 1.18, platform.height + 12);
     const tile = REST_FLOOR_TILE_PX;
     const x = platform.x;
     const width = platform.width;
+    const baseFill = spawnDeck ? 0x142820 : 0x1a1630;
+    const trim = spawnDeck ? 0x7ae8a8 : 0xb8f7ff;
+    const capFill = spawnDeck ? 0x285038 : 0x39336c;
     this.platformLayer
       .rect(x, platform.y - 4, width, h + 8)
-      .fill({ color: 0x1a1630, alpha: 0.96 })
-      .stroke({ color: 0xb8f7ff, width: 2.5, alpha: 0.88 });
+      .fill({ color: baseFill, alpha: 0.96 })
+      .stroke({ color: trim, width: 2.5, alpha: 0.88 });
     this.platformLayer
       .rect(x, platform.y, width, h * 0.35)
-      .fill({ color: 0x39336c, alpha: 0.9 });
+      .fill({ color: capFill, alpha: 0.9 });
     const cols = Math.ceil(width / tile);
     for (let i = 0; i < cols; i += 1) {
       const tileX = x + i * tile;
-      const color = i % 2 === 0 ? 0x302a58 : 0x262044;
+      const color =
+        i % 2 === 0 ? (spawnDeck ? 0x243d30 : 0x302a58) : spawnDeck ? 0x1c3028 : 0x262044;
       this.platformLayer
         .rect(tileX, platform.y + h * 0.35, Math.min(tile, width - i * tile), h * 0.65)
         .fill({ color, alpha: 0.95 });
       this.platformLayer
         .rect(tileX, platform.y - 4, 2, h + 8)
-        .fill({ color: 0x80f7ff, alpha: 0.18 });
+        .fill({ color: spawnDeck ? 0x60d898 : 0x80f7ff, alpha: 0.18 });
     }
     this.platformLayer
       .rect(x, platform.y - 6, width, 6)
-      .fill({ color: 0xc8ffff, alpha: 0.78 });
+      .fill({ color: spawnDeck ? 0xa8ffd8 : 0xc8ffff, alpha: 0.78 });
   }
 
   private async loadPlatformSprite(): Promise<void> {
@@ -6183,12 +6366,13 @@ export class PlayScene implements Scene {
   }
 
   private canMushroomOccupyPlatform(platform: Platform): boolean {
-    if (platform.kind === 'rest') {
+    if (platform.kind === 'rest' || platform.kind === 'spawn') {
       return false;
     }
     const clearPx = REST_FLOOR_MONSTER_CLEAR_METERS * 12;
     return !this.platforms.some(
-      (p) => p.kind === 'rest' && Math.abs(p.y - platform.y) <= clearPx,
+      (p) =>
+        (p.kind === 'rest' || p.kind === 'spawn') && Math.abs(p.y - platform.y) <= clearPx,
     );
   }
 

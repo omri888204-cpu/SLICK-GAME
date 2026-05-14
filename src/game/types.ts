@@ -9,7 +9,8 @@ export type Platform = {
   driftVx: number;
   /** Monotonic id for higher steps (used for score / grapple bonus). */
   stairId: number;
-  kind?: 'normal' | 'rest';
+  /** `spawn` = wide Floor 0 deck only — no rest-floor pause/house logic (see PlayScene). */
+  kind?: 'normal' | 'rest' | 'spawn';
 };
 
 export type Ripple = {
