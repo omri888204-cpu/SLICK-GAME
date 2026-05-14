@@ -35,6 +35,7 @@ import {
   fetchTopLeaderboard,
   mergeSessionIntoTop,
   saveLeaderboardRun,
+  subscribeTopLeaderboard,
   type LeaderboardEntry,
 } from '../services/leaderboard';
 import { getSavedNickname } from '../services/playerProfile';
@@ -318,16 +319,10 @@ const PLAYER_ATTACK_REACH_PX = 110;
 const PLAYER_ATTACK_VERT_PAD_PX = 16;
 
 /**
- * Large HP pool so mushroom touches chip **very little**; HUD still maps 0..max → 10 segments.
- * Tune `MUSHROOM_DAMAGE_PER_HIT` (not max) for per-hit sting.
+ * Health HUD uses `PLAYER_MAX_HEALTH` → 10 heart segments. Mushrooms no longer reduce HP — contact
+ * kills the enemy instead (`updateMushroomEnemies`). Falls into the death plane still use shield / game over.
  */
 const PLAYER_MAX_HEALTH = 120;
-/** HP lost on each mushroom hit (after i-frames). 1 ≈ 0.8% of the bar per contact. */
-const MUSHROOM_DAMAGE_PER_HIT = 1;
-/** Seconds of i-frames granted after a hit (no further mushroom damage during this window). */
-const PLAYER_INVULN_SEC = 1.5;
-/** Blink frequency while invulnerable. Higher = faster strobe. */
-const PLAYER_HURT_BLINK_HZ = 12;
 /** Top-left placement for the health HUD (below the header panel). */
 const HEALTH_HUD_X_PX = 18;
 /** Extra X so the bar clears the shield counter column (same row as diamond). */
@@ -713,13 +708,7 @@ export class PlayScene implements Scene {
   private attackBtn = new Graphics();
   private attackBtnIcon = new Graphics();
   /**
-   * Player health & i-frame state.
-   *
-   * `playerHealth` is decremented by mushroom contact by `MUSHROOM_DAMAGE_PER_HIT` (capped at
-   * 0 = game over). Falls into the death plane consume an active shield once before
-   * the regular game-over path. `playerInvulnTime` counts
-   * down each frame; while it is positive the player can absorb further hits without
-   * losing HP, and the sprite strobes via `playerInvulnBlinkPhase`.
+   * Player health (HUD). Mushrooms do not reduce HP. Death plane still ends the run unless shield saves.
    */
   private playerHealth = PLAYER_MAX_HEALTH;
   /**
@@ -727,8 +716,6 @@ export class PlayScene implements Scene {
    * This guard prevents accidental restores from unrelated state flows.
    */
   private playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
-  private playerInvulnTime = 0;
-  private playerInvulnBlinkPhase = 0;
   private healthHudRoot = new Container();
   private heartCounterTextures: Texture[] = [];
   private heartHudSprite = new Sprite();
@@ -810,8 +797,9 @@ export class PlayScene implements Scene {
   /** Peak {@link comboCount} this run — for leaderboard best combo. */
   private peakComboThisRun = 0;
   private deathSubmitted = false;
-  /** Latest Top 5 from Firestore (refreshed after each save and when opening leaderboard). */
+  /** Latest Top 5 from Firestore — kept fresh via {@link subscribeTopLeaderboard} while PlayScene lives. */
   private lastLeaderboardTop: LeaderboardEntry[] = [];
+  private leaderboardUnsubscribe: (() => void) | null = null;
   private collectibles: Collectible[] = [];
   private goldCount = 0;
   private diamondCount = 0;
@@ -1067,6 +1055,7 @@ export class PlayScene implements Scene {
     this.drawStaticWorld();
     this.applyCameraTransform();
     this.drawDynamicWorld();
+    this.startLeaderboardRealtimeSubscription();
   }
 
   update(ticker: Ticker): void {
@@ -1275,7 +1264,6 @@ export class PlayScene implements Scene {
     this.updateRipples(dt);
     this.updateDiamondShineSparks(dt);
     this.updateCollectibles(dt);
-    this.tickPlayerInvuln(dt);
     this.updateMushroomEnemies(dt);
     this.updateMushroomDeathEffects(dt);
     if (this.input?.consumeAttack()) {
@@ -1380,6 +1368,8 @@ export class PlayScene implements Scene {
     this.tongueArmature = null;
     this.tongueDbReady = false;
     this.gameShake.destroy({ children: true });
+    this.leaderboardUnsubscribe?.();
+    this.leaderboardUnsubscribe = null;
   }
 
   private handleActions(): void {
@@ -2087,8 +2077,6 @@ export class PlayScene implements Scene {
     this.player.isShielded = false;
     this.playerHealth = PLAYER_MAX_HEALTH;
     this.playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
-    this.playerInvulnTime = 0;
-    this.playerInvulnBlinkPhase = 0;
     this.player.alpha = 1;
     this.heartHudTransTime = 0;
     this.heartHudPulseAcc = 0;
@@ -4680,54 +4668,6 @@ export class PlayScene implements Scene {
     return true;
   }
 
-  /**
-   * Apply mushroom damage (`MUSHROOM_DAMAGE_PER_HIT`). Returns `true` when the hit landed (so
-   * the caller can stop scanning further enemies this frame), or `false` when the player is
-   * currently invulnerable. Triggers the game-over flow only when health drops to zero.
-   */
-  private damagePlayer(): boolean {
-    if (this.gameOver) {
-      return false;
-    }
-    if (this.playerInvulnTime > 0) {
-      return false;
-    }
-    this.playerHealth = Math.max(
-      0,
-      this.playerHealth - MUSHROOM_DAMAGE_PER_HIT,
-    );
-    this.playerHealthCeilingThisRun = this.playerHealth;
-    this.playerInvulnTime = PLAYER_INVULN_SEC;
-    this.playerInvulnBlinkPhase = 0;
-    this.refreshHealthHud();
-    this.shakeTime = Math.max(this.shakeTime, 0.22);
-    if (this.playerHealth <= 0) {
-      this.triggerGameOver();
-    }
-    return true;
-  }
-
-  /**
-   * Per-frame upkeep for the invulnerability window. While `playerInvulnTime > 0` the
-   * player sprite strobes (alpha pulsing) so the hit-recovery state is obvious; once it
-   * hits zero we restore full opacity.
-   */
-  private tickPlayerInvuln(dt: number): void {
-    if (this.playerInvulnTime <= 0) {
-      if (this.player.alpha !== 1) {
-        this.player.alpha = 1;
-      }
-      return;
-    }
-    this.playerInvulnTime = Math.max(0, this.playerInvulnTime - dt);
-    this.playerInvulnBlinkPhase += dt * PLAYER_HURT_BLINK_HZ * Math.PI * 2;
-    const strobe = 0.5 + 0.5 * Math.cos(this.playerInvulnBlinkPhase);
-    this.player.alpha = 0.32 + 0.58 * strobe;
-    if (this.playerInvulnTime === 0) {
-      this.player.alpha = 1;
-    }
-  }
-
   private setupSpeedTierPulseOverlay(): void {
     this.speedPulseGfx.eventMode = 'none';
     this.speedPulseGfx.visible = false;
@@ -4926,8 +4866,7 @@ export class PlayScene implements Scene {
           });
           console.info('[PlayScene] leaderboard run saved', sessionRow);
           this.showScoreSavedHint();
-          const remote = await fetchTopLeaderboard(5);
-          this.lastLeaderboardTop = mergeSessionIntoTop(remote, sessionRow, 5);
+          this.lastLeaderboardTop = mergeSessionIntoTop(this.lastLeaderboardTop, sessionRow, 5);
           if (this.leaderboardOverlay.visible) {
             this.renderLeaderboardShell(this.lastLeaderboardTop, false);
           }
@@ -4942,19 +4881,57 @@ export class PlayScene implements Scene {
     }
   }
 
+  private startLeaderboardRealtimeSubscription(): void {
+    if (this.leaderboardUnsubscribe) {
+      return;
+    }
+    this.leaderboardUnsubscribe = subscribeTopLeaderboard(
+      5,
+      (entries) => {
+        this.lastLeaderboardTop = entries;
+        if (this.leaderboardOverlay.visible) {
+          this.renderLeaderboardShell(entries, false);
+        }
+      },
+      () => {
+        void fetchTopLeaderboard(5)
+          .then((top) => {
+            this.lastLeaderboardTop = top;
+            if (this.leaderboardOverlay.visible) {
+              this.renderLeaderboardShell(top, false);
+            }
+          })
+          .catch(() => {});
+      },
+    );
+  }
+
   private async openLeaderboardOverlay(): Promise<void> {
+    this.startLeaderboardRealtimeSubscription();
     this.leaderboardOverlay.visible = true;
     if (this.lastLeaderboardTop.length > 0) {
       this.renderLeaderboardShell(this.lastLeaderboardTop, false);
-    } else {
-      this.renderLeaderboardShell([], true);
+      return;
     }
-    const top = await fetchTopLeaderboard(5).catch((err) => {
-      console.error('[PlayScene] fetchTopLeaderboard failed', err);
-      return [] as LeaderboardEntry[];
-    });
-    this.lastLeaderboardTop = top;
-    this.renderLeaderboardShell(top, false);
+    this.renderLeaderboardShell([], true);
+    void fetchTopLeaderboard(5)
+      .then((top) => {
+        if (top.length === 0) {
+          return;
+        }
+        if (this.lastLeaderboardTop.length === 0) {
+          this.lastLeaderboardTop = top;
+        }
+        if (this.leaderboardOverlay.visible) {
+          this.renderLeaderboardShell(this.lastLeaderboardTop, false);
+        }
+      })
+      .catch((err) => {
+        console.error('[PlayScene] fetchTopLeaderboard failed', err);
+        if (this.leaderboardOverlay.visible) {
+          this.renderLeaderboardShell(this.lastLeaderboardTop, false);
+        }
+      });
   }
 
   private setupAutoScrollHud(): void {
@@ -6506,9 +6483,8 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Per-frame enemy tick: drives the simple walk / edge-flip AI, picks the right animation
-   * frame, syncs the sprite to its platform, and tests AABB overlap with the player. Any
-   * overlap ends the run via `triggerGameOver()`.
+   * Per-frame enemy tick: walk / edge-flip AI, animation, sync to platform. Player **body** overlap
+   * kills the mushroom (no HP loss) — same death VFX as a melee hit.
    */
   private updateMushroomEnemies(dt: number): void {
     if (this.mushroomEnemies.length === 0 || this.gameOver) {
@@ -6582,13 +6558,20 @@ export class PlayScene implements Scene {
       sprite.position.set(wx, wy + 2);
       sprite.scale.x = MUSHROOM_SPRITE_SCALE * enemy.direction;
       sprite.scale.y = MUSHROOM_SPRITE_SCALE;
+    }
 
+    for (let i = this.mushroomEnemies.length - 1; i >= 0; i -= 1) {
+      const enemy = this.mushroomEnemies[i];
+      const platform = this.platforms[enemy.platformIdx];
+      const sprite = this.mushroomEnemySprites[i];
+      if (!platform || !sprite || !sprite.visible || !this.canMushroomOccupyPlatform(platform)) {
+        continue;
+      }
+      const wx = platform.x + enemy.along * platform.width;
+      const wy = platform.y;
       if (this.mushroomHitsPlayer(wx, wy)) {
-        if (this.damagePlayer()) {
-          // Stop scanning this frame — `damagePlayer` already updated invuln/UI; subsequent
-          // overlaps in the same frame would be wasted (one hit per swing window is enough).
-          return;
-        }
+        this.destroyMushroomEnemy(i);
+        this.sfx.play('collect_coin', 0.38);
       }
     }
   }

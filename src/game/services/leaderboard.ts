@@ -3,6 +3,7 @@ import {
   collection,
   getDocs,
   limit,
+  onSnapshot,
   orderBy,
   query,
   serverTimestamp,
@@ -192,4 +193,31 @@ export async function fetchTopLeaderboard(limitCount = 5): Promise<LeaderboardEn
     rows.sort(compareLeaderboardRank);
     return rows.slice(0, limitCount);
   }
+}
+
+/**
+ * Live Top N — updates whenever any qualifying document changes (same query as {@link fetchTopLeaderboard}).
+ * Caller must invoke the returned unsubscribe (e.g. in `Scene.destroy`) to avoid leaks.
+ */
+export function subscribeTopLeaderboard(
+  limitCount: number,
+  onUpdate: (entries: LeaderboardEntry[]) => void,
+  onError?: (err: unknown) => void,
+): () => void {
+  const col = collection(db, LEADERBOARD_COLLECTION);
+  const q = query(col, orderBy('totalScore', 'desc'), limit(limitCount));
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const rows = snapshot.docs.map((docSnap) =>
+        parseLeaderboardDoc(docSnap.data() as Record<string, unknown>),
+      );
+      rows.sort(compareLeaderboardRank);
+      onUpdate(rows.slice(0, limitCount));
+    },
+    (err) => {
+      console.warn('[leaderboard] onSnapshot failed — check Firestore index for leaderboard/totalScore', err);
+      onError?.(err);
+    },
+  );
 }
