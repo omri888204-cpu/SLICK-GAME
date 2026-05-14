@@ -573,31 +573,37 @@ const JUMP_BUFFER_SEC = 0.1;
  *   - Jumping in place, falling between jumps, or pausing >= {@link COMBO_CHAIN_WINDOW_SEC} resets it.
  *   - Streak {@link COMBO_GLOW_STREAK} → character glow + tint pulse turns on.
  *
- * Pull-up grapple HUD unlock is separate: {@link PULL_UP_JUMPS_REQUIRED} successful grounded jumps
- * (see `pullUpJumpsAccum`); uses {@link SUPER_TONGUE_BUFF_DURATION_SEC} after press (instant grapple).
+ * Skill pair (`SUPER JUMP` + `PULL UP`) HUD unlock: {@link PULL_UP_JUMPS_REQUIRED} grounded jumps
+ * (`pullUpJumpsAccum`). Pull-up uses {@link SUPER_TONGUE_BUFF_DURATION_SEC}; mega jump uses manual button only.
  */
 const COMBO_CHAIN_WINDOW_SEC = 2.0;
 const COMBO_MIN_CLIMB_PX = 6;
-/** Every Nth jump in an active climb combo applies {@link SUPER_JUMP_VY_SCALE}× upward impulse. */
-const SUPER_JUMP_COMBO_EVERY = 10;
+/** Manual SUPER JUMP only (`SUPER_JUMP_VY_SCALE`× upward vs normal jump formula). */
 const SUPER_JUMP_VY_SCALE = 2;
 const SUPER_JUMP_SPARK_COUNT = 14;
+/** After `PULL UP`, window to tap `SUPER JUMP` for chain bonus + combo multiply. */
+const SKILL_CHAIN_WINDOW_SEC = 2.35;
+const SKILL_CHAIN_COMBO_MULTIPLIER = 2;
+const SKILL_CHAIN_BASE_SCORE = 160;
+const SKILL_CHAIN_SCORE_PER_COMBO = 32;
 const COMBO_GLOW_STREAK = 15;
-/** Grounded jumps before the Pull-up button unlocks (counter resets after each press). */
+/** Grounded jumps before the skill pair unlocks (both buttons; counter resets after mega jump / expiry). */
 const PULL_UP_JUMPS_REQUIRED = 8;
 /** Combo HUD anchor (screen px, top-left of unscaled layout). `comboHudRoot` applies scale. */
 const COMBO_HUD_SCREEN_X = 20;
 const COMBO_HUD_SCREEN_Y = 150;
 /** Uniform scale for combo badge only (`uiLayer`, screen-fixed — equivalent to scrollFactor 0). */
 const COMBO_HUD_ROOT_SCALE = 0.33;
-/** Pull-up button (`uiLayer` top-right; not inside scaled comboHudRoot). */
+/** Skill pair buttons (`uiLayer` top-right; not inside scaled comboHudRoot). */
 const PULL_UP_BTN_W = 152;
 const PULL_UP_BTN_H = 44;
-/** Pivot top-right: places button right edge at `screenWidth - PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX`. */
+/** Horizontal gap between `SUPER JUMP` (left) and `PULL UP` (right) inside the pair. */
+const SKILL_PAIR_BTN_GAP_PX = 10;
+/** Pivot top-right: pair right edge at `screenWidth - PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX`. */
 const PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX = 60;
 const PULL_UP_BTN_TOP_Y = 80;
-/** Mobile-friendly scale (~half size); applied to `superTongueBtnRoot` so label + chrome stay aligned. */
-const PULL_UP_BTN_SCALE = 0.55;
+/** Mobile-friendly scale; applied to `skillPairRoot` so both buttons match. */
+const PULL_UP_BTN_SCALE = 0.5;
 /** Super Tongue effects (matches the user-confirmed "B" recipe). */
 const SUPER_TONGUE_STAIRS_UP = 4;
 const SUPER_TONGUE_BUFF_DURATION_SEC = 3.0;
@@ -850,11 +856,20 @@ export class PlayScene implements Scene {
   private comboSynth?: ComboSynth;
   /** Successful grounded jumps since last Pull-up press (or run start); caps visibility unlock at {@link PULL_UP_JUMPS_REQUIRED}. */
   private pullUpJumpsAccum = 0;
-  /** Pull-up grapple unlock button (`PULL UP`) — top-right `uiLayer`; hidden until {@link pullUpJumpsAccum} ≥ threshold. */
+  /** `SUPER JUMP` + `PULL UP` wrapper — top-right `uiLayer`; hidden until {@link pullUpJumpsAccum} ≥ threshold. */
+  private skillPairRoot = new Container();
+  private superJumpBtnRoot = new Container();
+  private superJumpBtnGfx = new Graphics();
+  private superJumpBtnLabel?: Text;
+  /** Pull-up (`PULL UP`) inside {@link skillPairRoot}. */
   private superTongueBtnRoot = new Container();
   private superTongueBtnGfx = new Graphics();
   private superTongueBtnLabel?: Text;
-  private superTongueBtnAvailable = false;
+  private skillPairAvailable = false;
+  /** Pull-up used this offer — Super Jump remains until chain window ends or spend. */
+  private skillPullUpSpent = false;
+  private skillSuperJumpSpent = false;
+  private skillChainWindowEnd = 0;
   private superTongueBtnPulse = 0;
   /** Seconds left of "free chain grapple" buff after pressing Super Tongue. */
   private superTongueBuffTime = 0;
@@ -1098,7 +1113,6 @@ export class PlayScene implements Scene {
       dt,
       touchAirControl,
       touchGroundMul,
-      this.getManaSpeedMultiplier(),
     );
     if (jumpArcAssistActive) {
       this.jumpArcAssistTime = Math.max(0, this.jumpArcAssistTime - dt);
@@ -1221,7 +1235,7 @@ export class PlayScene implements Scene {
     this.layoutCollectibleHud();
     this.layoutClimbHud();
     this.layoutComboHudRoot();
-    this.layoutPullUpButton();
+    this.layoutSkillPairHud();
     this.layoutAutoScrollHud();
     this.layoutGameOverUi();
     this.layoutHeaderPauseButton();
@@ -1395,12 +1409,6 @@ export class PlayScene implements Scene {
     this.setPlayerMana(this.playerMana - MANA_JUMP_COST * (1 + Math.min(2, this.getHudClimbMeters() / 2500)));
     this.jumpCount += 1;
     this.registerComboJump();
-    const comboSuperJump =
-      this.comboCount > 0 && this.comboCount % SUPER_JUMP_COMBO_EVERY === 0;
-    if (comboSuperJump) {
-      this.player.body.vy *= SUPER_JUMP_VY_SCALE;
-      this.spawnComboSuperJumpParticles();
-    }
     this.maybeIncrementPullUpJumpCounter();
     if (fromRightSwipe) {
       const body = this.player.body;
@@ -1416,9 +1424,6 @@ export class PlayScene implements Scene {
       this.jumpArcTargetCenterX = centerX;
     }
     this.player.onJump();
-    if (comboSuperJump) {
-      this.player.onComboSuperJumpBoost();
-    }
     return true;
   }
 
@@ -1430,8 +1435,6 @@ export class PlayScene implements Scene {
    *
    * On `comboCount >= 2` we play the combo synth + bump the badge (word tier rises every
    * `COMBO.jumpsPerWord` counted jumps in `game.config`).
-   * When `comboCount` is a multiple of {@link SUPER_JUMP_COMBO_EVERY}, `PlayScene` applies
-   * {@link SUPER_JUMP_VY_SCALE}× jump impulse and a short VFX pop.
    */
   private registerComboJump(): void {
     const currentY = this.player.body.y;
@@ -1462,14 +1465,14 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Each successful grounded jump (after combo bookkeeping); unlocks Pull-up at {@link PULL_UP_JUMPS_REQUIRED}. */
+  /** Grounded jumps toward unlocking `SUPER JUMP` + `PULL UP`; skips while the skill pair offer is active. */
   private maybeIncrementPullUpJumpCounter(): void {
-    if (this.superTongueBtnAvailable) {
+    if (this.skillPairAvailable || this.skillPullUpSpent) {
       return;
     }
     this.pullUpJumpsAccum += 1;
     if (this.pullUpJumpsAccum >= PULL_UP_JUMPS_REQUIRED) {
-      this.setSuperTongueAvailable(true);
+      this.setSkillPairAvailable(true);
     }
   }
 
@@ -1857,7 +1860,7 @@ export class PlayScene implements Scene {
     this.comboLastJumpTime = -1e9;
     this.comboBadge?.resetState();
     this.pullUpJumpsAccum = 0;
-    this.setSuperTongueAvailable(false);
+    this.setSkillPairAvailable(false);
     this.superTongueBuffTime = 0;
     this.jumpBufferTimeLeft = 0;
     this.runTime = 0;
@@ -3112,7 +3115,8 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Combo badge → scaled `comboHudRoot`. Pull-up button is a sibling on `uiLayer` (top-right, jump-gated).
+   * Combo badge → scaled `comboHudRoot`. Skill pair (`SUPER JUMP` + `PULL UP`) is a sibling on
+   * `uiLayer` (top-right, shared jump counter unlock).
    */
   private setupComboHud(): void {
     this.comboHudRoot.eventMode = 'none';
@@ -3126,12 +3130,31 @@ export class PlayScene implements Scene {
 
     this.comboSynth = new ComboSynth();
 
-    this.superTongueBtnRoot.zIndex = 1010;
-    this.superTongueBtnRoot.visible = false;
-    this.superTongueBtnRoot.scale.set(PULL_UP_BTN_SCALE);
-    this.superTongueBtnRoot.alpha = 0.8;
-    this.superTongueBtnGfx.eventMode = 'none';
+    this.skillPairRoot.zIndex = 1010;
+    this.skillPairRoot.sortableChildren = true;
+    this.skillPairRoot.visible = false;
+    this.skillPairRoot.scale.set(PULL_UP_BTN_SCALE);
+    this.skillPairRoot.alpha = 0.8;
+
+    this.superJumpBtnRoot.position.set(0, 0);
+    this.superJumpBtnGfx.cursor = 'pointer';
+    this.superJumpBtnGfx.eventMode = 'none';
+    this.superJumpBtnLabel = new Text({
+      text: 'SUPER JUMP',
+      style: this.createNeonGoldTextStyle(12, 2.5),
+    });
+    this.superJumpBtnLabel.anchor.set(0.5);
+    this.superJumpBtnLabel.position.set(PULL_UP_BTN_W * 0.5, PULL_UP_BTN_H * 0.5);
+    this.superJumpBtnLabel.eventMode = 'none';
+    this.superJumpBtnRoot.addChild(this.superJumpBtnGfx, this.superJumpBtnLabel);
+    this.superJumpBtnGfx.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.fireManualSuperJump();
+    });
+
+    this.superTongueBtnRoot.position.set(PULL_UP_BTN_W + SKILL_PAIR_BTN_GAP_PX, 0);
     this.superTongueBtnGfx.cursor = 'pointer';
+    this.superTongueBtnGfx.eventMode = 'none';
     this.superTongueBtnLabel = new Text({
       text: 'PULL UP',
       style: this.createNeonGoldTextStyle(14, 3),
@@ -3145,33 +3168,41 @@ export class PlayScene implements Scene {
       this.fireSuperTongue();
     });
 
+    this.skillPairRoot.addChild(this.superJumpBtnRoot, this.superTongueBtnRoot);
+
     this.comboHudRoot.addChild(this.comboBadge);
     this.uiLayer.addChild(this.comboHudRoot);
-    this.uiLayer.addChild(this.superTongueBtnRoot);
+    this.uiLayer.addChild(this.skillPairRoot);
     this.layoutComboHudRoot();
-    this.layoutPullUpButton();
+    this.layoutSkillPairHud();
+    this.drawSuperJumpButton();
     this.drawSuperTongueButton();
   }
 
   /**
-   * Pull-up (`PULL UP`) lives only on `uiLayer` (never `world`) — fixed while climbing = Phaser scrollFactor 0.
-   * Pivot top-right so the button sits in the upper-right without overlapping climb readout (below ~y72).
-   * Anchor point uses unscaled width so scale does not drift the corner inset.
+   * Skill pair is fixed on `uiLayer` (never `world`). Pivot top-right so the cluster hugs the corner.
    */
-  private layoutPullUpButton(): void {
-    this.superTongueBtnRoot.pivot.set(PULL_UP_BTN_W, 0);
-    this.superTongueBtnRoot.position.set(
+  private layoutSkillPairHud(): void {
+    const totalW = PULL_UP_BTN_W * 2 + SKILL_PAIR_BTN_GAP_PX;
+    this.skillPairRoot.pivot.set(totalW, 0);
+    this.skillPairRoot.position.set(
       this.width - PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX,
       PULL_UP_BTN_TOP_Y,
     );
+    this.superJumpBtnGfx.hitArea = new Rectangle(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H);
     this.superTongueBtnGfx.hitArea = new Rectangle(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H);
   }
 
-  private drawSuperTongueButton(): void {
-    const gfx = this.superTongueBtnGfx;
+  private drawHudSkillButton(gfx: Graphics, pulseT: number, cyanAccent: boolean): void {
     gfx.clear();
-    const pulse = 0.5 + 0.5 * Math.sin(this.superTongueBtnPulse * 6);
-    const accent = pulse > 0.5 ? 0xffd700 : 0xff9900;
+    const pulse = 0.5 + 0.5 * Math.sin(pulseT * 6);
+    const accent = cyanAccent
+      ? pulse > 0.5
+        ? 0x88fff4
+        : 0x44ccb8
+      : pulse > 0.5
+        ? 0xffd700
+        : 0xff9900;
     gfx.roundRect(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H, 12).fill({
       color: 0x2a0040,
       alpha: 0.92,
@@ -3188,55 +3219,125 @@ export class PlayScene implements Scene {
     });
   }
 
+  private drawSuperJumpButton(): void {
+    this.drawHudSkillButton(this.superJumpBtnGfx, this.superTongueBtnPulse + 0.35, true);
+  }
+
+  private drawSuperTongueButton(): void {
+    this.drawHudSkillButton(this.superTongueBtnGfx, this.superTongueBtnPulse, false);
+  }
+
   /**
-   * Tick combo expiry (no-jump window) + advance badge animations. Also drives the Super Tongue
-   * button pulse/visibility and counts down its post-press buff timer.
+   * Tick combo expiry (no-jump window) + advance badge animations. Drives skill pair pulse / chain
+   * window expiry and post-pull grapple buff timer.
    */
   private tickComboHud(dt: number): void {
-    if (this.comboCount > 0 && this.runTime - this.comboLastJumpTime > COMBO_CHAIN_WINDOW_SEC) {
+    const skillChainGrace =
+      this.skillPullUpSpent &&
+      !this.skillSuperJumpSpent &&
+      this.skillChainWindowEnd > 0 &&
+      this.runTime <= this.skillChainWindowEnd;
+    if (
+      !skillChainGrace &&
+      this.comboCount > 0 &&
+      this.runTime - this.comboLastJumpTime > COMBO_CHAIN_WINDOW_SEC
+    ) {
       this.breakCombo();
     }
     this.comboBadge?.tick(dt);
     this.superTongueBtnPulse += dt;
-    if (this.superTongueBtnAvailable) {
-      this.drawSuperTongueButton();
+    if (this.skillPairAvailable) {
+      this.syncSkillPairChildVisibility();
+      if (this.superJumpBtnRoot.visible) {
+        this.drawSuperJumpButton();
+      }
+      if (this.superTongueBtnRoot.visible) {
+        this.drawSuperTongueButton();
+      }
     }
+    this.tickSkillPairChainWindow();
     if (this.superTongueBuffTime > 0) {
       this.superTongueBuffTime = Math.max(0, this.superTongueBuffTime - dt);
     }
   }
 
+  private syncSkillPairChildVisibility(): void {
+    if (!this.skillPairAvailable) {
+      return;
+    }
+    const sjOk =
+      !this.skillSuperJumpSpent &&
+      (!this.skillPullUpSpent || this.runTime <= this.skillChainWindowEnd);
+    this.superJumpBtnRoot.visible = sjOk;
+    this.superJumpBtnGfx.eventMode = sjOk ? 'static' : 'none';
+    const puOk = !this.skillPullUpSpent;
+    this.superTongueBtnRoot.visible = puOk;
+    this.superTongueBtnGfx.eventMode = puOk ? 'static' : 'none';
+  }
+
+  private tickSkillPairChainWindow(): void {
+    if (
+      !this.skillPullUpSpent ||
+      this.skillSuperJumpSpent ||
+      this.skillChainWindowEnd <= 0 ||
+      this.runTime <= this.skillChainWindowEnd
+    ) {
+      return;
+    }
+    this.expireSkillPairWithoutMegaJump();
+  }
+
+  /** Pull-up spent but mega jump never fired before the chain timer expired. */
+  private expireSkillPairWithoutMegaJump(): void {
+    this.pullUpJumpsAccum = 0;
+    this.setSkillPairAvailable(false);
+    this.superTongueBtnRoot.visible = true;
+    this.superJumpBtnRoot.visible = true;
+  }
+
   /** Streak reset path — called by expiry, non-climbing jumps, fall save, or death. */
   private breakCombo(): void {
-    if (this.comboCount === 0 && !this.superTongueBtnAvailable) {
+    if (this.comboCount === 0 && !this.skillPairAvailable && !this.skillPullUpSpent) {
       return;
     }
     this.comboCount = 0;
     this.comboBadge?.expire();
   }
 
-  /** Show / hide Pull-up (`PULL UP`). Does not clear grapple buff — that runs separately after press / reset run. */
-  private setSuperTongueAvailable(available: boolean): void {
-    if (available === this.superTongueBtnAvailable) {
+  /** Show / hide the skill pair offer (`SUPER JUMP` + `PULL UP`). Does not clear grapple buff. */
+  private setSkillPairAvailable(available: boolean): void {
+    if (available === this.skillPairAvailable) {
       return;
     }
-    this.superTongueBtnAvailable = available;
-    this.superTongueBtnRoot.visible = available;
-    this.superTongueBtnGfx.eventMode = available ? 'static' : 'none';
-    if (available) {
-      this.superTongueBtnPulse = 0;
-      this.drawSuperTongueButton();
-      this.layoutPullUpButton();
+    this.skillPairAvailable = available;
+    this.skillPairRoot.visible = available;
+    if (!available) {
+      this.skillPullUpSpent = false;
+      this.skillSuperJumpSpent = false;
+      this.skillChainWindowEnd = 0;
+      this.superJumpBtnGfx.eventMode = 'none';
+      this.superTongueBtnGfx.eventMode = 'none';
+      return;
     }
+    this.skillPullUpSpent = false;
+    this.skillSuperJumpSpent = false;
+    this.skillChainWindowEnd = 0;
+    this.superTongueBtnPulse = 0;
+    this.superJumpBtnRoot.visible = true;
+    this.superTongueBtnRoot.visible = true;
+    this.superJumpBtnGfx.eventMode = 'static';
+    this.superTongueBtnGfx.eventMode = 'static';
+    this.drawSuperJumpButton();
+    this.drawSuperTongueButton();
+    this.layoutSkillPairHud();
   }
 
   /**
-   * Streak-22 reward action. Fires an instant grapple ~{@link SUPER_TONGUE_STAIRS_UP} stairs above
-   * the player and grants {@link SUPER_TONGUE_BUFF_DURATION_SEC} of zero-cooldown grapples after.
-   * Does not break the combo — the player should be rewarded for using the unlock, not punished.
+   * Pull-up grapple: fires ~{@link SUPER_TONGUE_STAIRS_UP} stairs up + grapple buff. Opens a short
+   * {@link SKILL_CHAIN_WINDOW_SEC} window to tap {@link fireManualSuperJump} for a chain bonus.
    */
   private fireSuperTongue(): void {
-    if (!this.superTongueBtnAvailable || this.grapple) {
+    if (!this.skillPairAvailable || this.skillPullUpSpent || this.grapple) {
       return;
     }
     const hit = this.findSuperTongueTarget();
@@ -3252,15 +3353,77 @@ export class PlayScene implements Scene {
      * audio/visual response is immediate (the actual grapple flight can take >1s).
      */
     this.comboLastJumpTime = this.runTime;
-    /** Super Tongue counts as one combo step (grants progression toward the next tier word). */
+    /** Pull-up counts as one combo step (grants progression toward the next tier word). */
     this.comboCount += 1;
     const wordTier = comboStreakToWordTier(this.comboCount);
     this.comboBadge?.bumpTo(this.comboCount);
     this.comboSynth?.play(wordTier);
     /** Mid-air shake + camera punch makes the moment feel earned. */
     this.shakeTime = Math.max(this.shakeTime, 0.18);
+    this.skillPullUpSpent = true;
+    this.skillChainWindowEnd = this.runTime + SKILL_CHAIN_WINDOW_SEC;
+    this.syncSkillPairChildVisibility();
+  }
+
+  /**
+   * Manual mega jump (`SUPER_JUMP_VY_SCALE`× upward vs normal jump). Chain bonus if used soon after
+   * {@link fireSuperTongue}.
+   */
+  private fireManualSuperJump(): void {
+    if (!this.skillPairAvailable || this.skillSuperJumpSpent) {
+      return;
+    }
+    if (this.skillPullUpSpent && this.runTime > this.skillChainWindowEnd) {
+      return;
+    }
+    if (!this.player.body.grounded || this.grapple) {
+      return;
+    }
+
+    const chained =
+      this.skillPullUpSpent &&
+      this.skillChainWindowEnd > 0 &&
+      this.runTime <= this.skillChainWindowEnd;
+
+    this.physics.jump(this.player.body);
+    this.player.body.vy *= SUPER_JUMP_VY_SCALE;
+    this.setPlayerMana(this.playerMana - MANA_JUMP_COST * (1 + Math.min(2, this.getHudClimbMeters() / 2500)));
+    this.jumpCount += 1;
+
+    if (chained) {
+      this.comboLastJumpTime = this.runTime;
+      this.comboLastJumpY = this.player.body.y;
+      const multiplied = Math.max(
+        this.comboCount + 1,
+        Math.floor(this.comboCount * SKILL_CHAIN_COMBO_MULTIPLIER),
+      );
+      this.comboCount = multiplied;
+      const bonus = SKILL_CHAIN_BASE_SCORE + this.comboCount * SKILL_CHAIN_SCORE_PER_COMBO;
+      this.score += bonus;
+      this.scoreboard?.onPointsGained(bonus);
+      this.maybeTriggerScreenShake(Math.min(10, 2 + Math.floor(bonus / 35)));
+      const tier = comboStreakToWordTier(this.comboCount);
+      this.comboBadge?.bumpTo(this.comboCount);
+      this.comboSynth?.resume();
+      this.comboSynth?.play(tier);
+    } else {
+      this.registerComboJump();
+    }
+
+    this.spawnComboSuperJumpParticles();
+    this.player.onJump();
+    this.player.onComboSuperJumpBoost();
+
+    this.skillSuperJumpSpent = true;
+    this.finishSkillPairAfterMegaJump();
+    this.maybeIncrementPullUpJumpCounter();
+  }
+
+  private finishSkillPairAfterMegaJump(): void {
     this.pullUpJumpsAccum = 0;
-    this.setSuperTongueAvailable(false);
+    this.setSkillPairAvailable(false);
+    this.superTongueBtnRoot.visible = true;
+    this.superJumpBtnRoot.visible = true;
   }
 
   /**
@@ -4117,15 +4280,9 @@ export class PlayScene implements Scene {
     this.heartHudSegmentL = newL;
   }
 
+  /** Used for the mana HUD frames only — never scales movement or combat. */
   private getManaPercent(): number {
     return Math.max(0, Math.min(1, this.playerMana / PLAYER_MAX_MANA));
-  }
-
-  /**
-   * Mana bar is resource/visual-only: horizontal move speed always uses full walk tuning (no low-mana slowdown).
-   */
-  private getManaSpeedMultiplier(): number {
-    return 1;
   }
 
   /** Incoming damage does not scale with mana (no low-mana vulnerability). */

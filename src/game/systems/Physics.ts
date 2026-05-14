@@ -120,9 +120,8 @@ export class Physics {
     dt: number,
     airControlScale = 1,
     groundAccelScale = 1,
-    speedMultiplier = 1,
   ): void {
-    const targetVx = axis * WALK.speedPxPerSecond * speedMultiplier;
+    const targetVx = axis * WALK.speedPxPerSecond;
     let rate: number;
     const airMul = body.grounded ? 1 : airControlScale;
     const groundMul = body.grounded ? groundAccelScale : 1;

@@ -99,7 +99,8 @@ export const PHYSICS = {
   /**
    * Standing jump apex ≈ `baseJump² / (2·gravity)`; tuned to clear typical stair gaps (~250–350px).
    */
-  baseJump: 1310,
+  /** +25% vs legacy baseline for punchier default jumps. */
+  baseJump: Math.round(1310 * 1.25),
   speedJumpBonus: 0.75,
   /** Horizontal bounce when hitting left/right world bounds (custom physics, not Phaser). */
   worldWallRestitution: 0,
