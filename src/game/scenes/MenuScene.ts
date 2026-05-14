@@ -3,6 +3,7 @@ import slickLogoUrl from '../../assets/ui/slick-logo.png';
 import { getSavedNickname, saveNickname } from '../services/playerProfile';
 import { SlickLogoImage } from '../ui/SlickLogoImage';
 import { loadLogoTextureTransparent } from '../utils/logoTexture';
+import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
 import type { Scene } from './Scene';
 
 /**
@@ -110,7 +111,7 @@ export class MenuScene implements Scene {
     card.style.padding = '20px';
     card.style.borderRadius = '18px';
     card.style.background = 'rgba(46, 0, 75, 0.55)';
-    card.style.backdropFilter = 'blur(12px)';
+    card.style.backdropFilter = isQuickStartMobileDevice() ? 'none' : 'blur(12px)';
     card.style.border = '1px solid rgba(57, 255, 20, 0.65)';
     card.style.boxShadow = '0 0 18px rgba(57,255,20,0.25)';
     card.style.display = 'grid';

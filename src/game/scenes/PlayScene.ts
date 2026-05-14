@@ -38,6 +38,7 @@ import {
   type LeaderboardEntry,
 } from '../services/leaderboard';
 import { getSavedNickname } from '../services/playerProfile';
+import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
 import { InputManager } from '../systems/InputManager';
 import { Physics } from '../systems/Physics';
 import type {
@@ -965,13 +966,14 @@ export class PlayScene implements Scene {
     this.refreshWorldViewport();
 
     this.lavaLayer.addChild(this.deathZoneFallback);
+    const quickMobile = isQuickStartMobileDevice();
     await Promise.all([
-      this.loadPlatformSprite(),
+      quickMobile ? this.loadPlatformSpriteCore() : this.loadPlatformSprite(),
       this.player.load(),
       this.sfx.load(),
       this.loadDeathZoneStrip(),
-      this.loadBackgroundTexture(),
-      this.loadMushroomTextures(),
+      quickMobile ? this.loadBackgroundTextureEssentialForQuickMobile() : this.loadBackgroundTexture(),
+      quickMobile ? Promise.resolve() : this.loadMushroomTextures(),
       this.loadHeartCounterSheet(),
     ]);
 
@@ -1056,7 +1058,11 @@ export class PlayScene implements Scene {
       this.scoreboard.visible = false;
     }
 
-    await this.tryLoadTongueArmature();
+    if (quickMobile) {
+      void this.finishDeferredPlaySceneLoadsForMobile().catch(() => {});
+    } else {
+      await this.tryLoadTongueArmature();
+    }
     this.resetRun({ pickNewBgm: true });
     this.drawStaticWorld();
     this.applyCameraTransform();
@@ -1695,10 +1701,14 @@ export class PlayScene implements Scene {
 
     const toRecycle = this.platforms.filter((p) => p.y > cutoff).sort((a, b) => b.y - a.y);
     let previousTopY = Math.min(...staying.map((p) => p.y));
-    let spawnY = Math.min(
-      Math.min(...staying.map((p) => p.y)) - STAIRS.stepPx,
-      this.cameraY - 2000,
-    );
+    /** Next recycled stair id (assigned inside the loop before gap math). */
+    const firstRecycledStairId = this.nextStairId + 1;
+    /**
+     * One normal gap above the current top stair. Do **not** mix in `cameraY` here: using
+     * `Math.min(cameraY-2000, …)` snapped new steps to the sky and left huge voids once the camera
+     * had scrolled far (large |cameraY|).
+     */
+    let spawnY = previousTopY - this.computeStairGapPx(firstRecycledStairId);
 
     for (const p of toRecycle) {
       this.nextStairId += 1;
@@ -2630,12 +2640,11 @@ export class PlayScene implements Scene {
     this.bgOverlayMask.clear();
     this.bgOverlayMask.rect(0, 0, vw, clipHeight).fill({ color: 0xffffff, alpha: 1 });
   }
-
+  
   /**
-   * Builds `TilingSprite` layers (farthest → nearest). Tiers load up front so altitude changes can
-   * swap texture sets instantly: 0-1000M, 1K-2KM, then 2K-3KM.
+   * Clears parallax state before (re)loading background tiers. Does not touch `bgBackdropFill` ordering.
    */
-  private async loadBackgroundTexture(): Promise<void> {
+  private resetBackgroundTextureLoadState(): void {
     for (const { tile } of this.bgParallaxLayers) {
       this.backgroundRoot.removeChild(tile);
       tile.destroy({ texture: false });
@@ -2644,31 +2653,78 @@ export class PlayScene implements Scene {
     this.clearBackgroundOverlay();
     this.loadedBackgroundTiers.clear();
     this.activeBackgroundTierId = undefined;
+  }
+
+  /** Load one altitude tier into {@link loadedBackgroundTiers} (skips if already present). */
+  private async loadBackgroundTierIntoMap(tier: BackgroundTierSpec): Promise<void> {
+    if (this.loadedBackgroundTiers.has(tier.id)) {
+      return;
+    }
+    const loadedLayers: { texture: Texture; speed: number }[] = [];
+    try {
+      for (const spec of tier.layers) {
+        const tex = await this.loadBackgroundLayerTexture(spec, tier);
+        this.prepareTextureForInfiniteTile(tex);
+        loadedLayers.push({ texture: tex, speed: spec.speed });
+      }
+    } catch {
+      try {
+        const tex = await this.loadTextureFromCandidates(tier.fallbackCandidates);
+        this.prepareTextureForInfiniteTile(tex);
+        loadedLayers.splice(0, loadedLayers.length, { texture: tex, speed: tier.fallbackSpeed });
+      } catch {
+        return;
+      }
+    }
+    if (loadedLayers.length > 0) {
+      this.loadedBackgroundTiers.set(tier.id, { id: tier.id, layers: loadedLayers });
+    }
+  }
+
+  /**
+   * Mobile quick-start: only the first parallax tier (~0–1000m). Remaining tiers load in
+   * {@link finishDeferredPlaySceneLoadsForMobile}.
+   */
+  private async loadBackgroundTextureEssentialForQuickMobile(): Promise<void> {
+    this.resetBackgroundTextureLoadState();
+    const vw = Math.max(1, this.worldWidthFromScreen());
+    const vh = Math.max(1, this.worldHeightFromScreen());
+    await this.loadBackgroundTierIntoMap(BACKGROUND_TIERS[0]);
+    this.ensureBackgroundBackdropFill();
+    const initialTier = this.getLoadedBackgroundTierForMeters(0);
+    if (initialTier) {
+      this.rebuildBackgroundTiles(initialTier, vw, vh);
+    }
+  }
+
+  /**
+   * After the first frame of gameplay: extra BG tiers, decorative platform atlases, mushrooms, DragonBones tongue.
+   */
+  private async finishDeferredPlaySceneLoadsForMobile(): Promise<void> {
+    for (let i = 1; i < BACKGROUND_TIERS.length; i += 1) {
+      await this.loadBackgroundTierIntoMap(BACKGROUND_TIERS[i]);
+    }
+    this.layoutBackground();
+    await this.loadPlatformSpriteDecorAndAltTextures();
+    await this.loadMushroomTextures();
+    if (!this.gameOver && this.mushroomRunTextures.length > 0 && this.mushroomEnemies.length === 0) {
+      this.spawnMushroomEnemies();
+    }
+    await this.tryLoadTongueArmature();
+  }
+
+  /**
+   * Builds `TilingSprite` layers (farthest → nearest). Tiers load up front so altitude changes can
+   * swap texture sets instantly: 0-1000M, 1K-2KM, then 2K-3KM.
+   */
+  private async loadBackgroundTexture(): Promise<void> {
+    this.resetBackgroundTextureLoadState();
 
     const vw = Math.max(1, this.worldWidthFromScreen());
     const vh = Math.max(1, this.worldHeightFromScreen());
 
     for (const tier of BACKGROUND_TIERS) {
-      const loadedLayers: { texture: Texture; speed: number }[] = [];
-      try {
-        for (const spec of tier.layers) {
-          const tex = await this.loadBackgroundLayerTexture(spec, tier);
-          this.prepareTextureForInfiniteTile(tex);
-          loadedLayers.push({ texture: tex, speed: spec.speed });
-        }
-      } catch {
-        try {
-          const tex = await this.loadTextureFromCandidates(tier.fallbackCandidates);
-          this.prepareTextureForInfiniteTile(tex);
-          loadedLayers.splice(0, loadedLayers.length, { texture: tex, speed: tier.fallbackSpeed });
-        } catch {
-          /* leave tier empty — another loaded tier or solid stage color shows through */
-        }
-      }
-
-      if (loadedLayers.length > 0) {
-        this.loadedBackgroundTiers.set(tier.id, { id: tier.id, layers: loadedLayers });
-      }
+      await this.loadBackgroundTierIntoMap(tier);
     }
 
     this.ensureBackgroundBackdropFill();
@@ -5842,8 +5898,12 @@ export class PlayScene implements Scene {
       .fill({ color: spawnDeck ? 0xa8ffd8 : 0xc8ffff, alpha: 0.78 });
   }
 
-  private async loadPlatformSprite(): Promise<void> {
+  private async loadPlatformSpriteCore(): Promise<void> {
     this.platformTexture = await this.createCheckerTransparentTexture(crystalPlatformUrl);
+  }
+
+  /** Rest-floor props + slime/volcano tiles — safe to defer on mobile until after first paint. */
+  private async loadPlatformSpriteDecorAndAltTextures(): Promise<void> {
     try {
       this.restFloorHouseTexture = await this.loadTextureFromCandidates(REST_FLOOR_HOUSE_CANDIDATES);
       console.log('Loaded rest floor house:', REST_FLOOR_HOUSE_CANDIDATES[0]);
@@ -5879,6 +5939,11 @@ export class PlayScene implements Scene {
     } catch {
       this.platformTextureVolcano = undefined;
     }
+  }
+
+  private async loadPlatformSprite(): Promise<void> {
+    await this.loadPlatformSpriteCore();
+    await this.loadPlatformSpriteDecorAndAltTextures();
   }
 
   /**

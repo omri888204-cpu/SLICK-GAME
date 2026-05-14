@@ -11,29 +11,8 @@ import { GlowFilter } from 'pixi-filters';
 import slickLogoUrl from '../../assets/ui/slick-logo.png';
 import { SlickLogoImage } from '../ui/SlickLogoImage';
 import { loadLogoTextureTransparent } from '../utils/logoTexture';
+import { getBootMinDisplayMs, shouldUseBootGlowFilter } from '../utils/quickStartDevice';
 import type { Scene } from './Scene';
-
-/** Snappy handoff on phones / tablets; desktop keeps a short branded beat. */
-function getBootMinDisplayMs(): number {
-  if (typeof window === 'undefined') {
-    return 720;
-  }
-  const narrow = window.matchMedia?.('(max-width: 560px)').matches ?? false;
-  const coarse = window.matchMedia?.('(pointer: coarse)').matches ?? false;
-  if (narrow || coarse || 'ontouchstart' in window) {
-    return 320;
-  }
-  return 720;
-}
-
-function shouldUseBootGlowFilter(): boolean {
-  if (typeof window === 'undefined') {
-    return true;
-  }
-  const narrow = window.matchMedia?.('(max-width: 560px)').matches ?? false;
-  const coarse = window.matchMedia?.('(pointer: coarse)').matches ?? false;
-  return !(narrow || coarse || 'ontouchstart' in window);
-}
 
 export class BootScene implements Scene {
   readonly name = 'boot';
