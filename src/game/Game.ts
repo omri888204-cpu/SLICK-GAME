@@ -57,6 +57,14 @@ export class Game {
       }
     }
 
+    if (import.meta.env.DEV) {
+      (
+        window as unknown as {
+          skyClimberClearLeaderboard?: () => Promise<number>;
+        }
+      ).skyClimberClearLeaderboard = () => clearLeaderboardCollection();
+    }
+
     await this.changeScene(
       new BootScene(() => this.changeScene(new MenuScene(() => this.changeScene(new PlayScene())))),
     );
