@@ -579,14 +579,13 @@ const COMBO_CHAIN_WINDOW_SEC = 2.0;
 const COMBO_MIN_CLIMB_PX = 6;
 const COMBO_GLOW_STREAK = 15;
 const COMBO_SUPER_TONGUE_STREAK = 22;
-const COMBO_BADGE_X = 12;
-/** Y of badge top — sits below the PAUSE button (matches `HEADER_PAUSE_BTN_H` + gap). */
-const COMBO_BADGE_Y =
-  UI_SAFE_PAD_TOP + UI_HEADER_H + HEADER_PAUSE_BELOW_HEADER_GAP_PX + HEADER_PAUSE_BTN_H + 12;
+/** Combo badge top-left (screen px); single source — keep compact, away from center. */
+const COMBO_HUD_SCREEN_X = 20;
+const COMBO_HUD_SCREEN_Y = 140;
 /** Super Tongue button layout (X aligned with badge left edge, sits below the badge). */
 const SUPER_TONGUE_BTN_W = COMBO_BADGE_W;
 const SUPER_TONGUE_BTN_H = 44;
-const SUPER_TONGUE_BTN_Y = COMBO_BADGE_Y + COMBO_BADGE_H + 12;
+const SUPER_TONGUE_BTN_Y = COMBO_HUD_SCREEN_Y + COMBO_BADGE_H + 12;
 /** Super Tongue effects (matches the user-confirmed "B" recipe). */
 const SUPER_TONGUE_STAIRS_UP = 4;
 const SUPER_TONGUE_BUFF_DURATION_SEC = 3.0;
@@ -3030,8 +3029,8 @@ export class PlayScene implements Scene {
     this.comboBadge.zIndex = 1004;
     /** Position is the badge **center** because the inner pivot is the geometric center. */
     this.comboBadge.position.set(
-      COMBO_BADGE_X + COMBO_BADGE_W * 0.5,
-      COMBO_BADGE_Y + COMBO_BADGE_H * 0.5,
+      COMBO_HUD_SCREEN_X + COMBO_BADGE_W * 0.5,
+      COMBO_HUD_SCREEN_Y + COMBO_BADGE_H * 0.5,
     );
     this.uiLayer.addChild(this.comboBadge);
 
@@ -3059,7 +3058,7 @@ export class PlayScene implements Scene {
   }
 
   private layoutSuperTongueButton(): void {
-    this.superTongueBtnRoot.position.set(COMBO_BADGE_X, SUPER_TONGUE_BTN_Y);
+    this.superTongueBtnRoot.position.set(COMBO_HUD_SCREEN_X, SUPER_TONGUE_BTN_Y);
     this.superTongueBtnGfx.hitArea = new Rectangle(0, 0, SUPER_TONGUE_BTN_W, SUPER_TONGUE_BTN_H);
   }
 
