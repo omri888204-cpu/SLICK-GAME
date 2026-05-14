@@ -504,6 +504,12 @@ const SCROLL_SPEED_SCORE_DELTA = 0.055;
 const SCROLL_SPEED_HIGH_TIER_FROM_METERS = 5200;
 /** Steeper per-step mult above {@link SCROLL_SPEED_HIGH_TIER_FROM_METERS} (same 200m banding as base). */
 const SCROLL_SPEED_HIGH_TIER_DELTA = 0.26;
+/**
+ * Hard ceiling for the total scroll multiplier once climb reaches this altitude (HUD-equivalent m).
+ * No combos / score / runtime extras can push {@link getAltitudeSpeedMultiplier} above this.
+ */
+const HARD_SPEED_CAP_FROM_METERS = 5000;
+const HARD_SPEED_CAP_MULT = 5.0;
 /** Continuous altitude shake disabled; it became visible jitter around the 3000m+ tiers. */
 const ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD = Number.POSITIVE_INFINITY;
 const SPEED_TIER_SHAKE_SEC = 0;
@@ -3138,11 +3144,14 @@ export class PlayScene implements Scene {
       Math.floor((this.runTime - SCROLL_SPEED_RUNTIME_START_SEC) / SCROLL_SPEED_RUNTIME_STEP_SEC),
     );
     const scoreSteps = Math.max(0, Math.floor(this.score / SCROLL_SPEED_SCORE_STEP));
-    return (
+    let mult =
       altitudeMult +
       SCROLL_SPEED_RUNTIME_DELTA * runtimeSteps +
-      SCROLL_SPEED_SCORE_DELTA * scoreSteps
-    );
+      SCROLL_SPEED_SCORE_DELTA * scoreSteps;
+    if (m >= HARD_SPEED_CAP_FROM_METERS) {
+      mult = Math.min(mult, HARD_SPEED_CAP_MULT);
+    }
+    return mult;
   }
 
   private getCameraScrollSpeedPx(): number {
