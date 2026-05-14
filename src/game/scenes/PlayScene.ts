@@ -31,7 +31,7 @@ import {
 } from '../ui/ComboBadge';
 import { ComboSynth } from '../audio/ComboSynth';
 import { Player } from '../entities/Player';
-import { fetchTopLeaderboard, saveScore, type LeaderboardEntry } from '../services/leaderboard';
+import { fetchTopLeaderboard, saveLeaderboardRun, type LeaderboardEntry } from '../services/leaderboard';
 import { getSavedNickname } from '../services/playerProfile';
 import { InputManager } from '../systems/InputManager';
 import { Physics } from '../systems/Physics';
@@ -782,11 +782,16 @@ export class PlayScene implements Scene {
   private leaderboardBackdrop = new Graphics();
   private leaderboardPanel = new Graphics();
   private leaderboardTitle?: Text;
+  private leaderboardSubtitle?: Text;
   private leaderboardRows: Text[] = [];
   private leaderboardCloseBtn = new Graphics();
   private leaderboardCloseLabel?: Text;
   private leaderboardLoadingText?: Text;
   private finalMetersAtDeath = 0;
+  /** Peak HUD climb (m) this run — for leaderboard max height. */
+  private peakClimbMetersThisRun = 0;
+  /** Peak {@link comboCount} this run — for leaderboard best combo. */
+  private peakComboThisRun = 0;
   private deathSubmitted = false;
   /** Latest Top 5 from Firestore (refreshed after each save and when opening leaderboard). */
   private lastLeaderboardTop: LeaderboardEntry[] = [];
@@ -1991,6 +1996,8 @@ export class PlayScene implements Scene {
   private resetRun(opts?: { pickNewBgm?: boolean }): void {
     this.gameOver = false;
     this.finalMetersAtDeath = 0;
+    this.peakClimbMetersThisRun = 0;
+    this.peakComboThisRun = 0;
     this.deathSubmitted = false;
     this.lastLeaderboardTop = [];
     this.gameOverOverlay.visible = false;
@@ -3968,6 +3975,13 @@ export class PlayScene implements Scene {
     });
     this.leaderboardTitle.anchor.set(0.5);
     this.leaderboardTitle.eventMode = 'none';
+    this.leaderboardSubtitle = new Text({
+      text: 'Score · Max climb (m) · Best combo',
+      style: this.createNeonGoldTextStyle(13, 2),
+    });
+    this.leaderboardSubtitle.anchor.set(0.5);
+    this.leaderboardSubtitle.eventMode = 'none';
+    this.leaderboardSubtitle.alpha = 0.88;
     this.leaderboardLoadingText = new Text({
       text: 'Loading...',
       style: this.createNeonGoldTextStyle(18, 2),
@@ -3994,6 +4008,7 @@ export class PlayScene implements Scene {
 
     this.leaderboardOverlay.addChild(
       this.leaderboardTitle,
+      this.leaderboardSubtitle,
       this.leaderboardLoadingText,
       this.leaderboardCloseBtn,
       this.leaderboardCloseLabel,
@@ -4658,14 +4673,17 @@ export class PlayScene implements Scene {
       alpha: 0.74,
     });
     this.leaderboardTitle?.position.set(overlayW * 0.5, titleY);
+    if (this.leaderboardSubtitle) {
+      this.leaderboardSubtitle.position.set(overlayW * 0.5, titleY + 24);
+    }
 
     for (const row of this.leaderboardRows) {
       row.destroy();
     }
     this.leaderboardRows = [];
 
-    const rowsStartY = titleY + 36;
-    const rowH = 62;
+    const rowsStartY = titleY + 52;
+    const rowH = 72;
     const tablePad = 22;
     const rowW = panelW - tablePad * 2;
     const rowX = px + tablePad;
@@ -4682,9 +4700,9 @@ export class PlayScene implements Scene {
       const entry = data[i];
       const placeLabel = i === 0 ? '#1 ★' : `#${i + 1}`;
       const line = entry
-        ? `${placeLabel} ${entry.nickname.toUpperCase()} · ${entry.score}m`
+        ? `${placeLabel} ${entry.nickname.toUpperCase()}\n${entry.totalScore.toLocaleString()} pts · ${entry.maxHeightMeters.toLocaleString()} m · combo ${entry.bestCombo}`
         : loading
-          ? `${placeLabel} …`
+          ? `${placeLabel} …loading`
           : `${placeLabel} —`;
       const padX = 10;
       const innerW = rowW - padX * 2;
@@ -4759,6 +4777,7 @@ export class PlayScene implements Scene {
       return;
     }
     this.gameOver = true;
+    this.peakComboThisRun = Math.max(this.peakComboThisRun, this.comboCount);
     this.breakCombo();
     this.speedTierUiFlashTime = 0;
     this.speedPulseGfx.visible = false;
@@ -4769,6 +4788,11 @@ export class PlayScene implements Scene {
     this.attackBtnRoot.visible = false;
     this.healthHudRoot.visible = false;
     this.finalMetersAtDeath = Math.max(0, Math.floor(-this.highestY / 12));
+    this.peakClimbMetersThisRun = Math.max(
+      this.peakClimbMetersThisRun,
+      this.finalMetersAtDeath,
+      Math.floor(this.getHudClimbMeters()),
+    );
     this.refreshGameOverScoreText();
     this.gameOverOverlay.visible = true;
     this.leaderboardOverlay.visible = false;
@@ -4781,10 +4805,17 @@ export class PlayScene implements Scene {
       const nickname = getSavedNickname() || 'Player';
       void (async () => {
         try {
-          await saveScore(nickname, this.finalMetersAtDeath);
-          console.info('[PlayScene] leaderboard score saved', {
+          await saveLeaderboardRun({
             nickname,
-            meters: this.finalMetersAtDeath,
+            totalScore: this.score,
+            maxHeightMeters: this.peakClimbMetersThisRun,
+            bestCombo: this.peakComboThisRun,
+          });
+          console.info('[PlayScene] leaderboard run saved', {
+            nickname,
+            totalScore: this.score,
+            maxHeightMeters: this.peakClimbMetersThisRun,
+            bestCombo: this.peakComboThisRun,
           });
           this.showScoreSavedHint();
           this.lastLeaderboardTop = await fetchTopLeaderboard(5);
@@ -4888,6 +4919,13 @@ export class PlayScene implements Scene {
   }
 
   private tickAltitudePresentation(dt: number): void {
+    if (!this.gameOver) {
+      this.peakClimbMetersThisRun = Math.max(
+        this.peakClimbMetersThisRun,
+        Math.floor(this.getHudClimbMeters()),
+      );
+      this.peakComboThisRun = Math.max(this.peakComboThisRun, this.comboCount);
+    }
     this.updateWindParticles(dt);
     this.spawnWindParticlesForAltitude(dt);
     this.refreshClimbHudText();

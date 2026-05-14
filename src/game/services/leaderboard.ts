@@ -13,17 +13,23 @@ import { db } from '../../firebase.js';
 /** One saved run for Firestore + HUD (sorted by {@link LeaderboardEntry.totalScore}). */
 export type LeaderboardEntry = {
   nickname: string;
-  /** Composite points — primary leaderboard sort. */
+  /** Total points for this run — primary leaderboard sort. */
   totalScore: number;
-  /** Max climb height for that run (HUD meters). */
+  /** Peak climb height for that run (HUD meters / stairs). */
   maxHeightMeters: number;
-  /** Peak jump-chain counter reached during that run. */
+  /** Peak jump-chain (combo) count reached during that run. */
   bestCombo: number;
   createdAtMs: number;
 };
 
-/** Firestore collection id — must match Firebase rules / console. */
-export const LEADERBOARD_COLLECTION = 'leaderboard';
+/** @deprecated Old collection; cleared when {@link clearLeaderboardCollection} runs. */
+export const LEADERBOARD_COLLECTION_LEGACY = 'leaderboard';
+
+/**
+ * Global top runs (v2). Add matching Firestore rules mirroring the legacy `leaderboard` collection.
+ * Fields: `nickname`, `totalScore`, `maxHeightMeters`, `bestCombo`, `createdAt`.
+ */
+export const LEADERBOARD_COLLECTION = 'global_top_runs';
 
 export type SaveLeaderboardRunPayload = {
   nickname: string;
@@ -54,7 +60,7 @@ export async function saveLeaderboardRun(payload: SaveLeaderboardRunPayload): Pr
   await addDoc(collection(db, LEADERBOARD_COLLECTION), doc);
 }
 
-/** @deprecated Prefer {@link saveLeaderboardRun} — legacy meter-only payload. */
+/** @deprecated Prefer {@link saveLeaderboardRun}. */
 export async function saveScore(nickname: string, score: number): Promise<void> {
   await saveLeaderboardRun({
     nickname,
@@ -67,9 +73,8 @@ export async function saveScore(nickname: string, score: number): Promise<void> 
 /** @deprecated Use {@link saveLeaderboardRun} */
 export const submitLeaderboardScore = saveScore;
 
-/** Delete every document in {@link LEADERBOARD_COLLECTION} (batched, 500/writeBatch). */
-export async function clearLeaderboardCollection(): Promise<number> {
-  const snap = await getDocs(collection(db, LEADERBOARD_COLLECTION));
+async function deleteAllDocsInCollection(collectionId: string): Promise<number> {
+  const snap = await getDocs(collection(db, collectionId));
   const docs = snap.docs;
   let deleted = 0;
   const BATCH = 500;
@@ -82,8 +87,19 @@ export async function clearLeaderboardCollection(): Promise<number> {
     await batch.commit();
     deleted += chunk.length;
   }
-  console.info('[leaderboard] clearLeaderboardCollection deleted', deleted);
   return deleted;
+}
+
+/**
+ * Deletes every document in the legacy `leaderboard` collection and {@link LEADERBOARD_COLLECTION}
+ * (batched, 500/writeBatch).
+ */
+export async function clearLeaderboardCollection(): Promise<number> {
+  const legacy = await deleteAllDocsInCollection(LEADERBOARD_COLLECTION_LEGACY);
+  const current = await deleteAllDocsInCollection(LEADERBOARD_COLLECTION);
+  const total = legacy + current;
+  console.info('[leaderboard] clearLeaderboardCollection deleted', { legacy, current, total });
+  return total;
 }
 
 function parseLeaderboardDoc(data: Record<string, unknown>): LeaderboardEntry {

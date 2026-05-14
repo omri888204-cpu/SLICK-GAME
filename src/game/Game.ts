@@ -51,7 +51,7 @@ export class Game {
     if (import.meta.env.VITE_CLEAR_LEADERBOARD_ON_BOOT === 'true') {
       try {
         const deleted = await clearLeaderboardCollection();
-        console.info('[Game] VITE_CLEAR_LEADERBOARD_ON_BOOT: cleared leaderboard docs', deleted);
+        console.info('[Game] VITE_CLEAR_LEADERBOARD_ON_BOOT: cleared leaderboard collections', deleted);
       } catch (err) {
         console.error('[Game] leaderboard clear on boot failed', err);
       }
