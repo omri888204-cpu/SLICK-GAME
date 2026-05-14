@@ -487,6 +487,13 @@ const SCROLL_SPEED_STEP_DELTA = 0.15;
 const SCROLL_SPEED_RUNTIME_START_SEC = 40;
 const SCROLL_SPEED_RUNTIME_STEP_SEC = 30;
 const SCROLL_SPEED_RUNTIME_DELTA = 0.05;
+/**
+ * Past this HUD altitude (m), each further {@link SCROLL_SPEED_STEP_METERS} band adds
+ * {@link SCROLL_SPEED_HIGH_TIER_DELTA} instead of {@link SCROLL_SPEED_STEP_DELTA} (~×5 / ~6000m is no longer a practical cap).
+ */
+const SCROLL_SPEED_HIGH_TIER_FROM_METERS = 6000;
+/** Steeper per-step mult above {@link SCROLL_SPEED_HIGH_TIER_FROM_METERS} (same 200m banding as base). */
+const SCROLL_SPEED_HIGH_TIER_DELTA = 0.21;
 /** Continuous altitude shake disabled; it became visible jitter around the 3000m+ tiers. */
 const ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD = Number.POSITIVE_INFINITY;
 const SPEED_TIER_SHAKE_SEC = 0;
@@ -3073,15 +3080,21 @@ export class PlayScene implements Scene {
 
   /**
    * Scroll / difficulty multiplier: 1× until `SCROLL_SPEED_WARMUP_METERS`, then +`SCROLL_SPEED_STEP_DELTA`
-   * each `SCROLL_SPEED_STEP_METERS`, plus {@link SCROLL_SPEED_RUNTIME_DELTA} every `SCROLL_SPEED_RUNTIME_STEP_SEC`
-   * after `SCROLL_SPEED_RUNTIME_START_SEC` (uncaps perceived speed when altitude gain stalls).
+   * each `SCROLL_SPEED_STEP_METERS` up to ~{@link SCROLL_SPEED_HIGH_TIER_FROM_METERS}, then the steeper
+   * {@link SCROLL_SPEED_HIGH_TIER_DELTA} per band, plus runtime steps from {@link SCROLL_SPEED_RUNTIME_*}.
    */
   private getAltitudeSpeedMultiplier(): number {
     const m = this.getHudClimbMeters();
+    const w = SCROLL_SPEED_WARMUP_METERS;
+    const band = SCROLL_SPEED_STEP_METERS;
     let altitudeMult = 1;
-    if (m > SCROLL_SPEED_WARMUP_METERS) {
-      const steps = Math.floor((m - SCROLL_SPEED_WARMUP_METERS) / SCROLL_SPEED_STEP_METERS);
-      altitudeMult = 1 + SCROLL_SPEED_STEP_DELTA * steps;
+    if (m > w) {
+      const stepsTotal = Math.floor((m - w) / band);
+      const stepsAtHighTier = Math.floor((SCROLL_SPEED_HIGH_TIER_FROM_METERS - w) / band);
+      const stepsLow = Math.min(stepsTotal, stepsAtHighTier);
+      const stepsHigh = Math.max(0, stepsTotal - stepsLow);
+      altitudeMult =
+        1 + SCROLL_SPEED_STEP_DELTA * stepsLow + SCROLL_SPEED_HIGH_TIER_DELTA * stepsHigh;
     }
     const runtimeSteps = Math.max(
       0,
