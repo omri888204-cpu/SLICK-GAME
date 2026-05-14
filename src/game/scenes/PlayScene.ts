@@ -495,7 +495,7 @@ const SCROLL_SPEED_RUNTIME_DELTA = 0.07;
 /**
  * Extra mult from total run score so SPD keeps rising while the player earns points even if HUD climb (m) plateaus vs auto-scroll.
  */
-const SCROLL_SPEED_SCORE_STEP = 1500;
+const SCROLL_SPEED_SCORE_STEP = 35000;
 const SCROLL_SPEED_SCORE_DELTA = 0.055;
 /**
  * Past this HUD altitude (m), each further {@link SCROLL_SPEED_STEP_METERS} band adds
@@ -581,7 +581,11 @@ const GRAPPLE_VERTICAL_BOOST_VY = -640;
 const GRAPPLE_PULL_HORIZONTAL_LERP_PER_SEC = 17;
 const GRAPPLE_STOP_ABOVE_PLATFORM_PX = 20;
 const LEVEL_MAX = 100;
-const LEVEL_SCORE_STEP = 1000;
+const LEVEL_SCORE_STEP = 25000;
+
+/** Total score = `⌊max climb m⌋ * TOTAL_SCORE_METERS_MULT` + `comboCount * TOTAL_SCORE_COMBO_MULT` + pickups. */
+const TOTAL_SCORE_METERS_MULTIPLIER = 100;
+const TOTAL_SCORE_COMBO_MULTIPLIER = 50;
 const LEVEL_PLATFORM_SPEED_BASE = 24;
 const LEVEL_PLATFORM_SPEED_PER_LEVEL = 5;
 const LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL = 0.005;
@@ -616,8 +620,6 @@ const SUPER_JUMP_VY_SCALE = 2;
 const SUPER_JUMP_SPARK_COUNT = 14;
 /** After `PULL UP`, window to tap `SUPER JUMP` for extra score bonus (combo uses normal jump rules). */
 const SKILL_CHAIN_WINDOW_SEC = 5.35;
-const SKILL_CHAIN_BASE_SCORE = 160;
-const SKILL_CHAIN_SCORE_PER_COMBO = 32;
 /** Extra time after mega jump before the combo chain can expire (air time + next landing). */
 const SUPER_JUMP_COMBO_GRACE_EXTEND_SEC = 2.0;
 /**
@@ -874,7 +876,12 @@ export class PlayScene implements Scene {
   private grapple: ActiveGrapple | null = null;
   private grappleReleaseDampingLeft = 0;
   private grappleReloadingLogged = false;
+  /** Final run total shown on HUD / leaderboard (`recomputeTotalScore`). */
   private score = 0;
+  /** Coins / diamonds / shields converted to additive points — folded into {@link score}. */
+  private collectibleScoreBonus = 0;
+  /** Previous {@link score} — drives punch/shake deltas only when the total rises. */
+  private scoreHudSyncBaseline = 0;
   /** Highest stair id that has already awarded points (landing or grapple). */
   private lastScoredStairId = -1;
   /** Last landing we scored points on — platform top Y (smaller = higher climb). Used when recycle breaks id order. */
@@ -1088,7 +1095,6 @@ export class PlayScene implements Scene {
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
     this.updateTouchRipples(dt);
     this.updateGrappleCooldownFeedback();
-    this.updateLevelProgress();
     this.updatePlatformDifficulty(dt);
     this.updateLevelUpParticles(dt);
     this.updateComboSuperJumpParticles(dt);
@@ -1134,11 +1140,8 @@ export class PlayScene implements Scene {
           const hookId = this.grapple.hookStairId;
           const grappleGain = Math.max(0, hookId - this.lastScoredStairId);
           if (grappleGain > 0) {
-            this.score += grappleGain;
             this.lastScoredStairId = hookId;
             this.lastScoredLandWorldTopY = Math.min(this.lastScoredLandWorldTopY, hookPlatform.y);
-            this.scoreboard?.onPointsGained(grappleGain);
-            this.maybeTriggerScreenShake(grappleGain);
           }
           this.grapple = null;
           this.grappleReleaseDampingLeft = GRAPPLE.releaseDampingDurationSec;
@@ -1239,11 +1242,8 @@ export class PlayScene implements Scene {
       const landGain =
         idDelta > 0 ? idDelta : climbedHigherPhysically ? 1 : 0;
       if (landGain > 0) {
-        this.score += landGain;
         this.lastScoredStairId = p.stairId;
         this.lastScoredLandWorldTopY = Math.min(this.lastScoredLandWorldTopY, p.y);
-        this.scoreboard?.onPointsGained(landGain);
-        this.maybeTriggerScreenShake(landGain);
       }
       if (this.megaJumpReanchorComboOnLanding) {
         /**
@@ -1299,6 +1299,8 @@ export class PlayScene implements Scene {
     this.drawDynamicWorld();
     this.updateSpeedTierUiFlash(dt);
     this.updateScreenShake(dt);
+    this.recomputeTotalScore();
+    this.updateLevelProgress();
     const heightMeters = Math.max(0, Math.floor(-this.highestY / 12));
     this.scoreboard?.update(dt, this.score, this.jumpCount, heightMeters, this.runTime, this.level);
     this.syncCollectibleHudPosition();
@@ -2032,6 +2034,8 @@ export class PlayScene implements Scene {
     this.touchControlsLayer.visible = true;
     this.currentGroundPlatform = null;
     this.score = 0;
+    this.collectibleScoreBonus = 0;
+    this.scoreHudSyncBaseline = 0;
     this.lastScoredStairId = -1;
     this.lastScoredLandWorldTopY = Number.POSITIVE_INFINITY;
     this.cameraX = 0;
@@ -2809,6 +2813,31 @@ export class PlayScene implements Scene {
     if (pointsDelta >= SCORE_UI.bigPointsThreshold) {
       this.shakeTime = Math.max(this.shakeTime, SCORE_UI.shakeDurationSec);
     }
+  }
+
+  /** HUD + leaderboard total: dominant height (`m×100`), live combo (`count×50`), plus collectible bank. */
+  private recomputeTotalScore(): void {
+    const meters = Math.max(
+      0,
+      Math.floor(
+        Math.max(
+          this.getHudClimbMeters(),
+          this.peakClimbMetersThisRun,
+          this.getBestLandedClimbMeters(),
+        ),
+      ),
+    );
+    const next =
+      meters * TOTAL_SCORE_METERS_MULTIPLIER +
+      this.comboCount * TOTAL_SCORE_COMBO_MULTIPLIER +
+      this.collectibleScoreBonus;
+    const rise = next - this.scoreHudSyncBaseline;
+    this.score = next;
+    if (rise > 0) {
+      this.scoreboard?.onPointsGained(rise);
+      this.maybeTriggerScreenShake(rise);
+    }
+    this.scoreHudSyncBaseline = next;
   }
 
   private updateRipples(dt: number): void {
@@ -3707,7 +3736,7 @@ export class PlayScene implements Scene {
 
   /**
    * Pull-up grapple: fires ~{@link SUPER_TONGUE_STAIRS_UP} stairs up + grapple buff. Opens a short
-   * {@link SKILL_CHAIN_WINDOW_SEC} window to tap {@link fireManualSuperJump} for a chain bonus.
+   * {@link SKILL_CHAIN_WINDOW_SEC} window to tap {@link fireManualSuperJump} for follow-up shake feedback.
    */
   private fireSuperTongue(): void {
     if (!this.skillPairAvailable || this.skillPullUpSpent || this.grapple) {
@@ -3741,7 +3770,7 @@ export class PlayScene implements Scene {
   /**
    * Manual mega jump (`SUPER_JUMP_VY_SCALE`× upward). Combo: {@link registerComboJump} on takeoff
    * (`skipClimbCheck`), then one extra combo per stair top crossed while ascending (horizontal overlap).
-   * Pull-up → mega within {@link SKILL_CHAIN_WINDOW_SEC} adds a score bonus only.
+   * Pull-up → mega within {@link SKILL_CHAIN_WINDOW_SEC} adds screen shake only; score comes from combo + height.
    */
   private fireManualSuperJump(): void {
     if (!this.skillPairAvailable || this.skillSuperJumpSpent) {
@@ -3781,10 +3810,7 @@ export class PlayScene implements Scene {
     this.megaJumpReanchorComboOnLanding = true;
 
     if (chained) {
-      const bonus = SKILL_CHAIN_BASE_SCORE + this.comboCount * SKILL_CHAIN_SCORE_PER_COMBO;
-      this.score += bonus;
-      this.scoreboard?.onPointsGained(bonus);
-      this.maybeTriggerScreenShake(Math.min(10, 2 + Math.floor(bonus / 35)));
+      this.maybeTriggerScreenShake(Math.min(10, 2 + Math.floor(this.comboCount / 5)));
     }
 
     this.superJumpComboGraceUntil = this.runTime + SUPER_JUMP_COMBO_GRACE_EXTEND_SEC;
@@ -4882,7 +4908,6 @@ export class PlayScene implements Scene {
     }
     this.gameOver = true;
     this.peakComboThisRun = Math.max(this.peakComboThisRun, this.comboCount);
-    this.breakCombo();
     this.speedTierUiFlashTime = 0;
     this.speedPulseGfx.visible = false;
     this.speedPulseGfx.alpha = 1;
@@ -4898,6 +4923,8 @@ export class PlayScene implements Scene {
       Math.floor(this.getHudClimbMeters()),
       Math.floor(this.getBestLandedClimbMeters()),
     );
+    this.recomputeTotalScore();
+    this.breakCombo();
     this.refreshGameOverScoreText();
     this.gameOverOverlay.visible = true;
     this.leaderboardOverlay.visible = false;
@@ -5605,8 +5632,7 @@ export class PlayScene implements Scene {
       return;
     }
     const add = this.getCollectiblePoints(c.kind);
-    this.score += add;
-    this.scoreboard?.onPointsGained(add);
+    this.collectibleScoreBonus += add;
     if (c.kind === 'coin') {
       this.goldCount += 1;
       this.sfx.play('collect_coin', 0.9);
