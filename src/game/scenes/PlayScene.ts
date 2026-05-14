@@ -590,8 +590,10 @@ const COMBO_HUD_ROOT_SCALE = 0.33;
 const PULL_UP_BTN_W = 152;
 const PULL_UP_BTN_H = 44;
 /** Pivot top-right: places button right edge at `screenWidth - PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX`. */
-const PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX = 80;
-const PULL_UP_BTN_TOP_Y = 100;
+const PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX = 60;
+const PULL_UP_BTN_TOP_Y = 80;
+/** Mobile-friendly scale (~half size); applied to `superTongueBtnRoot` so label + chrome stay aligned. */
+const PULL_UP_BTN_SCALE = 0.55;
 /** Super Tongue effects (matches the user-confirmed "B" recipe). */
 const SUPER_TONGUE_STAIRS_UP = 4;
 const SUPER_TONGUE_BUFF_DURATION_SEC = 3.0;
@@ -3064,6 +3066,8 @@ export class PlayScene implements Scene {
 
     this.superTongueBtnRoot.zIndex = 1010;
     this.superTongueBtnRoot.visible = false;
+    this.superTongueBtnRoot.scale.set(PULL_UP_BTN_SCALE);
+    this.superTongueBtnRoot.alpha = 0.8;
     this.superTongueBtnGfx.eventMode = 'none';
     this.superTongueBtnGfx.cursor = 'pointer';
     this.superTongueBtnLabel = new Text({
@@ -3090,6 +3094,7 @@ export class PlayScene implements Scene {
   /**
    * Pull-up (`PULL UP`) lives only on `uiLayer` (never `world`) — fixed while climbing = Phaser scrollFactor 0.
    * Pivot top-right so the button sits in the upper-right without overlapping climb readout (below ~y72).
+   * Anchor point uses unscaled width so scale does not drift the corner inset.
    */
   private layoutPullUpButton(): void {
     this.superTongueBtnRoot.pivot.set(PULL_UP_BTN_W, 0);
