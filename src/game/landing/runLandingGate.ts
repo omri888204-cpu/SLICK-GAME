@@ -18,6 +18,8 @@ import {
 } from '../services/rtdbUsers';
 import { mergeUserLedgerIntoSession } from '../services/userSession';
 import { saveNickname, saveSelectedCharacterId } from '../services/playerProfile';
+import { createKeyedLogoObjectUrl } from '../utils/logoTexture';
+import slickLogoUrl from '../../assets/ui/slick-logo.png';
 
 export const CHARACTER_PRESETS = [
   { id: 'chromatic', label: 'Chromatic', hint: 'Vivid default' },
@@ -80,6 +82,10 @@ export async function runMandatoryLandingGate(root: HTMLElement): Promise<void> 
       await showAuthScreens(shell, settleSession);
     }
   } finally {
+    const blobAttr = shell.getAttribute('data-auth-logo-blob-url');
+    if (blobAttr?.startsWith('blob:')) {
+      URL.revokeObjectURL(blobAttr);
+    }
     shell.remove();
   }
 }
@@ -166,16 +172,23 @@ async function showCharacterPicker(shell: HTMLElement, user: User): Promise<void
   });
 }
 
-function showAuthScreens(
+async function showAuthScreens(
   shell: HTMLElement,
   settleSession: (user: User) => Promise<void>,
 ): Promise<void> {
+  const logoSrc = await createKeyedLogoObjectUrl(slickLogoUrl);
+  if (logoSrc.startsWith('blob:')) {
+    shell.setAttribute('data-auth-logo-blob-url', logoSrc);
+  }
+
   shell.innerHTML = `
     <div class="sk-landing__panel">
-      <h1 class="sk-landing__title">Sky Climber</h1>
+      <div class="sk-landing__brand" role="img" aria-label="SLICK">
+        <img class="sk-landing__logo" src="${logoSrc}" alt="SLICK" decoding="async" />
+      </div>
       <div class="sk-landing__tabs">
-        <button type="button" class="sk-landing__tab sk-landing__tab--on" data-tab="login">Log in</button>
-        <button type="button" class="sk-landing__tab" data-tab="signup">Sign up</button>
+        <button type="button" class="sk-landing__tab sk-landing__tab--on" data-tab="login">LOG IN</button>
+        <button type="button" class="sk-landing__tab" data-tab="signup">SIGN UP</button>
       </div>
       <div class="sk-landing__form" data-form="login">
         <input class="sk-landing__input" type="email" autocomplete="username" placeholder="Email" />

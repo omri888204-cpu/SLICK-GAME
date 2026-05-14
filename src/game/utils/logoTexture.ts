@@ -129,12 +129,70 @@ function removeConnectedCheckerBackground(
   }
 }
 
+function applyLogoEdgeKeying(
+  image: HTMLImageElement,
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+): void {
+  context.drawImage(image, 0, 0);
+  const imageData = context.getImageData(0, 0, width, height);
+  removeConnectedDarkEdgeBackground(imageData.data, width, height);
+  removeConnectedCheckerBackground(imageData.data, width, height);
+  context.putImageData(imageData, 0, 0);
+}
+
+/**
+ * Same edge keying as {@link loadLogoTextureTransparent}, for a DOM `<img src="…">`.
+ * Returns a `blob:` URL when keying succeeds; caller must {@link URL.revokeObjectURL} when done.
+ * On failure, returns the original `sourceUrl` unchanged.
+ */
+export async function createKeyedLogoObjectUrl(sourceUrl: string): Promise<string> {
+  const image = new Image();
+  image.crossOrigin = 'anonymous';
+  image.src = sourceUrl;
+  try {
+    await image.decode();
+  } catch {
+    return sourceUrl;
+  }
+
+  const w = image.naturalWidth;
+  const h = image.naturalHeight;
+  if (w === 0 || h === 0) {
+    return sourceUrl;
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) {
+    return sourceUrl;
+  }
+
+  applyLogoEdgeKeying(image, context, w, h);
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob((b) => resolve(b), 'image/png');
+  });
+  if (!blob) {
+    return sourceUrl;
+  }
+  return URL.createObjectURL(blob);
+}
+
 /** Black / checkerboard backgrounds keyed from edges (Photoroom-style exports). */
 export async function loadLogoTextureTransparent(url: string): Promise<Texture> {
   const fallback = await Assets.load<Texture>(url);
   const image = new Image();
   image.src = url;
-  await image.decode();
+  try {
+    await image.decode();
+  } catch {
+    return fallback;
+  }
 
   const canvas = document.createElement('canvas');
   canvas.width = image.naturalWidth;
@@ -145,11 +203,7 @@ export async function loadLogoTextureTransparent(url: string): Promise<Texture> 
     return fallback;
   }
 
-  context.drawImage(image, 0, 0);
-  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-  removeConnectedDarkEdgeBackground(imageData.data, canvas.width, canvas.height);
-  removeConnectedCheckerBackground(imageData.data, canvas.width, canvas.height);
-  context.putImageData(imageData, 0, 0);
+  applyLogoEdgeKeying(image, context, canvas.width, canvas.height);
 
   return Texture.from(canvas);
 }
