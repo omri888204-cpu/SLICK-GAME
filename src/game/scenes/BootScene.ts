@@ -13,6 +13,28 @@ import { SlickLogoImage } from '../ui/SlickLogoImage';
 import { loadLogoTextureTransparent } from '../utils/logoTexture';
 import type { Scene } from './Scene';
 
+/** Snappy handoff on phones / tablets; desktop keeps a short branded beat. */
+function getBootMinDisplayMs(): number {
+  if (typeof window === 'undefined') {
+    return 720;
+  }
+  const narrow = window.matchMedia?.('(max-width: 560px)').matches ?? false;
+  const coarse = window.matchMedia?.('(pointer: coarse)').matches ?? false;
+  if (narrow || coarse || 'ontouchstart' in window) {
+    return 320;
+  }
+  return 720;
+}
+
+function shouldUseBootGlowFilter(): boolean {
+  if (typeof window === 'undefined') {
+    return true;
+  }
+  const narrow = window.matchMedia?.('(max-width: 560px)').matches ?? false;
+  const coarse = window.matchMedia?.('(pointer: coarse)').matches ?? false;
+  return !(narrow || coarse || 'ontouchstart' in window);
+}
+
 export class BootScene implements Scene {
   readonly name = 'boot';
 
@@ -26,10 +48,12 @@ export class BootScene implements Scene {
   private completed = false;
   private width = 0;
   private height = 0;
+  private minDisplayMs = 720;
 
   constructor(private readonly onComplete: () => void | Promise<void>) {}
 
   async init(app: Application): Promise<void> {
+    this.minDisplayMs = getBootMinDisplayMs();
     app.stage.addChild(this.container);
 
     let texture;
@@ -41,15 +65,17 @@ export class BootScene implements Scene {
     this.logo = new SlickLogoImage(texture);
     this.logoWrap.addChild(this.logo);
 
-    this.glow = new GlowFilter({
-      distance: 22,
-      outerStrength: 2.65,
-      innerStrength: 0,
-      color: 0x39ff5a,
-      alpha: 0.62,
-      quality: 0.28,
-    });
-    this.logoWrap.filters = [this.glow];
+    if (shouldUseBootGlowFilter()) {
+      this.glow = new GlowFilter({
+        distance: 22,
+        outerStrength: 2.65,
+        innerStrength: 0,
+        color: 0x39ff5a,
+        alpha: 0.62,
+        quality: 0.28,
+      });
+      this.logoWrap.filters = [this.glow];
+    }
 
     const subStyle = new TextStyle({
       fill: '#66c495',
@@ -69,7 +95,7 @@ export class BootScene implements Scene {
 
   update(ticker: Ticker): void {
     this.elapsed += ticker.deltaMS;
-    const progress = Math.min(this.elapsed / 1400, 1);
+    const progress = Math.min(this.elapsed / this.minDisplayMs, 1);
     const t = this.elapsed / 1000;
 
     this.logo?.update(ticker.deltaMS / 1000);
@@ -103,7 +129,7 @@ export class BootScene implements Scene {
       this.subtitle.position.set(width / 2, height * 0.52);
     }
 
-    this.drawLoader(Math.min(this.elapsed / 1400, 1));
+    this.drawLoader(Math.min(this.elapsed / this.minDisplayMs, 1));
   }
 
   destroy(): void {

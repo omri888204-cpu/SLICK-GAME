@@ -490,8 +490,8 @@ const SCROLL_SPEED_RUNTIME_DELTA = 0.07;
 /**
  * Extra mult from total run score so SPD keeps rising while the player earns points even if HUD climb (m) plateaus vs auto-scroll.
  */
-const SCROLL_SPEED_SCORE_STEP = 2000;
-const SCROLL_SPEED_SCORE_DELTA = 0.04;
+const SCROLL_SPEED_SCORE_STEP = 1500;
+const SCROLL_SPEED_SCORE_DELTA = 0.055;
 /**
  * Past this HUD altitude (m), each further {@link SCROLL_SPEED_STEP_METERS} band adds
  * {@link SCROLL_SPEED_HIGH_TIER_DELTA} instead of {@link SCROLL_SPEED_STEP_DELTA} (~×5 / ~6000m is no longer a practical cap).
@@ -3091,9 +3091,8 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Scroll / difficulty multiplier: altitude bands + high tier past {@link SCROLL_SPEED_HIGH_TIER_FROM_METERS},
-   * plus runtime ({@link SCROLL_SPEED_RUNTIME_START_SEC}, step/delta) and points ({@link SCROLL_SPEED_SCORE_STEP}) so SPD keeps climbing
-   * past ~×5 when HUD meters plateau against scroll.
+   * Scroll / difficulty: **continuous** climb scaling (not floor’d to 200 m steps) so SPD rises smoothly
+   * while ascending; steeper slope above {@link SCROLL_SPEED_HIGH_TIER_FROM_METERS}; plus runtime + score.
    */
   private getAltitudeSpeedMultiplier(): number {
     const m = Math.max(this.getHudClimbMeters(), this.peakClimbMetersThisRun);
@@ -3101,12 +3100,14 @@ export class PlayScene implements Scene {
     const band = SCROLL_SPEED_STEP_METERS;
     let altitudeMult = 1;
     if (m > w) {
-      const stepsTotal = Math.floor((m - w) / band);
-      const stepsAtHighTier = Math.floor((SCROLL_SPEED_HIGH_TIER_FROM_METERS - w) / band);
-      const stepsLow = Math.min(stepsTotal, stepsAtHighTier);
-      const stepsHigh = Math.max(0, stepsTotal - stepsLow);
+      const effM = m - w;
+      const lowSpanM = SCROLL_SPEED_HIGH_TIER_FROM_METERS - w;
+      const lowM = Math.min(effM, lowSpanM);
+      const highM = Math.max(0, effM - lowSpanM);
       altitudeMult =
-        1 + SCROLL_SPEED_STEP_DELTA * stepsLow + SCROLL_SPEED_HIGH_TIER_DELTA * stepsHigh;
+        1 +
+        SCROLL_SPEED_STEP_DELTA * (lowM / band) +
+        SCROLL_SPEED_HIGH_TIER_DELTA * (highM / band);
     }
     const runtimeSteps = Math.max(
       0,
