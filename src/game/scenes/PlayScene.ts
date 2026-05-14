@@ -307,6 +307,8 @@ const MUSHROOM_ATTACK_RANGE_PX = 220;
 /** First stair index that may host a mushroom — skips Floor 0 spawn deck + early climb. */
 const MUSHROOM_PLATFORM_START_INDEX = 5;
 const MUSHROOM_PLATFORM_STRIDE = 3;
+/** After this many mushroom kills in one run, show a small glowing purple badge under SPD (top-right HUD). */
+const MUSHROOM_STOMP_BADGE_AT = 10;
 
 /** Player melee attack — virtual button (bottom-right) + KeyF, plays the attack row of the character spritesheet. */
 const ATTACK_BTN_RADIUS_PX = 44;
@@ -765,6 +767,10 @@ export class PlayScene implements Scene {
   private climbHudText?: Text;
   /** New jump-counter HUD line beneath the climb readout. Driven by `this.jumpCount`. */
   private jumpsHudText?: Text;
+  /** Glowing purple mushroom badge (top-right, under SPD) after {@link MUSHROOM_STOMP_BADGE_AT} stomps. */
+  private mushroomStompsThisRun = 0;
+  private readonly mushroomStompBadgeRoot = new Container();
+  private readonly mushroomStompBadgeGfx = new Graphics();
   private timerHudText?: Text;
   private hurryBannerRoot = new Container();
   private hurryBannerGfx = new Graphics();
@@ -2037,6 +2043,8 @@ export class PlayScene implements Scene {
     this.collectibles = [];
     this.jumpCount = 0;
     this.comboCount = 0;
+    this.mushroomStompsThisRun = 0;
+    this.mushroomStompBadgeRoot.visible = false;
     this.comboLastJumpY = Number.POSITIVE_INFINITY;
     this.comboLastJumpTime = -1e9;
     this.superJumpComboGraceUntil = Number.NEGATIVE_INFINITY;
@@ -3399,6 +3407,12 @@ export class PlayScene implements Scene {
     this.jumpsHudText.alpha = 0.95;
     this.uiLayer.addChild(this.jumpsHudText);
 
+    this.mushroomStompBadgeGfx.eventMode = 'none';
+    this.mushroomStompBadgeRoot.addChild(this.mushroomStompBadgeGfx);
+    this.mushroomStompBadgeRoot.visible = false;
+    this.mushroomStompBadgeRoot.zIndex = 1004;
+    this.uiLayer.addChild(this.mushroomStompBadgeRoot);
+
     this.layoutClimbHud();
     this.refreshClimbHudText();
   }
@@ -3407,9 +3421,35 @@ export class PlayScene implements Scene {
     if (this.climbHudText) {
       this.climbHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + 34);
     }
+    this.mushroomStompBadgeRoot.position.set(this.width - 14, UI_SAFE_PAD_TOP + 52);
+    const jumpsY = this.mushroomStompBadgeRoot.visible ? UI_SAFE_PAD_TOP + 72 : UI_SAFE_PAD_TOP + 54;
     if (this.jumpsHudText) {
-      this.jumpsHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + 54);
+      this.jumpsHudText.position.set(this.width - 20, jumpsY);
     }
+  }
+
+  /** Small stylized purple mushroom + soft glow; drawn in local space (anchor toward screen right). */
+  private redrawMushroomStompBadge(): void {
+    if (!this.mushroomStompBadgeRoot.visible) {
+      return;
+    }
+    const g = this.mushroomStompBadgeGfx;
+    g.clear();
+    const t = this.runTime;
+    const pulse = 0.7 + 0.3 * Math.sin(t * Math.PI * 2 * 2.35);
+    const cx = -11;
+    const capY = -1;
+    const rx = 10 * 0.9 * pulse;
+    const ry = 6.5 * 0.92 * pulse;
+    g.ellipse(cx, capY, rx + 6, ry + 5).fill({ color: 0xe9d5ff, alpha: 0.2 * pulse });
+    g.ellipse(cx, capY, rx + 3, ry + 2.5).fill({ color: 0xc4b5fd, alpha: 0.38 * pulse });
+    g.ellipse(cx, capY, rx, ry)
+      .fill({ color: 0x9333ea, alpha: 0.96 })
+      .stroke({ width: 1.3, color: 0xfae8ff, alpha: 0.88 });
+    g.ellipse(cx - 3.5, capY - 2.8, rx * 0.35, ry * 0.32).fill({ color: 0xf5d0fe, alpha: 0.62 });
+    g.roundRect(cx - 4, capY + ry - 1, 8, 10, 2)
+      .fill({ color: 0x6b21a8, alpha: 0.94 })
+      .stroke({ width: 1, color: 0xd8b4fe, alpha: 0.75 });
   }
 
   private refreshClimbHudText(): void {
@@ -3906,20 +3946,9 @@ export class PlayScene implements Scene {
       .fill({ color: 0xffffff, alpha: 0.45 });
 
     this.collectibleHudDiamondIcon.clear();
-    this.collectibleHudDiamondIcon
-      .moveTo(10, -9)
-      .lineTo(18, 0)
-      .lineTo(10, 10)
-      .lineTo(2, 0)
-      .lineTo(10, -9)
-      .fill({ color: 0x9fe8ff, alpha: 0.95 });
-    this.collectibleHudDiamondIcon
-      .moveTo(10, -9)
-      .lineTo(18, 0)
-      .lineTo(10, 10)
-      .lineTo(2, 0)
-      .lineTo(10, -9)
-      .stroke({ color: UI_NEON_GREEN, width: 1.5, alpha: 0.82 });
+    const hudDiamond = [10, -9, 18, 0, 10, 10, 2, 0];
+    this.collectibleHudDiamondIcon.poly(hudDiamond).fill({ color: 0x9fe8ff, alpha: 0.95 });
+    this.collectibleHudDiamondIcon.poly(hudDiamond).stroke({ color: UI_NEON_GREEN, width: 1.5, alpha: 0.82 });
     this.collectibleHudDiamondIcon
       .moveTo(10, -8)
       .lineTo(10, 9)
@@ -4486,6 +4515,9 @@ export class PlayScene implements Scene {
    * of the run — the slot will be repopulated on the next `resetRun()` only.
    */
   private destroyMushroomEnemy(index: number): void {
+    if (index < 0 || index >= this.mushroomEnemies.length) {
+      return;
+    }
     const enemy = this.mushroomEnemies[index];
     if (enemy) {
       const platform = this.platforms[enemy.platformIdx];
@@ -4502,6 +4534,14 @@ export class PlayScene implements Scene {
     }
     this.mushroomEnemies.splice(index, 1);
     this.mushroomEnemySprites.splice(index, 1);
+    this.mushroomStompsThisRun += 1;
+    if (
+      this.mushroomStompsThisRun >= MUSHROOM_STOMP_BADGE_AT &&
+      !this.mushroomStompBadgeRoot.visible
+    ) {
+      this.mushroomStompBadgeRoot.visible = true;
+      this.layoutClimbHud();
+    }
   }
 
   private clearMushroomDeathEffects(): void {
@@ -5023,6 +5063,7 @@ export class PlayScene implements Scene {
     this.updateWindParticles(dt);
     this.spawnWindParticlesForAltitude(dt);
     this.refreshClimbHudText();
+    this.redrawMushroomStompBadge();
     this.refreshAutoScrollHud();
   }
 
@@ -5670,39 +5711,45 @@ export class PlayScene implements Scene {
         const go = COLLECTIBLES.glowOuterPx;
         const gm = COLLECTIBLES.glowMidPx;
 
-        this.collectiblesGfx
-          .moveTo(cx, cy - s - go * 0.65)
-          .lineTo(cx + (s + go) * 0.92, cy)
-          .lineTo(cx, cy + s + go * 0.65)
-          .lineTo(cx - (s + go) * 0.92, cy)
-          .lineTo(cx, cy - s - go * 0.65)
-          .fill({ color: 0x44eeff, alpha: alpha * 0.12 });
+        const outerRhomb = [
+          cx,
+          cy - s - go * 0.65,
+          cx + (s + go) * 0.92,
+          cy,
+          cx,
+          cy + s + go * 0.65,
+          cx - (s + go) * 0.92,
+          cy,
+        ];
+        const midRhomb = [
+          cx,
+          cy - s - gm * 0.45,
+          cx + (s + gm) * 0.92,
+          cy,
+          cx,
+          cy + s + gm * 0.45,
+          cx - (s + gm) * 0.92,
+          cy,
+        ];
+        const coreRhomb = [cx, cy - s, cx + s * 0.92, cy, cx, cy + s, cx - s * 0.92, cy];
 
-        this.collectiblesGfx
-          .moveTo(cx, cy - s - gm * 0.45)
-          .lineTo(cx + (s + gm) * 0.92, cy)
-          .lineTo(cx, cy + s + gm * 0.45)
-          .lineTo(cx - (s + gm) * 0.92, cy)
-          .lineTo(cx, cy - s - gm * 0.45)
-          .fill({ color: 0x7af0ff, alpha: alpha * 0.28 });
-
-        this.collectiblesGfx
-          .moveTo(cx, cy - s)
-          .lineTo(cx + s * 0.92, cy)
-          .lineTo(cx, cy + s)
-          .lineTo(cx - s * 0.92, cy)
-          .lineTo(cx, cy - s)
-          .fill({ color: 0x7af0ff, alpha })
-          .stroke({ width: 2.2, color: 0x208899, alpha: alpha * 0.95 });
+        this.collectiblesGfx.poly(outerRhomb).fill({ color: 0x44eeff, alpha: alpha * 0.12 });
+        this.collectiblesGfx.poly(midRhomb).fill({ color: 0x7af0ff, alpha: alpha * 0.28 });
+        this.collectiblesGfx.poly(coreRhomb).fill({ color: 0x7af0ff, alpha });
+        this.collectiblesGfx.poly(coreRhomb).stroke({ width: 2.2, color: 0x208899, alpha: alpha * 0.95 });
 
         const hx = pulse01;
-        this.collectiblesGfx
-          .moveTo(cx - s * 0.15, cy - s * 0.72)
-          .lineTo(cx + s * 0.35 * hx, cy - s * 0.35)
-          .lineTo(cx + s * 0.12, cy - s * 0.05)
-          .lineTo(cx - s * 0.22, cy - s * 0.5)
-          .lineTo(cx - s * 0.15, cy - s * 0.72)
-          .fill({ color: 0xe8ffff, alpha: alpha * 0.55 * hx });
+        const facet = [
+          cx - s * 0.15,
+          cy - s * 0.72,
+          cx + s * 0.35 * hx,
+          cy - s * 0.35,
+          cx + s * 0.12,
+          cy - s * 0.05,
+          cx - s * 0.22,
+          cy - s * 0.5,
+        ];
+        this.collectiblesGfx.poly(facet).fill({ color: 0xe8ffff, alpha: alpha * 0.55 * hx });
       }
     }
   }
