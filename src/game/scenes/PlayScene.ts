@@ -136,8 +136,22 @@ const SFX_REMOTE: Record<SfxId, string> = {
 
 /** Game binaries live in `public/assets/` and grouped subfolders. */
 const GAME_ASSETS = `${import.meta.env.BASE_URL}assets`;
-/** Looping gameplay BGM — `public/assets/music/Dream Sakura_Loop.ogg`. */
-const BGM_URL = `${GAME_ASSETS}/music/${encodeURIComponent('Dream Sakura_Loop.ogg')}`;
+/** Gameplay BGM: random track from `public/assets/game music/` on each fresh run (see `pickRandomGameMusicBgmUrl`). */
+const GAME_MUSIC_DIR_URL = `${GAME_ASSETS}/${encodeURIComponent('game music')}`;
+const GAME_MUSIC_BGM_FILENAMES = [
+  'Dream Sakura_Loop.ogg',
+  'Honobono Teahouse.mp3',
+  'Moonlight Japanese Harp.mp3',
+  "Mountain God's Shrine.mp3",
+  'Mysterious Kyoto.mp3',
+  'Shamisen Samurai Rock.mp3',
+  'Voice of Evening Calm.mp3',
+] as const;
+const GAME_MUSIC_BGM_TRACKS: readonly string[] = GAME_MUSIC_BGM_FILENAMES.map(
+  (name) => `${GAME_MUSIC_DIR_URL}/${encodeURIComponent(name)}`,
+);
+/** If the curated list is empty (should not happen), fall back to legacy loop under `assets/music/`. */
+const BGM_FALLBACK_URL = `${GAME_ASSETS}/music/${encodeURIComponent('Dream Sakura_Loop.ogg')}`;
 const REST_FLOOR_HOUSE_CANDIDATES = [
   `${GAME_ASSETS}/house/isohome.png.png`,
   `${GAME_ASSETS}/house/${encodeURIComponent('House 1.png')}`,
@@ -149,7 +163,7 @@ const SFX_LOCAL: Record<SfxId, string> = {
   tongue_shoot: `${import.meta.env.BASE_URL}audio/tongue_shoot.mp3`,
   tongue_hit: `${import.meta.env.BASE_URL}audio/tongue_hit.mp3`,
   collect_coin: `${import.meta.env.BASE_URL}audio/collect_coin.mp3`,
-  collect_diamond: `${GAME_ASSETS}/music/diamond_collect.mp3`,
+  collect_diamond: `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/diamond_collect.mp3`,
   player_land: `${import.meta.env.BASE_URL}audio/player_land.mp3`,
 };
 
@@ -867,6 +881,8 @@ export class PlayScene implements Scene {
   /** Phase accumulator for speed-stress screenshake (continuous, not impact bursts). */
   private velocityStressShakePhase = 0;
   private bgm?: HTMLAudioElement;
+  /** Last picked `game music` URL — avoids playing the same track twice in a row when possible. */
+  private lastGameMusicBgmUrl: string | null = null;
   private level = 1;
   private levelUpBannerTime = 0;
   private levelUpParticles: LevelUpParticle[] = [];
@@ -983,9 +999,7 @@ export class PlayScene implements Scene {
     }
 
     await this.tryLoadTongueArmature();
-    this.startBackgroundMusic();
-
-    this.resetRun();
+    this.resetRun({ pickNewBgm: true });
     this.drawStaticWorld();
     this.applyCameraTransform();
     this.drawDynamicWorld();
@@ -1811,7 +1825,7 @@ export class PlayScene implements Scene {
     }
   }
 
-  private resetRun(): void {
+  private resetRun(opts?: { pickNewBgm?: boolean }): void {
     this.gameOver = false;
     this.finalMetersAtDeath = 0;
     this.deathSubmitted = false;
@@ -1907,6 +1921,9 @@ export class PlayScene implements Scene {
     this.scoreboard?.setLevel(this.level);
     this.refreshAutoScrollHud();
     this.syncScrollSpeedTierBaseline();
+    if (opts?.pickNewBgm === true) {
+      this.startBackgroundMusic();
+    }
   }
 
   private checkFallGameOver(): void {
@@ -2518,9 +2535,28 @@ export class PlayScene implements Scene {
       .filter((ripple) => ripple.age < 0.8);
   }
 
+  private pickRandomGameMusicBgmUrl(): string {
+    const tracks = GAME_MUSIC_BGM_TRACKS;
+    if (tracks.length === 0) {
+      return BGM_FALLBACK_URL;
+    }
+    if (tracks.length === 1) {
+      const only = tracks[0];
+      this.lastGameMusicBgmUrl = only;
+      return only;
+    }
+    let choice = tracks[Math.floor(Math.random() * tracks.length)];
+    let guard = 0;
+    while (choice === this.lastGameMusicBgmUrl && guard++ < 12) {
+      choice = tracks[Math.floor(Math.random() * tracks.length)];
+    }
+    this.lastGameMusicBgmUrl = choice;
+    return choice;
+  }
+
   private startBackgroundMusic(): void {
     this.stopBackgroundMusic();
-    const bgm = new Audio(BGM_URL);
+    const bgm = new Audio(this.pickRandomGameMusicBgmUrl());
     bgm.loop = true;
     bgm.volume = 0.2;
     this.bgm = bgm;
@@ -3613,11 +3649,11 @@ export class PlayScene implements Scene {
     this.gameOverRestartBtn.cursor = 'pointer';
     this.gameOverRestartBtn.on('pointerdown', (event) => {
       event.stopPropagation();
-      this.resetRun();
+      this.resetRun({ pickNewBgm: true });
     });
     this.gameOverRestartBtn.on('pointertap', (event) => {
       event.stopPropagation();
-      this.resetRun();
+      this.resetRun({ pickNewBgm: true });
     });
     this.gameOverRestartLabel = new Text({
       text: 'PLAY AGAIN',
