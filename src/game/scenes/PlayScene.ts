@@ -572,21 +572,26 @@ const JUMP_BUFFER_SEC = 0.1;
  *     starting from a higher world position (y smaller) increments `comboCount`.
  *   - Jumping in place, falling between jumps, or pausing >= {@link COMBO_CHAIN_WINDOW_SEC} resets it.
  *   - Streak {@link COMBO_GLOW_STREAK} → character glow + tint pulse turns on.
- *   - Streak {@link COMBO_SUPER_TONGUE_STREAK} → Super Tongue button appears (one-press freecast +
- *     {@link SUPER_TONGUE_BUFF_DURATION_SEC} of zero-cooldown follow-up grapples).
+ *
+ * Pull-up grapple HUD unlock is separate: {@link PULL_UP_JUMPS_REQUIRED} successful grounded jumps
+ * (see `pullUpJumpsAccum`); uses {@link SUPER_TONGUE_BUFF_DURATION_SEC} after press (instant grapple).
  */
 const COMBO_CHAIN_WINDOW_SEC = 2.0;
 const COMBO_MIN_CLIMB_PX = 6;
 const COMBO_GLOW_STREAK = 15;
-const COMBO_SUPER_TONGUE_STREAK = 22;
+/** Grounded jumps before the Pull-up button unlocks (counter resets after each press). */
+const PULL_UP_JUMPS_REQUIRED = 8;
 /** Combo HUD anchor (screen px, top-left of unscaled layout). `comboHudRoot` applies scale. */
 const COMBO_HUD_SCREEN_X = 20;
 const COMBO_HUD_SCREEN_Y = 150;
-/** Uniform scale for badge + Super Tongue strip (screen-fixed via `uiLayer`, not `world`). */
-const COMBO_HUD_ROOT_SCALE = 0.3;
-/** Super Tongue button layout (width matches badge art). Local Y = below badge in `comboHudRoot`. */
-const SUPER_TONGUE_BTN_W = COMBO_BADGE_W;
-const SUPER_TONGUE_BTN_H = 44;
+/** Uniform scale for combo badge only (`uiLayer`, screen-fixed — equivalent to scrollFactor 0). */
+const COMBO_HUD_ROOT_SCALE = 0.33;
+/** Pull-up button (`uiLayer` top-right; not inside scaled comboHudRoot). */
+const PULL_UP_BTN_W = 152;
+const PULL_UP_BTN_H = 44;
+/** Pivot top-right: places button right edge at `screenWidth - PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX`. */
+const PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX = 80;
+const PULL_UP_BTN_TOP_Y = 100;
 /** Super Tongue effects (matches the user-confirmed "B" recipe). */
 const SUPER_TONGUE_STAIRS_UP = 4;
 const SUPER_TONGUE_BUFF_DURATION_SEC = 3.0;
@@ -833,11 +838,13 @@ export class PlayScene implements Scene {
   private comboLastJumpTime = -1e9;
   /** Visual badge in the upper-left; created in `setupComboHud`. */
   private comboBadge?: ComboBadge;
-  /** Wraps badge + Super Tongue; scaled — stays screen-fixed (parent `uiLayer`, never `world`). */
+  /** Wraps combo badge only; scaled — stays screen-fixed (parent `uiLayer`, never `world`). */
   private comboHudRoot = new Container();
   /** Lazy WebAudio synth that plays the tier hit on each combo increment. */
   private comboSynth?: ComboSynth;
-  /** Streak-22 reward: visible only while {@link comboCount} ≥ {@link COMBO_SUPER_TONGUE_STREAK}. */
+  /** Successful grounded jumps since last Pull-up press (or run start); caps visibility unlock at {@link PULL_UP_JUMPS_REQUIRED}. */
+  private pullUpJumpsAccum = 0;
+  /** Pull-up grapple unlock button (`PULL UP`) — top-right `uiLayer`; hidden until {@link pullUpJumpsAccum} ≥ threshold. */
   private superTongueBtnRoot = new Container();
   private superTongueBtnGfx = new Graphics();
   private superTongueBtnLabel?: Text;
@@ -1205,7 +1212,7 @@ export class PlayScene implements Scene {
     this.layoutCollectibleHud();
     this.layoutClimbHud();
     this.layoutComboHudRoot();
-    this.layoutSuperTongueButton();
+    this.layoutPullUpButton();
     this.layoutAutoScrollHud();
     this.layoutGameOverUi();
     this.layoutHeaderPauseButton();
@@ -1379,6 +1386,7 @@ export class PlayScene implements Scene {
     this.setPlayerMana(this.playerMana - MANA_JUMP_COST * (1 + Math.min(2, this.getHudClimbMeters() / 2500)));
     this.jumpCount += 1;
     this.registerComboJump();
+    this.maybeIncrementPullUpJumpCounter();
     if (fromRightSwipe) {
       const body = this.player.body;
       const centerX = this.worldWidth * 0.5;
@@ -1403,8 +1411,7 @@ export class PlayScene implements Scene {
    *  - Otherwise the streak resets to 1 (this jump is the new chain anchor).
    *
    * On `comboCount >= 2` we play the combo synth + bump the badge (word tier rises every
-   * `COMBO.jumpsPerWord` counted jumps in `game.config`). On `>= COMBO_SUPER_TONGUE_STREAK`
-   * we surface the Super Tongue button.
+   * `COMBO.jumpsPerWord` counted jumps in `game.config`).
    */
   private registerComboJump(): void {
     const currentY = this.player.body.y;
@@ -1433,8 +1440,15 @@ export class PlayScene implements Scene {
       this.comboSynth?.resume();
       this.comboSynth?.play(wordTier);
     }
+  }
 
-    if (this.comboCount >= COMBO_SUPER_TONGUE_STREAK) {
+  /** Each successful grounded jump (after combo bookkeeping); unlocks Pull-up at {@link PULL_UP_JUMPS_REQUIRED}. */
+  private maybeIncrementPullUpJumpCounter(): void {
+    if (this.superTongueBtnAvailable) {
+      return;
+    }
+    this.pullUpJumpsAccum += 1;
+    if (this.pullUpJumpsAccum >= PULL_UP_JUMPS_REQUIRED) {
       this.setSuperTongueAvailable(true);
     }
   }
@@ -1822,6 +1836,7 @@ export class PlayScene implements Scene {
     this.comboLastJumpY = Number.POSITIVE_INFINITY;
     this.comboLastJumpTime = -1e9;
     this.comboBadge?.resetState();
+    this.pullUpJumpsAccum = 0;
     this.setSuperTongueAvailable(false);
     this.superTongueBuffTime = 0;
     this.jumpBufferTimeLeft = 0;
@@ -3033,9 +3048,7 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Mounts the combo badge and the Super Tongue button into `comboHudRoot` → `uiLayer`. The badge is hidden
-   * until the first chain jump (`bumpTo`); the Super Tongue button is hidden until streak ≥
-   * {@link COMBO_SUPER_TONGUE_STREAK}.
+   * Combo badge → scaled `comboHudRoot`. Pull-up button is a sibling on `uiLayer` (top-right, jump-gated).
    */
   private setupComboHud(): void {
     this.comboHudRoot.eventMode = 'none';
@@ -3049,16 +3062,16 @@ export class PlayScene implements Scene {
 
     this.comboSynth = new ComboSynth();
 
-    this.superTongueBtnRoot.zIndex = 2;
+    this.superTongueBtnRoot.zIndex = 1010;
     this.superTongueBtnRoot.visible = false;
-    this.superTongueBtnGfx.eventMode = 'static';
+    this.superTongueBtnGfx.eventMode = 'none';
     this.superTongueBtnGfx.cursor = 'pointer';
     this.superTongueBtnLabel = new Text({
-      text: 'SUPER TONGUE',
-      style: this.createNeonGoldTextStyle(15, 3),
+      text: 'PULL UP',
+      style: this.createNeonGoldTextStyle(14, 3),
     });
     this.superTongueBtnLabel.anchor.set(0.5);
-    this.superTongueBtnLabel.position.set(SUPER_TONGUE_BTN_W * 0.5, SUPER_TONGUE_BTN_H * 0.5);
+    this.superTongueBtnLabel.position.set(PULL_UP_BTN_W * 0.5, PULL_UP_BTN_H * 0.5);
     this.superTongueBtnLabel.eventMode = 'none';
     this.superTongueBtnRoot.addChild(this.superTongueBtnGfx, this.superTongueBtnLabel);
     this.superTongueBtnGfx.on('pointertap', (event) => {
@@ -3066,16 +3079,25 @@ export class PlayScene implements Scene {
       this.fireSuperTongue();
     });
 
-    this.comboHudRoot.addChild(this.comboBadge, this.superTongueBtnRoot);
+    this.comboHudRoot.addChild(this.comboBadge);
     this.uiLayer.addChild(this.comboHudRoot);
+    this.uiLayer.addChild(this.superTongueBtnRoot);
     this.layoutComboHudRoot();
-    this.layoutSuperTongueButton();
+    this.layoutPullUpButton();
     this.drawSuperTongueButton();
   }
 
-  private layoutSuperTongueButton(): void {
-    this.superTongueBtnRoot.position.set(0, COMBO_BADGE_H + 12);
-    this.superTongueBtnGfx.hitArea = new Rectangle(0, 0, SUPER_TONGUE_BTN_W, SUPER_TONGUE_BTN_H);
+  /**
+   * Pull-up (`PULL UP`) lives only on `uiLayer` (never `world`) — fixed while climbing = Phaser scrollFactor 0.
+   * Pivot top-right so the button sits in the upper-right without overlapping climb readout (below ~y72).
+   */
+  private layoutPullUpButton(): void {
+    this.superTongueBtnRoot.pivot.set(PULL_UP_BTN_W, 0);
+    this.superTongueBtnRoot.position.set(
+      this.width - PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX,
+      PULL_UP_BTN_TOP_Y,
+    );
+    this.superTongueBtnGfx.hitArea = new Rectangle(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H);
   }
 
   private drawSuperTongueButton(): void {
@@ -3083,16 +3105,16 @@ export class PlayScene implements Scene {
     gfx.clear();
     const pulse = 0.5 + 0.5 * Math.sin(this.superTongueBtnPulse * 6);
     const accent = pulse > 0.5 ? 0xffd700 : 0xff9900;
-    gfx.roundRect(0, 0, SUPER_TONGUE_BTN_W, SUPER_TONGUE_BTN_H, 12).fill({
+    gfx.roundRect(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H, 12).fill({
       color: 0x2a0040,
       alpha: 0.92,
     });
-    gfx.roundRect(0, 0, SUPER_TONGUE_BTN_W, SUPER_TONGUE_BTN_H, 12).stroke({
+    gfx.roundRect(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H, 12).stroke({
       width: 3,
       color: accent,
       alpha: 0.95,
     });
-    gfx.roundRect(3, 3, SUPER_TONGUE_BTN_W - 6, SUPER_TONGUE_BTN_H - 6, 9).stroke({
+    gfx.roundRect(3, 3, PULL_UP_BTN_W - 6, PULL_UP_BTN_H - 6, 9).stroke({
       width: 1.4,
       color: accent,
       alpha: 0.4 + 0.3 * pulse,
@@ -3124,21 +3146,20 @@ export class PlayScene implements Scene {
     }
     this.comboCount = 0;
     this.comboBadge?.expire();
-    this.setSuperTongueAvailable(false);
   }
 
-  /** Show / hide the Super Tongue HUD button. Also resets the buff if going from available → not. */
+  /** Show / hide Pull-up (`PULL UP`). Does not clear grapple buff — that runs separately after press / reset run. */
   private setSuperTongueAvailable(available: boolean): void {
     if (available === this.superTongueBtnAvailable) {
       return;
     }
     this.superTongueBtnAvailable = available;
     this.superTongueBtnRoot.visible = available;
-    if (!available) {
-      this.superTongueBuffTime = 0;
-    } else {
+    this.superTongueBtnGfx.eventMode = available ? 'static' : 'none';
+    if (available) {
       this.superTongueBtnPulse = 0;
       this.drawSuperTongueButton();
+      this.layoutPullUpButton();
     }
   }
 
@@ -3171,6 +3192,8 @@ export class PlayScene implements Scene {
     this.comboSynth?.play(wordTier);
     /** Mid-air shake + camera punch makes the moment feel earned. */
     this.shakeTime = Math.max(this.shakeTime, 0.18);
+    this.pullUpJumpsAccum = 0;
+    this.setSuperTongueAvailable(false);
   }
 
   /**

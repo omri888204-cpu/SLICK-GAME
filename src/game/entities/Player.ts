@@ -45,9 +45,9 @@ export const PLAYER_ATTACK_DURATION_SEC = 0.4;
 export const PLAYER_ATTACK_HIT_WINDOW_START = 0.18;
 export const PLAYER_ATTACK_HIT_WINDOW_END = 0.78;
 
-/** Display scale of each cell. Character art occupies ~25×28 inside the cell, so a 3.12× scale
- * renders the visible figure at ~78×87 (20% larger than the previous 2.6× sizing). */
-const SPRITE_SCALE = 3.12;
+/** Display scale of each cell. Character art occupies ~25×28 inside the cell, so a 3.588× scale
+ * renders the visible figure (~15% larger than prior 3.12×). */
+const SPRITE_SCALE = 3.588;
 const SPRITE_DISPLAY_WIDTH = FRAME_W * SPRITE_SCALE;
 
 /**
@@ -60,7 +60,7 @@ const SPRITE_DISPLAY_WIDTH = FRAME_W * SPRITE_SCALE;
  */
 const BASE_AVATAR_Y = -26;
 
-const PLAYER_SCALE = 0.3981312;
+const PLAYER_SCALE = 0.45785088;
 const PLAYER_BODY_WIDTH = 70 * PLAYER_SCALE;
 const PLAYER_BODY_HEIGHT = 96 * PLAYER_SCALE;
 
