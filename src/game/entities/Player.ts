@@ -103,6 +103,8 @@ export class Player extends Container {
   private jumpAnticipationMs = 0;
   private landingPulseMs = 0;
   private grappleLaunchMs = 0;
+  /** Brief squash/stretch pop when a combo-milestone super jump (extra vy) fires. */
+  private superJumpBoostMs = 0;
   private grapplePoseActive = false;
   private grappleAnimT = 0;
   private grappleClip: ActiveGrapple | null = null;
@@ -199,6 +201,7 @@ export class Player extends Container {
     this.jumpAnticipationMs = Math.max(0, this.jumpAnticipationMs - dt * 1000);
     this.landingPulseMs = Math.max(0, this.landingPulseMs - dt * 1000);
     this.grappleLaunchMs = Math.max(0, this.grappleLaunchMs - dt * 1000);
+    this.superJumpBoostMs = Math.max(0, this.superJumpBoostMs - dt * 1000);
     this.attackTime = Math.max(0, this.attackTime - dt);
     this.idleTime += dt;
 
@@ -234,6 +237,11 @@ export class Player extends Container {
     this.jumpPulseMs = ALIVE.jumpPulseMs;
     this.jumpAnticipationMs = ALIVE.jumpAnticipationMs;
     this.airTime = 0;
+  }
+
+  /** Called from `PlayScene` when the climb combo hits every 10th jump (extra upward impulse). */
+  onComboSuperJumpBoost(): void {
+    this.superJumpBoostMs = 320;
   }
 
   onLand(impactVy: number): void {
@@ -365,10 +373,16 @@ export class Player extends Container {
     const jumpAnticipation = this.getPulse(ALIVE.jumpAnticipationMs, this.jumpAnticipationMs);
     const landingPulse = this.getPulse(ALIVE.landingPulseMs, this.landingPulseMs);
     const grappleLaunch = this.getPulse(320, this.grappleLaunchMs);
+    const superJumpPop = this.getPulse(320, this.superJumpBoostMs);
 
     if (grappleLaunch > 0) {
       stretch *= 1 + 0.1 * grappleLaunch;
       squash *= 1 - 0.06 * grappleLaunch;
+    }
+
+    if (superJumpPop > 0) {
+      stretch *= 1 + 0.17 * superJumpPop;
+      squash *= 1 - 0.1 * superJumpPop;
     }
 
     if (this.grapplePoseActive) {
@@ -452,6 +466,12 @@ export class Player extends Container {
       this.glow
         .ellipse(0, -6, 30 * pulse, 24 * pulse)
         .stroke({ width: 1.4, color: 0xffffff, alpha: 0.18 + 0.12 * pulse });
+    }
+    if (superJumpPop > 0 && !shieldActive) {
+      const ring = 0.42 + 0.58 * superJumpPop;
+      this.glow
+        .ellipse(0, BASE_AVATAR_Y - 10, 44 * ring, 34 * ring)
+        .stroke({ width: 2.4, color: 0x88fff2, alpha: 0.38 * superJumpPop });
     }
   }
 

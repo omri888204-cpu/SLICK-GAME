@@ -578,6 +578,10 @@ const JUMP_BUFFER_SEC = 0.1;
  */
 const COMBO_CHAIN_WINDOW_SEC = 2.0;
 const COMBO_MIN_CLIMB_PX = 6;
+/** Every Nth jump in an active climb combo applies {@link SUPER_JUMP_VY_SCALE}× upward impulse. */
+const SUPER_JUMP_COMBO_EVERY = 10;
+const SUPER_JUMP_VY_SCALE = 2;
+const SUPER_JUMP_SPARK_COUNT = 14;
 const COMBO_GLOW_STREAK = 15;
 /** Grounded jumps before the Pull-up button unlocks (counter resets after each press). */
 const PULL_UP_JUMPS_REQUIRED = 8;
@@ -868,6 +872,8 @@ export class PlayScene implements Scene {
   private level = 1;
   private levelUpBannerTime = 0;
   private levelUpParticles: LevelUpParticle[] = [];
+  /** Brief teal sparks + avatar pop when a combo-milestone super jump fires. */
+  private comboSuperJumpParticles: LevelUpParticle[] = [];
   private currentBackgroundColor = 0x000000;
   private levelUpFloatText?: Text;
   private jumpArcAssistTime = 0;
@@ -1012,6 +1018,7 @@ export class PlayScene implements Scene {
     this.updateLevelProgress();
     this.updatePlatformDifficulty(dt);
     this.updateLevelUpParticles(dt);
+    this.updateComboSuperJumpParticles(dt);
     this.updateTouchFollowAxis();
     this.input?.smoothTouchJoystickAxis(dt, this.player.body.grounded);
     this.tickPlayerShield(dt);
@@ -1388,6 +1395,12 @@ export class PlayScene implements Scene {
     this.setPlayerMana(this.playerMana - MANA_JUMP_COST * (1 + Math.min(2, this.getHudClimbMeters() / 2500)));
     this.jumpCount += 1;
     this.registerComboJump();
+    const comboSuperJump =
+      this.comboCount > 0 && this.comboCount % SUPER_JUMP_COMBO_EVERY === 0;
+    if (comboSuperJump) {
+      this.player.body.vy *= SUPER_JUMP_VY_SCALE;
+      this.spawnComboSuperJumpParticles();
+    }
     this.maybeIncrementPullUpJumpCounter();
     if (fromRightSwipe) {
       const body = this.player.body;
@@ -1403,6 +1416,9 @@ export class PlayScene implements Scene {
       this.jumpArcTargetCenterX = centerX;
     }
     this.player.onJump();
+    if (comboSuperJump) {
+      this.player.onComboSuperJumpBoost();
+    }
     return true;
   }
 
@@ -1414,6 +1430,8 @@ export class PlayScene implements Scene {
    *
    * On `comboCount >= 2` we play the combo synth + bump the badge (word tier rises every
    * `COMBO.jumpsPerWord` counted jumps in `game.config`).
+   * When `comboCount` is a multiple of {@link SUPER_JUMP_COMBO_EVERY}, `PlayScene` applies
+   * {@link SUPER_JUMP_VY_SCALE}× jump impulse and a short VFX pop.
    */
   private registerComboJump(): void {
     const currentY = this.player.body.y;
@@ -1860,6 +1878,7 @@ export class PlayScene implements Scene {
     this.level = 1;
     this.levelUpBannerTime = 0;
     this.levelUpParticles = [];
+    this.comboSuperJumpParticles = [];
     this.player.rotation = 0;
     this.windParticles = [];
     this.windSpawnAcc = 0;
@@ -2706,6 +2725,48 @@ export class PlayScene implements Scene {
     return 1 + gravityTier * 0.02;
   }
 
+  private spawnComboSuperJumpParticles(): void {
+    const cx = this.player.body.x + this.player.body.width * 0.5;
+    const cy = this.player.body.y + this.player.body.height * 0.42;
+    for (let i = 0; i < SUPER_JUMP_SPARK_COUNT; i += 1) {
+      const a = Math.random() * Math.PI * 2;
+      const speed = 95 + Math.random() * 155;
+      this.comboSuperJumpParticles.push({
+        x: cx + (Math.random() - 0.5) * 14,
+        y: cy + (Math.random() - 0.5) * 10,
+        vx: Math.cos(a) * speed,
+        vy: Math.sin(a) * speed - 210,
+        age: 0,
+        life: 0.26 + Math.random() * 0.16,
+      });
+    }
+  }
+
+  private updateComboSuperJumpParticles(dt: number): void {
+    this.comboSuperJumpParticles = this.comboSuperJumpParticles
+      .map((p) => ({
+        ...p,
+        age: p.age + dt,
+        x: p.x + p.vx * dt,
+        y: p.y + p.vy * dt,
+        vy: p.vy + 520 * dt,
+      }))
+      .filter((p) => p.age < p.life);
+  }
+
+  private drawComboSuperJumpParticles(): void {
+    for (const p of this.comboSuperJumpParticles) {
+      const u = p.age / p.life;
+      const alpha = (1 - u) * 0.88;
+      const r = 1.4 + 2.4 * (1 - u);
+      this.fxLayer.circle(p.x, p.y, r).fill({ color: 0x66ffe8, alpha });
+      this.fxLayer.circle(p.x + 0.8, p.y - 1.1, r * 0.42).fill({
+        color: 0xffffff,
+        alpha: alpha * 0.72,
+      });
+    }
+  }
+
   private spawnLevelUpParticles(): void {
     const cx = this.player.body.x + this.player.body.width * 0.5;
     const cy = this.player.body.y + this.player.body.height * 0.5;
@@ -2931,6 +2992,7 @@ export class PlayScene implements Scene {
     this.drawCollectibles();
     this.drawDiamondShineSparks();
     this.drawLevelUpParticles();
+    this.drawComboSuperJumpParticles();
     this.drawShieldSaveEffect();
   }
 
@@ -4060,15 +4122,15 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Disabled per design: low mana no longer slows the character.
-   * Kept as a no-op so the call site in `applyHorizontalInput` stays stable for future re-enable.
+   * Mana bar is resource/visual-only: horizontal move speed always uses full walk tuning (no low-mana slowdown).
    */
   private getManaSpeedMultiplier(): number {
     return 1;
   }
 
+  /** Incoming damage does not scale with mana (no low-mana vulnerability). */
   private getManaDamageMultiplier(): number {
-    return this.getManaPercent() < 0.3 ? 2 : 1;
+    return 1;
   }
 
   private setPlayerMana(value: number): void {
