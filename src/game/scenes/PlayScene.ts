@@ -321,21 +321,6 @@ const HEART_COUNTER_FRAME_H = 32;
 const HEART_COUNTER_FRAME_COUNT = 31;
 const HEART_HUD_DISPLAY_WIDTH_PX = 160;
 const HEART_HUD_SCALE = HEART_HUD_DISPLAY_WIDTH_PX / HEART_COUNTER_FRAME_W;
-/** `public/assets/Player staff/mana_counter-Sheet.png` — 208×992, 31 rows × 208×32. */
-const MANA_COUNTER_SHEET_URL = `${GAME_ASSETS}/${encodeURIComponent('Player staff')}/mana_counter-Sheet.png`;
-const MANA_COUNTER_FRAME_W = 208;
-const MANA_COUNTER_FRAME_H = 32;
-const MANA_COUNTER_FRAME_COUNT = 31;
-const MANA_HUD_DISPLAY_WIDTH_PX = HEART_HUD_DISPLAY_WIDTH_PX;
-const MANA_HUD_SCALE = MANA_HUD_DISPLAY_WIDTH_PX / MANA_COUNTER_FRAME_W;
-const MANA_BAR_UNDER_HEALTH_GAP_PX = 2;
-const PLAYER_MAX_MANA = 100;
-const MANA_ALTITUDE_DRAIN_PER_SEC = 0.75;
-const MANA_AIR_DRAIN_PER_SEC = 2.6;
-const MANA_UPWARD_CLIMB_DRAIN_PER_METER = 0.18;
-const MANA_JUMP_COST = 4;
-const MANA_STAND_RECOVERY_PER_SEC = 8;
-const MANA_STAND_STILL_VX_PX = 35;
 const HEART_HUD_PULSE_HZ = 2.8;
 const HEART_HUD_HIT_FLASH_SEC = 0.16;
 
@@ -590,19 +575,20 @@ const COMBO_GLOW_STREAK = 15;
 /** Grounded jumps before the skill pair unlocks (both buttons; counter resets after mega jump / expiry). */
 const PULL_UP_JUMPS_REQUIRED = 8;
 /** Combo HUD anchor (screen px, top-left of unscaled layout). `comboHudRoot` applies scale. */
+/** Combo HUD anchor — sits below the skill pair strip (`SKILL_PAIR_HUD_Y`). */
 const COMBO_HUD_SCREEN_X = 20;
-const COMBO_HUD_SCREEN_Y = 150;
+const COMBO_HUD_SCREEN_Y = 172;
 /** Uniform scale for combo badge only (`uiLayer`, screen-fixed — equivalent to scrollFactor 0). */
 const COMBO_HUD_ROOT_SCALE = 0.33;
-/** Skill pair buttons (`uiLayer` top-right; not inside scaled comboHudRoot). */
+/** Skill pair (`SUPER JUMP` + `PULL UP`): screen-fixed on `uiLayer` — Phaser `scrollFactor` 0 equivalent. */
 const PULL_UP_BTN_W = 152;
 const PULL_UP_BTN_H = 44;
 /** Horizontal gap between `SUPER JUMP` (left) and `PULL UP` (right) inside the pair. */
 const SKILL_PAIR_BTN_GAP_PX = 10;
-/** Pivot top-right: pair right edge at `screenWidth - PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX`. */
-const PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX = 60;
-const PULL_UP_BTN_TOP_Y = 80;
-/** Mobile-friendly scale; applied to `skillPairRoot` so both buttons match. */
+/** Top-left anchor under main HUD / health stack (unscaled layout coords before `skillPairRoot.scale`). */
+const SKILL_PAIR_HUD_X = 20;
+const SKILL_PAIR_HUD_Y = 120;
+/** Uniform scale on `skillPairRoot` (~half size). */
 const PULL_UP_BTN_SCALE = 0.5;
 /** Super Tongue effects (matches the user-confirmed "B" recipe). */
 const SUPER_TONGUE_STAIRS_UP = 4;
@@ -689,11 +675,7 @@ export class PlayScene implements Scene {
   private playerInvulnBlinkPhase = 0;
   private healthHudRoot = new Container();
   private heartCounterTextures: Texture[] = [];
-  private manaCounterTextures: Texture[] = [];
   private heartHudSprite = new Sprite();
-  private manaHudSprite = new Sprite();
-  private playerMana = PLAYER_MAX_MANA;
-  private previousManaDrainY = 0;
   /** Filled segment count (0..10) shown after transitions; matches `heartHudSegmentsFromPlayerHealth`. */
   private heartHudSegmentL = heartHudSegmentsFromPlayerHealth(PLAYER_MAX_HEALTH);
   private heartHudTransTime = 0;
@@ -856,7 +838,7 @@ export class PlayScene implements Scene {
   private comboSynth?: ComboSynth;
   /** Successful grounded jumps since last Pull-up press (or run start); caps visibility unlock at {@link PULL_UP_JUMPS_REQUIRED}. */
   private pullUpJumpsAccum = 0;
-  /** `SUPER JUMP` + `PULL UP` wrapper — top-right `uiLayer`; hidden until {@link pullUpJumpsAccum} ≥ threshold. */
+  /** `SUPER JUMP` + `PULL UP` wrapper — top-left `uiLayer`; hidden until {@link pullUpJumpsAccum} ≥ threshold. */
   private skillPairRoot = new Container();
   private superJumpBtnRoot = new Container();
   private superJumpBtnGfx = new Graphics();
@@ -1014,7 +996,6 @@ export class PlayScene implements Scene {
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
     this.tickHeartHud(dt);
     this.enforceHealthInvariant();
-    this.updateMana(dt);
     if (this.gameOver) {
       this.updateScreenShake(dt);
       this.refreshGameOverScoreText();
@@ -1406,7 +1387,6 @@ export class PlayScene implements Scene {
       return false;
     }
     this.physics.jump(this.player.body);
-    this.setPlayerMana(this.playerMana - MANA_JUMP_COST * (1 + Math.min(2, this.getHudClimbMeters() / 2500)));
     this.jumpCount += 1;
     this.registerComboJump();
     this.maybeIncrementPullUpJumpCounter();
@@ -1892,8 +1872,6 @@ export class PlayScene implements Scene {
     this.player.isShielded = false;
     this.playerHealth = PLAYER_MAX_HEALTH;
     this.playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
-    this.playerMana = PLAYER_MAX_MANA;
-    this.previousManaDrainY = this.player.body.y;
     this.playerInvulnTime = 0;
     this.playerInvulnBlinkPhase = 0;
     this.player.alpha = 1;
@@ -2089,9 +2067,6 @@ export class PlayScene implements Scene {
 
   private landOn(platform: Platform): void {
     this.recordLastPlatform(platform);
-    if (platform.kind === 'rest') {
-      this.recoverManaFull();
-    }
     if (platform.kind === 'rest') {
       this.activeRestFloorY = platform.y;
       this.restFloorHoldY = platform.y;
@@ -2457,12 +2432,9 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Slices `heart_counter-Sheet.png` and `mana_counter-Sheet.png` into row frames for the top HUD. */
+  /** Slices `heart_counter-Sheet.png` into row frames for the top HUD. */
   private async loadHeartCounterSheet(): Promise<void> {
-    const [heartSheet, manaSheet] = (await Promise.all([
-      Assets.load(HEART_COUNTER_SHEET_URL),
-      Assets.load(MANA_COUNTER_SHEET_URL),
-    ])) as Texture[];
+    const heartSheet = (await Assets.load(HEART_COUNTER_SHEET_URL)) as Texture;
     const source = heartSheet.source;
     this.heartCounterTextures = [];
     for (let i = 0; i < HEART_COUNTER_FRAME_COUNT; i += 1) {
@@ -2470,17 +2442,6 @@ export class PlayScene implements Scene {
         new Texture({
           source,
           frame: new Rectangle(0, i * HEART_COUNTER_FRAME_H, HEART_COUNTER_FRAME_W, HEART_COUNTER_FRAME_H),
-        }),
-      );
-    }
-
-    const manaSource = manaSheet.source;
-    this.manaCounterTextures = [];
-    for (let i = 0; i < MANA_COUNTER_FRAME_COUNT; i += 1) {
-      this.manaCounterTextures.push(
-        new Texture({
-          source: manaSource,
-          frame: new Rectangle(0, i * MANA_COUNTER_FRAME_H, MANA_COUNTER_FRAME_W, MANA_COUNTER_FRAME_H),
         }),
       );
     }
@@ -3116,7 +3077,7 @@ export class PlayScene implements Scene {
 
   /**
    * Combo badge → scaled `comboHudRoot`. Skill pair (`SUPER JUMP` + `PULL UP`) is a sibling on
-   * `uiLayer` (top-right, shared jump counter unlock).
+   * `uiLayer` under the health/header strip (`scrollFactor` 0 equivalent).
    */
   private setupComboHud(): void {
     this.comboHudRoot.eventMode = 'none';
@@ -3180,15 +3141,12 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Skill pair is fixed on `uiLayer` (never `world`). Pivot top-right so the cluster hugs the corner.
+   * Skill pair fixed on `uiLayer` (never `world`) — camera-fixed HUD (`scrollFactor` 0 equivalent).
+   * Top-left anchor `(SKILL_PAIR_HUD_X, SKILL_PAIR_HUD_Y)` under the main header / health stack.
    */
   private layoutSkillPairHud(): void {
-    const totalW = PULL_UP_BTN_W * 2 + SKILL_PAIR_BTN_GAP_PX;
-    this.skillPairRoot.pivot.set(totalW, 0);
-    this.skillPairRoot.position.set(
-      this.width - PULL_UP_BTN_RIGHT_EDGE_OFFSET_PX,
-      PULL_UP_BTN_TOP_Y,
-    );
+    this.skillPairRoot.pivot.set(0, 0);
+    this.skillPairRoot.position.set(SKILL_PAIR_HUD_X, SKILL_PAIR_HUD_Y);
     this.superJumpBtnGfx.hitArea = new Rectangle(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H);
     this.superTongueBtnGfx.hitArea = new Rectangle(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H);
   }
@@ -3387,7 +3345,6 @@ export class PlayScene implements Scene {
 
     this.physics.jump(this.player.body);
     this.player.body.vy *= SUPER_JUMP_VY_SCALE;
-    this.setPlayerMana(this.playerMana - MANA_JUMP_COST * (1 + Math.min(2, this.getHudClimbMeters() / 2500)));
     this.jumpCount += 1;
 
     if (chained) {
@@ -4227,7 +4184,7 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Top HUD: animated HP and Mana counters stacked below the timer. */
+  /** Top HUD: animated HP counter below the timer / header. */
   private setupHealthHud(): void {
     this.healthHudRoot.zIndex = 1006;
     this.healthHudRoot.sortableChildren = false;
@@ -4236,15 +4193,7 @@ export class PlayScene implements Scene {
     this.heartHudSprite.roundPixels = RENDER.pixelArt;
     this.heartHudSprite.texture = this.heartCounterTextures[0] ?? Texture.EMPTY;
     this.heartHudSprite.scale.set(HEART_HUD_SCALE);
-    this.manaHudSprite.eventMode = 'none';
-    this.manaHudSprite.roundPixels = RENDER.pixelArt;
-    this.manaHudSprite.texture = this.manaCounterTextures[0] ?? Texture.EMPTY;
-    this.manaHudSprite.scale.set(MANA_HUD_SCALE);
-    this.manaHudSprite.position.set(
-      0,
-      HEART_COUNTER_FRAME_H * HEART_HUD_SCALE + MANA_BAR_UNDER_HEALTH_GAP_PX,
-    );
-    this.healthHudRoot.addChild(this.heartHudSprite, this.manaHudSprite);
+    this.healthHudRoot.addChild(this.heartHudSprite);
     this.uiLayer.addChild(this.healthHudRoot);
     this.layoutHealthHud();
     this.refreshHealthHud();
@@ -4253,7 +4202,7 @@ export class PlayScene implements Scene {
   private layoutHealthHud(): void {
     if (this.timerHudText) {
       const timerBottomY = this.timerHudText.position.y + this.timerHudText.height;
-      const stackWidth = Math.max(HEART_HUD_DISPLAY_WIDTH_PX, MANA_HUD_DISPLAY_WIDTH_PX);
+      const stackWidth = HEART_HUD_DISPLAY_WIDTH_PX;
       const heartX =
         this.timerHudText.position.x -
         stackWidth * 0.5 +
@@ -4280,67 +4229,9 @@ export class PlayScene implements Scene {
     this.heartHudSegmentL = newL;
   }
 
-  /** Used for the mana HUD frames only — never scales movement or combat. */
-  private getManaPercent(): number {
-    return Math.max(0, Math.min(1, this.playerMana / PLAYER_MAX_MANA));
-  }
-
-  /** Incoming damage does not scale with mana (no low-mana vulnerability). */
-  private getManaDamageMultiplier(): number {
-    return 1;
-  }
-
-  private setPlayerMana(value: number): void {
-    this.playerMana = Math.max(0, Math.min(PLAYER_MAX_MANA, value));
-  }
-
-  private recoverManaFull(): void {
-    this.setPlayerMana(PLAYER_MAX_MANA);
-  }
-
-  private updateMana(dt: number): void {
-    if (this.gameOver) {
-      this.previousManaDrainY = this.player.body.y;
-      return;
-    }
-
-    let nextMana = this.playerMana;
-    const altitudeFactor = 1 + Math.min(3, this.getHudClimbMeters() / 2000);
-    const climbedUpPx = Math.max(0, this.previousManaDrainY - this.player.body.y);
-    if (climbedUpPx > 0) {
-      nextMana -= (climbedUpPx / 12) * MANA_UPWARD_CLIMB_DRAIN_PER_METER * altitudeFactor;
-    }
-    if (!this.player.body.grounded) {
-      nextMana -= MANA_AIR_DRAIN_PER_SEC * altitudeFactor * dt;
-    }
-    nextMana -= MANA_ALTITUDE_DRAIN_PER_SEC * altitudeFactor * dt;
-
-    const standingStill =
-      this.player.body.grounded &&
-      !this.isRestFloorHolding() &&
-      Math.abs(this.player.body.vx) <= MANA_STAND_STILL_VX_PX &&
-      !this.grapple;
-    if (standingStill) {
-      nextMana += MANA_STAND_RECOVERY_PER_SEC * dt;
-    }
-    if (this.isRestFloorHolding()) {
-      nextMana = PLAYER_MAX_MANA;
-    }
-
-    this.setPlayerMana(nextMana);
-    this.previousManaDrainY = this.player.body.y;
-  }
-
   private tickHeartHud(dt: number): void {
     this.heartHudPulseAcc += dt;
     const pulse = Math.floor(this.heartHudPulseAcc * HEART_HUD_PULSE_HZ * 2) % 2;
-    if (this.manaCounterTextures.length > 0) {
-      const emptyFrame = MANA_COUNTER_FRAME_COUNT - 1;
-      const filledSegments = Math.max(0, Math.min(10, Math.round(this.getManaPercent() * 10)));
-      const baseFrame = filledSegments <= 0 ? emptyFrame : (10 - filledSegments) * 3;
-      const frame = filledSegments >= 10 ? (pulse === 0 ? 0 : 1) : baseFrame;
-      this.manaHudSprite.texture = this.manaCounterTextures[Math.min(emptyFrame, frame)];
-    }
 
     if (this.heartCounterTextures.length === 0) {
       return;
@@ -4399,7 +4290,7 @@ export class PlayScene implements Scene {
     }
     this.playerHealth = Math.max(
       0,
-      this.playerHealth - MUSHROOM_DAMAGE_PER_HIT * this.getManaDamageMultiplier(),
+      this.playerHealth - MUSHROOM_DAMAGE_PER_HIT,
     );
     this.playerHealthCeilingThisRun = this.playerHealth;
     this.playerInvulnTime = PLAYER_INVULN_SEC;
