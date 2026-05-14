@@ -1712,7 +1712,6 @@ export class PlayScene implements Scene {
       if (p.kind !== 'rest') {
         p.x = this.computePlatformSpawnX(this.nextStairId, p.width);
       } else {
-        this.activeRestFloorY = p.y;
         this.maybeSpawnFirstRestFloorProps(p);
         break;
       }
@@ -2197,8 +2196,13 @@ export class PlayScene implements Scene {
     return this.restFloorHoldY !== null;
   }
 
+  /**
+   * Pause stair recycle only while the player is **holding** on a rest floor (camera + gameplay frozen there).
+   * Do **not** use `activeRestFloorY !== null` alone: recycle assigns upcoming rest tiles above the player and would
+   * wrongly pause forever (stairs stop recycling → they “vanish” deep into a run, e.g. near 8000m rest intervals).
+   */
   private shouldPausePlatformGeneration(): boolean {
-    return this.activeRestFloorY !== null;
+    return this.isRestFloorHolding();
   }
 
   private updateRestFloorHoldState(): void {
