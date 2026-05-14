@@ -30,6 +30,17 @@ export type LeaderboardEntry = {
 /** Rows shown on the leaderboard UI (`orderByChild('totalScore')` + limit). */
 export const LEADERBOARD_DISPLAY_LIMIT = 5;
 
+/** Higher max height first; ties use total score, then newer run. */
+export function compareLeaderboardByMaxHeight(a: LeaderboardEntry, b: LeaderboardEntry): number {
+  if (b.maxHeightMeters !== a.maxHeightMeters) {
+    return b.maxHeightMeters - a.maxHeightMeters;
+  }
+  if (b.totalScore !== a.totalScore) {
+    return b.totalScore - a.totalScore;
+  }
+  return b.createdAtMs - a.createdAtMs;
+}
+
 /**
  * Top-level RTDB path for scores (child of db root — does not replace `/`).
  * Full path: `/leaderboard/{pushId}`.
@@ -94,7 +105,7 @@ export type SaveLeaderboardRunPayload = {
 /**
  * Write one qualifying run under `/leaderboard/{autoId}`.
  *
- * **RTDB rules:** add `"leaderboard": { ".indexOn": ["totalScore"] }` for ordered queries.
+ * **RTDB rules:** index `totalScore` and `maxHeightMeters` on `leaderboard` for ordered queries.
  */
 export async function saveLeaderboardRun(payload: SaveLeaderboardRunPayload): Promise<void> {
   const cleanNick = payload.nickname.trim().slice(0, 20) || 'Player';
@@ -308,6 +319,32 @@ export async function fetchTopLeaderboard(limitCount = LEADERBOARD_DISPLAY_LIMIT
     const snapshot = await get(base);
     const rows = snapshotToEntries(snapshot);
     rows.sort(compareLeaderboardRank);
+    return rows.slice(0, limitCount);
+  }
+}
+
+/**
+ * Top N by peak height (`maxHeightMeters`). Requires RTDB rules:
+ * `"leaderboard": { ".indexOn": ["maxHeightMeters", "totalScore"] }` (or full data fallback).
+ */
+export async function fetchTopLeaderboardByMaxHeight(
+  limitCount = LEADERBOARD_DISPLAY_LIMIT,
+): Promise<LeaderboardEntry[]> {
+  const base = leaderboardRootRef();
+  try {
+    const q = query(base, orderByChild('maxHeightMeters'), limitToLast(limitCount));
+    const snapshot = await get(q);
+    const rows = snapshotToEntries(snapshot);
+    rows.sort(compareLeaderboardByMaxHeight);
+    return rows.slice(0, limitCount);
+  } catch (err) {
+    console.warn(
+      '[leaderboard] maxHeight query failed (rules / index); falling back to client sort',
+      err,
+    );
+    const snapshot = await get(base);
+    const rows = snapshotToEntries(snapshot);
+    rows.sort(compareLeaderboardByMaxHeight);
     return rows.slice(0, limitCount);
   }
 }

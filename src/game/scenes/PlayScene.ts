@@ -4,6 +4,7 @@ import {
   Circle,
   Container,
   FederatedPointerEvent,
+  FederatedWheelEvent,
   Graphics,
   Rectangle,
   Sprite,
@@ -42,8 +43,10 @@ import {
   type LeaderboardEntry,
 } from '../services/leaderboard';
 import { upsertPersonalBestIfBetter } from '../services/rtdbUsers';
-import { getGameUserSession, patchSessionPersonalBest } from '../services/userSession';
+import { getGameUserSession, patchSessionPersonalBest, clearGameUserSession } from '../services/userSession';
+import { clearSavedPlayerProfile } from '../services/playerProfile';
 import { auth } from '../../firebase.js';
+import { signOut } from 'firebase/auth';
 import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
 import { InputManager } from '../systems/InputManager';
 import { Physics } from '../systems/Physics';
@@ -527,7 +530,32 @@ const STATUS_PANEL_BODY_PAD_PX = 10;
 const STATUS_PANEL_BODY_TOP_PAD_PX = 8;
 const STATUS_PANEL_TOGGLE_GAP_PX = 6;
 const STATUS_PANEL_ROUND_PX = 12;
-const STATUS_PANEL_BODY_MIN_H_PX = 104;
+const STATUS_PANEL_LOGOUT_BTN_H_PX = 38;
+const STATUS_PANEL_STATS_LOGOUT_GAP_PX = 10;
+/** Stats column: NICK/NOW + TOTAL PTS + BEST/MAX (~16px lines + gaps). */
+const STATUS_PANEL_STATS_BLOCK_H_PX = 86;
+const STATUS_PANEL_LB_SECTION_GAP_PX = 6;
+const STATUS_PANEL_LB_HEADER_H_PX = 14;
+const STATUS_PANEL_LB_VIEW_TOP_GAP_PX = 4;
+const STATUS_PANEL_LB_VIEWPORT_H_PX = 80;
+const STATUS_PANEL_LB_BELOW_VIEW_GAP_PX = 8;
+const STATUS_PANEL_LB_ROW_LINE_PX = 16;
+
+function getStatusPanelExpandedBodyHeightPx(): number {
+  const pad = STATUS_PANEL_BODY_PAD_PX;
+  const top = STATUS_PANEL_BODY_TOP_PAD_PX;
+  const innerAboveLogout =
+    top +
+    STATUS_PANEL_STATS_BLOCK_H_PX +
+    STATUS_PANEL_LB_SECTION_GAP_PX +
+    STATUS_PANEL_LB_HEADER_H_PX +
+    STATUS_PANEL_LB_VIEW_TOP_GAP_PX +
+    STATUS_PANEL_LB_VIEWPORT_H_PX +
+    STATUS_PANEL_LB_BELOW_VIEW_GAP_PX +
+    STATUS_PANEL_STATS_LOGOUT_GAP_PX +
+    STATUS_PANEL_LOGOUT_BTN_H_PX;
+  return innerAboveLogout + pad;
+}
 const UI_BG_BLACK = 0x000000;
 const UI_PANEL_PURPLE = 0x2e004b;
 const UI_NEON_GREEN = 0x39ff14;
@@ -763,6 +791,33 @@ export class PlayScene implements Scene {
   private statusPanelToggleGfx = new Graphics();
   private statusPanelToggleHit = new Graphics();
   private statusPanelBodyText?: Text;
+  /** Live session PTS (gold), between NOW and BEST/MAX. */
+  private statusPanelPtsTotalText?: Text;
+  private statusPanelBodyTailText?: Text;
+  private statusPanelSepGfx = new Graphics();
+  private statusPanelLogoutBtn = new Graphics();
+  private statusPanelLogoutLabel?: Text;
+  private logoutConfirmOverlay = new Container();
+  private logoutConfirmBackdrop = new Graphics();
+  private logoutConfirmPanel = new Graphics();
+  private logoutConfirmTitle?: Text;
+  private logoutConfirmSubtitle?: Text;
+  private logoutConfirmCancelBtn = new Graphics();
+  private logoutConfirmCancelLabel?: Text;
+  private logoutConfirmOkBtn = new Graphics();
+  private logoutConfirmOkLabel?: Text;
+  /** In-sidebar global top 5 by max height — fetch only when panel opens. */
+  private statusPanelLbTitle?: Text;
+  private statusPanelLbViewport = new Container();
+  private statusPanelLbMask = new Graphics();
+  private statusPanelLbScroll = new Container();
+  private statusPanelLbRowBg: Graphics[] = [];
+  private statusPanelLbRows: Text[] = [];
+  private statusPanelLbLoading?: Text;
+  private statusPanelLbEmpty?: Text;
+  private sidebarLbScrollPx = 0;
+  private sidebarLbViewportW = 0;
+  private sidebarLbContentH = 0;
   /** Touch accessibility: first finger locks steering without needing to tap near the player (default on). */
   private touchGlobalAnywhereLock = true;
   /** Full-screen HUD flash when scroll speed tier increases (see `getScrollSpeedTier`). */
@@ -1361,6 +1416,7 @@ export class PlayScene implements Scene {
     this.layoutAttackButton();
     this.layoutHealthHud();
     this.layoutPauseOverlay();
+    this.layoutLogoutConfirmOverlay();
     this.redrawSpeedPulseOverlay();
     this.drawTopHeaderPanel();
     this.input?.onResize();
@@ -1376,6 +1432,7 @@ export class PlayScene implements Scene {
       this.layoutAttackButton();
       this.layoutHealthHud();
       this.layoutPauseOverlay();
+      this.layoutLogoutConfirmOverlay();
       this.redrawSpeedPulseOverlay();
       this.clampEntitiesToWorldBounds();
       this.syncPlatformSpritesFromPlatforms();
@@ -2099,6 +2156,7 @@ export class PlayScene implements Scene {
     this.paused = false;
     this.pauseOverlay.visible = false;
     this.headerPauseRoot.visible = true;
+    this.statusPanelRoot.visible = true;
     this.attackBtnRoot.visible = true;
     this.healthHudRoot.visible = true;
     this.shakeTime = 0;
@@ -4599,9 +4657,24 @@ export class PlayScene implements Scene {
     });
     this.statusPanelToggleHit.on('pointertap', (event) => {
       event.stopPropagation();
+      const wasExpanded = this.statusPanelExpanded;
       this.statusPanelExpanded = !this.statusPanelExpanded;
       this.layoutStatusPanel();
       this.refreshStatusPanelContent();
+      if (this.statusPanelExpanded && !wasExpanded) {
+        void this.refreshSidebarLeaderboardFromRtdb();
+      }
+    });
+
+    this.statusPanelSepGfx.eventMode = 'none';
+    this.statusPanelLogoutBtn.eventMode = 'static';
+    this.statusPanelLogoutBtn.cursor = 'pointer';
+    this.statusPanelLogoutBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.statusPanelLogoutBtn.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.showLogoutConfirm();
     });
 
     this.statusPanelBodyText = new Text({
@@ -4622,13 +4695,137 @@ export class PlayScene implements Scene {
     this.statusPanelBodyText.eventMode = 'none';
     this.statusPanelBodyText.visible = false;
 
+    this.statusPanelPtsTotalText = new Text({
+      text: 'TOTAL PTS  0',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 11,
+        fontWeight: '800',
+        fill: '#ffe066',
+        stroke: { color: '#5a4a00', width: 1.4 },
+        letterSpacing: 0.35,
+        dropShadow: {
+          color: '#ffd700',
+          alpha: 0.55,
+          blur: 5,
+          angle: Math.PI / 4,
+          distance: 0,
+        },
+      }),
+    });
+    this.statusPanelPtsTotalText.eventMode = 'none';
+    this.statusPanelPtsTotalText.visible = false;
+
+    this.statusPanelBodyTailText = new Text({
+      text: '',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 11,
+        fontWeight: '700',
+        fill: '#e8fff0',
+        stroke: { color: '#15301a', width: 1.2 },
+        letterSpacing: 0.2,
+        lineHeight: 16,
+        wordWrap: true,
+        wordWrapWidth: STATUS_PANEL_BODY_W_PX - STATUS_PANEL_BODY_PAD_PX * 2,
+        breakWords: true,
+      }),
+    });
+    this.statusPanelBodyTailText.eventMode = 'none';
+    this.statusPanelBodyTailText.visible = false;
+
+    this.statusPanelLogoutLabel = new Text({
+      text: 'LOG OUT',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 11,
+        fontWeight: '800',
+        fill: '#f0a0a0',
+        stroke: { color: '#4a1515', width: 1.4 },
+        letterSpacing: 0.5,
+      }),
+    });
+    this.statusPanelLogoutLabel.anchor.set(0.5);
+    this.statusPanelLogoutLabel.eventMode = 'none';
+    this.statusPanelLogoutLabel.visible = false;
+
+    this.statusPanelLbTitle = new Text({
+      text: 'GLOBAL · TOP PTS',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 10,
+        fontWeight: '800',
+        fill: '#9fd4a8',
+        stroke: { color: '#0f2814', width: 1 },
+        letterSpacing: 0.6,
+      }),
+    });
+    this.statusPanelLbTitle.eventMode = 'none';
+    this.statusPanelLbTitle.visible = false;
+
+    const lbMuted = new TextStyle({
+      fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+      fontSize: 10,
+      fontWeight: '600',
+      fill: '#6a8a7a',
+      stroke: { color: '#0a120a', width: 1 },
+    });
+    this.statusPanelLbLoading = new Text({
+      text: 'Loading…',
+      style: lbMuted,
+    });
+    this.statusPanelLbLoading.anchor.set(0.5);
+    this.statusPanelLbLoading.visible = false;
+    this.statusPanelLbEmpty = new Text({
+      text: 'No scores yet.',
+      style: lbMuted,
+    });
+    this.statusPanelLbEmpty.anchor.set(0.5, 0);
+    this.statusPanelLbEmpty.visible = false;
+
+    this.statusPanelLbViewport.eventMode = 'static';
+    this.statusPanelLbViewport.cursor = 'grab';
+    this.statusPanelLbViewport.sortableChildren = true;
+    this.statusPanelLbViewport.on('wheel', (e: FederatedWheelEvent) => {
+      e.stopPropagation();
+      if (!this.statusPanelExpanded) {
+        return;
+      }
+      const maxScroll = Math.max(0, this.sidebarLbContentH - STATUS_PANEL_LB_VIEWPORT_H_PX);
+      if (maxScroll <= 0) {
+        return;
+      }
+      const delta = e.deltaY;
+      this.sidebarLbScrollPx = Math.max(
+        0,
+        Math.min(maxScroll, this.sidebarLbScrollPx + delta * 0.45),
+      );
+      this.statusPanelLbScroll.position.y = -this.sidebarLbScrollPx;
+    });
+
+    this.statusPanelLbViewport.addChild(
+      this.statusPanelLbMask,
+      this.statusPanelLbScroll,
+      this.statusPanelLbLoading,
+      this.statusPanelLbEmpty,
+    );
+    this.statusPanelLbScroll.mask = this.statusPanelLbMask;
+
     this.statusPanelRoot.addChild(
       this.statusPanelBodyGfx,
+      this.statusPanelSepGfx,
       this.statusPanelBodyText,
+      this.statusPanelPtsTotalText,
+      this.statusPanelBodyTailText,
+      this.statusPanelLbTitle,
+      this.statusPanelLbViewport,
+      this.statusPanelLogoutBtn,
+      this.statusPanelLogoutLabel,
       this.statusPanelToggleGfx,
       this.statusPanelToggleHit,
     );
     this.uiLayer.addChild(this.statusPanelRoot);
+    this.setupLogoutConfirmOverlay();
     this.layoutStatusPanel();
   }
 
@@ -4639,7 +4836,7 @@ export class PlayScene implements Scene {
     const margin = STATUS_PANEL_RIGHT_MARGIN_PX;
     const gap = STATUS_PANEL_TOGGLE_GAP_PX;
     const bodyW = STATUS_PANEL_BODY_W_PX;
-    const bodyH = this.statusPanelExpanded ? STATUS_PANEL_BODY_MIN_H_PX : 0;
+    const bodyH = this.statusPanelExpanded ? getStatusPanelExpandedBodyHeightPx() : 0;
 
     if (this.statusPanelExpanded) {
       const totalW = bodyW + gap + tw;
@@ -4660,6 +4857,7 @@ export class PlayScene implements Scene {
     this.statusPanelToggleHit.hitArea = new Rectangle(0, 0, tw, th);
 
     this.redrawStatusPanelChrome(bodyH);
+    this.layoutStatusPanelInterior(bodyH);
   }
 
   private redrawStatusPanelChrome(bodyH: number): void {
@@ -4684,11 +4882,31 @@ export class PlayScene implements Scene {
       if (this.statusPanelBodyText) {
         this.statusPanelBodyText.visible = true;
       }
+      if (this.statusPanelPtsTotalText) {
+        this.statusPanelPtsTotalText.visible = true;
+      }
+      if (this.statusPanelBodyTailText) {
+        this.statusPanelBodyTailText.visible = true;
+      }
+      if (this.statusPanelLbTitle) {
+        this.statusPanelLbTitle.visible = true;
+      }
+      this.statusPanelLbViewport.visible = true;
     } else {
       this.statusPanelBodyGfx.visible = false;
       if (this.statusPanelBodyText) {
         this.statusPanelBodyText.visible = false;
       }
+      if (this.statusPanelPtsTotalText) {
+        this.statusPanelPtsTotalText.visible = false;
+      }
+      if (this.statusPanelBodyTailText) {
+        this.statusPanelBodyTailText.visible = false;
+      }
+      if (this.statusPanelLbTitle) {
+        this.statusPanelLbTitle.visible = false;
+      }
+      this.statusPanelLbViewport.visible = false;
     }
 
     this.statusPanelToggleGfx.clear();
@@ -4713,8 +4931,10 @@ export class PlayScene implements Scene {
   }
 
   private refreshStatusPanelContent(): void {
-    const text = this.statusPanelBodyText;
-    if (!text || !this.statusPanelExpanded) {
+    const top = this.statusPanelBodyText;
+    const pts = this.statusPanelPtsTotalText;
+    const tail = this.statusPanelBodyTailText;
+    if (!top || !pts || !tail || !this.statusPanelExpanded) {
       return;
     }
     const session = getGameUserSession();
@@ -4727,13 +4947,390 @@ export class PlayScene implements Scene {
     const best = Math.max(pbH, this.peakClimbMetersThisRun);
     const comboPb = session?.personalBest.bestCombo ?? 0;
     const comboMax = Math.max(comboPb, this.peakComboThisRun, this.comboCount);
+    const livePts = Math.max(0, Math.floor(this.score));
 
-    text.text = [
-      `NICK  ${nick}`,
-      `NOW   ${cur.toLocaleString()} m`,
-      `BEST  ${best.toLocaleString()} m`,
-      `MAX   ${comboMax.toLocaleString()} combo`,
-    ].join('\n');
+    top.text = [`NICK  ${nick}`, `NOW   ${cur.toLocaleString()} m`].join('\n');
+    pts.text = `TOTAL PTS  ${livePts.toLocaleString()}`;
+    tail.text = [`BEST  ${best.toLocaleString()} m`, `MAX   ${comboMax.toLocaleString()} combo`].join('\n');
+
+    this.layoutStatusPanelStatTextPositions();
+  }
+
+  private layoutStatusPanelStatTextPositions(): void {
+    if (!this.statusPanelExpanded) {
+      return;
+    }
+    const pad = STATUS_PANEL_BODY_PAD_PX;
+    const t = STATUS_PANEL_BODY_TOP_PAD_PX;
+    const lh = 16;
+    const g1 = 2;
+    const g2 = 4;
+    this.statusPanelBodyText?.position.set(pad, t);
+    this.statusPanelPtsTotalText?.position.set(pad, t + lh * 2 + g1);
+    this.statusPanelBodyTailText?.position.set(pad, t + lh * 2 + g1 + lh + g2);
+  }
+
+  private createSidebarLbRowStyle(highlight: boolean): TextStyle {
+    return new TextStyle({
+      fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+      fontSize: 9,
+      fontWeight: highlight ? '800' : '700',
+      fill: highlight ? '#FFD700' : '#b8d4c4',
+      stroke: { color: highlight ? '#4a3200' : '#152218', width: highlight ? 1.15 : 1 },
+      letterSpacing: 0.2,
+    });
+  }
+
+  private clearSidebarLeaderboardVisuals(): void {
+    const removed = this.statusPanelLbScroll.removeChildren();
+    for (const c of removed) {
+      c.destroy({ children: true });
+    }
+    this.statusPanelLbRowBg = [];
+    this.statusPanelLbRows = [];
+    this.sidebarLbContentH = 0;
+    this.sidebarLbScrollPx = 0;
+    this.statusPanelLbScroll.position.set(0, 0);
+  }
+
+  private rowIsCurrentPlayer(e: LeaderboardEntry): boolean {
+    const uid = auth.currentUser?.uid;
+    if (uid && e.playerUid && e.playerUid === uid) {
+      return true;
+    }
+    const sess = getGameUserSession();
+    if (!e.playerUid && sess?.nickname) {
+      return (
+        e.nickname.trim().toLowerCase() === sess.nickname.trim().toLowerCase()
+      );
+    }
+    return false;
+  }
+
+  private renderSidebarLeaderboardRows(entries: LeaderboardEntry[]): void {
+    this.clearSidebarLeaderboardVisuals();
+    const vw = Math.max(40, this.sidebarLbViewportW);
+    const lineH = STATUS_PANEL_LB_ROW_LINE_PX;
+
+    if (entries.length === 0) {
+      if (this.statusPanelLbEmpty) {
+        this.statusPanelLbEmpty.visible = true;
+        this.statusPanelLbEmpty.text = 'No scores yet.';
+      }
+      return;
+    }
+
+    if (this.statusPanelLbEmpty) {
+      this.statusPanelLbEmpty.visible = false;
+    }
+
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const rank = i + 1;
+      const nick = (e.nickname.trim() || 'Player').slice(0, 9);
+      const pts = Math.max(0, Math.floor(e.totalScore));
+      const h = Math.max(0, Math.floor(e.maxHeightMeters));
+      const line = `${rank}  ${nick}  ${pts.toLocaleString()}p  ${h}m`;
+      const hi = this.rowIsCurrentPlayer(e);
+
+      const bg = new Graphics();
+      bg.roundRect(0, i * lineH, vw, lineH - 1, 4).fill({
+        color: hi ? UI_NEON_GREEN : UI_BG_BLACK,
+        alpha: hi ? 0.2 : 0.14,
+      });
+      if (hi) {
+        bg.roundRect(0, i * lineH, vw, lineH - 1, 4).stroke({
+          color: UI_GOLD,
+          width: 1,
+          alpha: 0.55,
+        });
+      }
+      const t = new Text({
+        text: line,
+        style: this.createSidebarLbRowStyle(hi),
+      });
+      t.position.set(5, i * lineH + 2);
+
+      this.statusPanelLbScroll.addChild(bg, t);
+      this.statusPanelLbRowBg.push(bg);
+      this.statusPanelLbRows.push(t);
+    }
+
+    this.sidebarLbContentH = entries.length * lineH;
+    const maxScroll = Math.max(0, this.sidebarLbContentH - STATUS_PANEL_LB_VIEWPORT_H_PX);
+    this.sidebarLbScrollPx = Math.min(this.sidebarLbScrollPx, maxScroll);
+    this.statusPanelLbScroll.position.y = -this.sidebarLbScrollPx;
+  }
+
+  private async refreshSidebarLeaderboardFromRtdb(): Promise<void> {
+    if (!this.statusPanelExpanded) {
+      return;
+    }
+    if (this.statusPanelLbLoading) {
+      this.statusPanelLbLoading.visible = true;
+    }
+    if (this.statusPanelLbEmpty) {
+      this.statusPanelLbEmpty.visible = false;
+    }
+    try {
+      const entries = await fetchTopLeaderboard(LEADERBOARD_DISPLAY_LIMIT);
+      this.renderSidebarLeaderboardRows(entries);
+    } catch {
+      this.clearSidebarLeaderboardVisuals();
+      if (this.statusPanelLbEmpty) {
+        this.statusPanelLbEmpty.text = 'Could not load.';
+        this.statusPanelLbEmpty.visible = true;
+      }
+    } finally {
+      if (this.statusPanelLbLoading) {
+        this.statusPanelLbLoading.visible = false;
+      }
+    }
+  }
+
+  private layoutStatusPanelInterior(bodyH: number): void {
+    const bodyW = STATUS_PANEL_BODY_W_PX;
+    const pad = STATUS_PANEL_BODY_PAD_PX;
+    const btnW = bodyW - pad * 2;
+    const btnH = STATUS_PANEL_LOGOUT_BTN_H_PX;
+    const expanded = this.statusPanelExpanded && bodyH > 0;
+    if (!expanded) {
+      this.statusPanelSepGfx.clear();
+      this.statusPanelSepGfx.visible = false;
+      this.statusPanelLogoutBtn.clear();
+      this.statusPanelLogoutBtn.visible = false;
+      this.statusPanelLogoutBtn.hitArea = null;
+      if (this.statusPanelLogoutLabel) {
+        this.statusPanelLogoutLabel.visible = false;
+      }
+      if (this.statusPanelBodyText) {
+        this.statusPanelBodyText.visible = false;
+      }
+      if (this.statusPanelPtsTotalText) {
+        this.statusPanelPtsTotalText.visible = false;
+      }
+      if (this.statusPanelBodyTailText) {
+        this.statusPanelBodyTailText.visible = false;
+      }
+      if (this.statusPanelLbTitle) {
+        this.statusPanelLbTitle.visible = false;
+      }
+      this.statusPanelLbViewport.visible = false;
+      if (this.statusPanelLbLoading) {
+        this.statusPanelLbLoading.visible = false;
+      }
+      if (this.statusPanelLbEmpty) {
+        this.statusPanelLbEmpty.visible = false;
+      }
+      return;
+    }
+
+    const top = STATUS_PANEL_BODY_TOP_PAD_PX;
+    const yLbTitle =
+      top + STATUS_PANEL_STATS_BLOCK_H_PX + STATUS_PANEL_LB_SECTION_GAP_PX;
+    const yView =
+      yLbTitle +
+      STATUS_PANEL_LB_HEADER_H_PX +
+      STATUS_PANEL_LB_VIEW_TOP_GAP_PX;
+
+    this.statusPanelLbTitle?.position.set(pad, yLbTitle);
+    if (this.statusPanelLbTitle) {
+      this.statusPanelLbTitle.visible = true;
+    }
+
+    this.sidebarLbViewportW = bodyW - pad * 2;
+    const vw = this.sidebarLbViewportW;
+    const vh = STATUS_PANEL_LB_VIEWPORT_H_PX;
+    this.statusPanelLbViewport.position.set(pad, yView);
+    this.statusPanelLbViewport.visible = true;
+
+    this.statusPanelLbMask.clear();
+    this.statusPanelLbMask.roundRect(0, 0, vw, vh, 6).fill({ color: 0xffffff, alpha: 1 });
+    this.statusPanelLbLoading?.position.set(vw * 0.5, vh * 0.5);
+    this.statusPanelLbEmpty?.position.set(vw * 0.5, vh * 0.45);
+
+    this.statusPanelSepGfx.visible = true;
+    this.statusPanelLogoutBtn.visible = true;
+    if (this.statusPanelLogoutLabel) {
+      this.statusPanelLogoutLabel.visible = true;
+    }
+
+    const logoutY = bodyH - pad - btnH;
+    const sepY = logoutY - STATUS_PANEL_STATS_LOGOUT_GAP_PX;
+
+    this.statusPanelSepGfx.clear();
+    this.statusPanelSepGfx.moveTo(pad, sepY).lineTo(bodyW - pad, sepY).stroke({
+      color: UI_NEON_GREEN,
+      width: 1,
+      alpha: 0.42,
+    });
+
+    this.drawOverlayButton(this.statusPanelLogoutBtn, pad, logoutY, btnW, btnH);
+    this.statusPanelLogoutBtn.hitArea = new Rectangle(pad, logoutY, btnW, btnH);
+    this.statusPanelLogoutLabel?.position.set(pad + btnW * 0.5, logoutY + btnH * 0.5);
+
+    this.layoutStatusPanelStatTextPositions();
+  }
+
+  private setupLogoutConfirmOverlay(): void {
+    this.logoutConfirmOverlay.zIndex = 1270;
+    this.logoutConfirmOverlay.visible = false;
+    this.logoutConfirmOverlay.eventMode = 'passive';
+    this.logoutConfirmOverlay.interactiveChildren = true;
+
+    this.logoutConfirmBackdrop.eventMode = 'static';
+    this.logoutConfirmBackdrop.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.logoutConfirmBackdrop.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.hideLogoutConfirm();
+    });
+
+    this.logoutConfirmPanel.eventMode = 'none';
+
+    this.logoutConfirmTitle = new Text({
+      text: 'Log out?',
+      style: this.createNeonGoldTextStyle(22, 3),
+    });
+    this.logoutConfirmTitle.anchor.set(0.5);
+    this.logoutConfirmTitle.eventMode = 'none';
+
+    this.logoutConfirmSubtitle = new Text({
+      text: 'Are you sure?\nYou will return to the login screen.',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 12,
+        fontWeight: '600',
+        fill: '#9ab8a8',
+        stroke: { color: '#0d180d', width: 1 },
+        align: 'center',
+        lineHeight: 17,
+      }),
+    });
+    this.logoutConfirmSubtitle.anchor.set(0.5);
+    this.logoutConfirmSubtitle.eventMode = 'none';
+
+    this.logoutConfirmCancelBtn.eventMode = 'static';
+    this.logoutConfirmCancelBtn.cursor = 'pointer';
+    this.logoutConfirmCancelBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.logoutConfirmCancelBtn.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.hideLogoutConfirm();
+    });
+
+    this.logoutConfirmCancelLabel = new Text({
+      text: 'CANCEL',
+      style: this.createNeonGoldTextStyle(14, 2.4),
+    });
+    this.logoutConfirmCancelLabel.anchor.set(0.5);
+    this.logoutConfirmCancelLabel.eventMode = 'none';
+
+    this.logoutConfirmOkBtn.eventMode = 'static';
+    this.logoutConfirmOkBtn.cursor = 'pointer';
+    this.logoutConfirmOkBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.logoutConfirmOkBtn.on('pointertap', (event) => {
+      event.stopPropagation();
+      void this.performLogoutAndReload();
+    });
+
+    this.logoutConfirmOkLabel = new Text({
+      text: 'LOG OUT',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 14,
+        fontWeight: '800',
+        fill: '#f0a0a0',
+        stroke: { color: '#4a1515', width: 1.5 },
+        letterSpacing: 0.6,
+      }),
+    });
+    this.logoutConfirmOkLabel.anchor.set(0.5);
+    this.logoutConfirmOkLabel.eventMode = 'none';
+
+    this.logoutConfirmOverlay.addChild(
+      this.logoutConfirmBackdrop,
+      this.logoutConfirmPanel,
+      this.logoutConfirmTitle,
+      this.logoutConfirmSubtitle,
+      this.logoutConfirmCancelBtn,
+      this.logoutConfirmCancelLabel,
+      this.logoutConfirmOkBtn,
+      this.logoutConfirmOkLabel,
+    );
+    this.uiLayer.addChild(this.logoutConfirmOverlay);
+    this.layoutLogoutConfirmOverlay();
+  }
+
+  private layoutLogoutConfirmOverlay(): void {
+    const overlayW = this.width;
+    const overlayH = this.height;
+    this.logoutConfirmBackdrop.clear();
+    this.logoutConfirmBackdrop
+      .rect(0, 0, overlayW, overlayH)
+      .fill({ color: 0x000000, alpha: 0.6 });
+
+    const panelW = Math.min(360, overlayW - 36);
+    const panelH = Math.min(228, overlayH - 48);
+    const px = (overlayW - panelW) * 0.5;
+    const py = (overlayH - panelH) * 0.5;
+
+    this.logoutConfirmPanel.clear();
+    this.logoutConfirmPanel.roundRect(px, py, panelW, panelH, 18).fill({
+      color: UI_PANEL_PURPLE,
+      alpha: 0.9,
+    });
+    this.logoutConfirmPanel.roundRect(px, py, panelW, panelH, 18).stroke({
+      color: UI_NEON_GREEN,
+      width: 2,
+      alpha: 0.82,
+    });
+
+    this.logoutConfirmTitle?.position.set(overlayW * 0.5, py + 48);
+    this.logoutConfirmSubtitle?.position.set(overlayW * 0.5, py + 102);
+
+    const btnW = Math.min(132, (panelW - 42) * 0.47);
+    const btnH = 48;
+    const gap = 12;
+    const pairW = btnW * 2 + gap;
+    const startX = overlayW * 0.5 - pairW * 0.5;
+    const btnY = py + panelH - btnH - 28;
+
+    this.drawOverlayButton(this.logoutConfirmCancelBtn, startX, btnY, btnW, btnH);
+    this.logoutConfirmCancelBtn.hitArea = new Rectangle(startX, btnY, btnW, btnH);
+    this.logoutConfirmCancelLabel?.position.set(startX + btnW * 0.5, btnY + btnH * 0.5);
+
+    const okX = startX + btnW + gap;
+    this.drawOverlayButton(this.logoutConfirmOkBtn, okX, btnY, btnW, btnH);
+    this.logoutConfirmOkBtn.hitArea = new Rectangle(okX, btnY, btnW, btnH);
+    this.logoutConfirmOkLabel?.position.set(okX + btnW * 0.5, btnY + btnH * 0.5);
+  }
+
+  private showLogoutConfirm(): void {
+    this.logoutConfirmOverlay.visible = true;
+    this.layoutLogoutConfirmOverlay();
+  }
+
+  private hideLogoutConfirm(): void {
+    this.logoutConfirmOverlay.visible = false;
+  }
+
+  private async performLogoutAndReload(): Promise<void> {
+    this.hideLogoutConfirm();
+    try {
+      await signOut(auth);
+    } catch {
+      /* still clear local */
+    }
+    clearGameUserSession();
+    clearSavedPlayerProfile();
+    if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
   }
 
   /**
@@ -5253,6 +5850,7 @@ export class PlayScene implements Scene {
     this.paused = false;
     this.pauseOverlay.visible = false;
     this.headerPauseRoot.visible = false;
+    this.statusPanelRoot.visible = false;
     this.attackBtnRoot.visible = false;
     this.healthHudRoot.visible = false;
     this.finalMetersAtDeath = Math.max(
@@ -5290,8 +5888,8 @@ export class PlayScene implements Scene {
         const cPB = Math.max(0, Math.floor(this.peakComboThisRun));
 
         try {
-          await upsertPersonalBestIfBetter(user, hPB, cPB);
-          patchSessionPersonalBest(hPB, cPB);
+          await upsertPersonalBestIfBetter(user, hPB, cPB, Math.floor(totalForLeaderboard));
+          patchSessionPersonalBest(hPB, cPB, Math.floor(totalForLeaderboard));
           this.refreshStatusPanelContent();
         } catch {
           /* offline / rules — still try leaderboard with last known ledger */

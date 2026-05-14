@@ -3,6 +3,8 @@ import type { RemoteUserLedger } from './rtdbUsers';
 export type PersonalBestSnap = {
   maxHeightMeters: number;
   bestCombo: number;
+  /** Best session peak PTS (mirrors `/stats.totalPoints`). */
+  totalPoints: number;
   updatedAt?: number;
 };
 
@@ -35,6 +37,7 @@ export function mergeUserLedgerIntoSession(ledger: RemoteUserLedger): GameUserSe
     personalBest: {
       maxHeightMeters: Math.max(0, Math.floor(st.maxHeight ?? 0)),
       bestCombo: Math.max(0, Math.floor(st.bestCombo ?? 0)),
+      totalPoints: Math.max(0, Math.floor(st.totalPoints ?? 0)),
       updatedAt: st.updatedAt,
     },
   };
@@ -42,18 +45,27 @@ export function mergeUserLedgerIntoSession(ledger: RemoteUserLedger): GameUserSe
   return session;
 }
 
-export function patchSessionPersonalBest(heightMeters: number, bestCombo: number): void {
+export function patchSessionPersonalBest(
+  heightMeters: number,
+  bestCombo: number,
+  peakSessionPts?: number,
+): void {
   const s = getGameUserSession();
   if (!s) {
     return;
   }
   const h = Math.max(0, Math.floor(heightMeters));
   const c = Math.max(0, Math.floor(bestCombo));
+  let nextPts = s.personalBest.totalPoints;
+  if (peakSessionPts !== undefined) {
+    nextPts = Math.max(nextPts, Math.max(0, Math.floor(peakSessionPts)));
+  }
   setGameUserSession({
     ...s,
     personalBest: {
       maxHeightMeters: Math.max(s.personalBest.maxHeightMeters, h),
       bestCombo: Math.max(s.personalBest.bestCombo, c),
+      totalPoints: nextPts,
       updatedAt: Date.now(),
     },
   });

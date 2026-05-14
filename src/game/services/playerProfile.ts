@@ -33,3 +33,16 @@ export function saveSelectedCharacterId(id: string): void {
   const clean = id.trim().slice(0, 32) || 'chromatic';
   window.localStorage.setItem(CHARACTER_ID_KEY, clean);
 }
+
+/** Clears cached nickname / character from localStorage (e.g. after sign-out). */
+export function clearSavedPlayerProfile(): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.removeItem(NICKNAME_KEY);
+    window.localStorage.removeItem(CHARACTER_ID_KEY);
+  } catch {
+    /* private mode / quota */
+  }
+}

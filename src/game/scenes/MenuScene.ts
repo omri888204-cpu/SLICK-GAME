@@ -2,7 +2,7 @@ import { signOut } from 'firebase/auth';
 import { Application, Assets, Container, Graphics, Text, type Ticker } from 'pixi.js';
 import slickLogoUrl from '../../assets/ui/slick-logo.png';
 import { auth } from '../../firebase.js';
-import { getSavedNickname } from '../services/playerProfile';
+import { clearSavedPlayerProfile, getSavedNickname } from '../services/playerProfile';
 import { getGameUserSession, clearGameUserSession } from '../services/userSession';
 import { SlickLogoImage } from '../ui/SlickLogoImage';
 import { loadLogoTextureTransparent } from '../utils/logoTexture';
@@ -96,6 +96,7 @@ export class MenuScene implements Scene {
     const nickname = (session?.nickname ?? getSavedNickname()) || 'Player';
     const bestH = session?.personalBest.maxHeightMeters ?? 0;
     const bestC = session?.personalBest.bestCombo ?? 0;
+    const bestPts = session?.personalBest.totalPoints ?? 0;
 
     const overlay = document.createElement('div');
     overlay.style.position = 'absolute';
@@ -128,7 +129,7 @@ export class MenuScene implements Scene {
     welcome.style.textShadow = '0 0 8px rgba(255,215,0,0.75)';
 
     const stats = document.createElement('div');
-    stats.textContent = `Personal best · ${bestH.toLocaleString()} m height · ${bestC.toLocaleString()} combo`;
+    stats.textContent = `Personal best · ${bestH.toLocaleString()} m · ${bestPts.toLocaleString()} PTS · ${bestC.toLocaleString()} combo`;
     stats.style.color = '#9ab8a8';
     stats.style.fontFamily = 'system-ui, Segoe UI, sans-serif';
     stats.style.fontSize = '15px';
@@ -172,6 +173,7 @@ export class MenuScene implements Scene {
           /* still clear local session */
         }
         clearGameUserSession();
+        clearSavedPlayerProfile();
         location.reload();
       })();
     });

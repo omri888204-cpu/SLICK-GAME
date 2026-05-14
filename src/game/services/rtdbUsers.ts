@@ -2,13 +2,13 @@
  * Canonical user ledger under `/users/{uid}` (Realtime Database).
  *
  * - `/users/{uid}/profile` → nickname, email, onboarding fields
- * - `/users/{uid}/stats` → maxHeight (m HUD), bestCombo (integer)
+ * - `/users/{uid}/stats` → maxHeight (m HUD), bestCombo, totalPoints (best session PTS)
  *
  * **RTDB rules (example)**:
  * ```json
  * {
  *   "rules": {
- *     "leaderboard": { ".read": true, ".write": false, ".indexOn": ["totalScore"] },
+ *     "leaderboard": { ".read": true, ".write": false, ".indexOn": ["totalScore", "maxHeightMeters"] },
  *     "users": {
  *       "$uid": {
  *         ".read": "$uid === auth.uid",
@@ -38,6 +38,8 @@ export type UserStatsNode = {
   /** Peak climb HUD meters (`/stats.maxHeight`). */
   maxHeight: number;
   bestCombo: number;
+  /** Best single-run peak PTS (same units as HUD score: height×10 + combo×5). */
+  totalPoints: number;
   updatedAt?: number;
 };
 
@@ -69,6 +71,7 @@ export async function fetchUserLedger(uid: string): Promise<RemoteUserLedger | n
     : ({
         maxHeight: 0,
         bestCombo: 0,
+        totalPoints: 0,
         updatedAt: Date.now(),
       } satisfies UserStatsNode);
   return { profile, stats };
@@ -119,6 +122,7 @@ export async function registerNewUser(
   await set(userStatsRef(uid), {
     maxHeight: 0,
     bestCombo: 0,
+    totalPoints: 0,
     updatedAt: now,
   } satisfies UserStatsNode);
 }
@@ -138,18 +142,28 @@ export async function upsertPersonalBestIfBetter(
   user: User,
   heightMeters: number,
   bestCombo: number,
+  sessionPeakPts?: number,
 ): Promise<void> {
   const statsRefLocal = userStatsRef(user.uid);
   const snap = await get(statsRefLocal);
   const prev = snap.exists()
     ? (snap.val() as UserStatsNode)
-    : ({ maxHeight: 0, bestCombo: 0 } satisfies UserStatsNode);
+    : ({
+        maxHeight: 0,
+        bestCombo: 0,
+        totalPoints: 0,
+      } satisfies UserStatsNode);
 
   const h = Math.max(0, Math.floor(heightMeters));
   const c = Math.max(0, Math.floor(bestCombo));
+  const p =
+    sessionPeakPts === undefined
+      ? undefined
+      : Math.max(0, Math.floor(sessionPeakPts));
 
   let nextHeight = prev.maxHeight ?? 0;
   let nextCombo = prev.bestCombo ?? 0;
+  let nextPts = Math.max(0, Math.floor(prev.totalPoints ?? 0));
   let changed = false;
 
   if (h > nextHeight) {
@@ -160,13 +174,19 @@ export async function upsertPersonalBestIfBetter(
     nextCombo = c;
     changed = true;
   }
+  if (p !== undefined && p > nextPts) {
+    nextPts = p;
+    changed = true;
+  }
   if (!changed) {
     return;
   }
 
-  await update(statsRefLocal, {
+  const payload: Partial<UserStatsNode> & { updatedAt: number } = {
     maxHeight: nextHeight,
     bestCombo: nextCombo,
+    totalPoints: nextPts,
     updatedAt: Date.now(),
-  });
+  };
+  await update(statsRefLocal, payload);
 }
