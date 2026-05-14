@@ -257,6 +257,8 @@ export const COLLECTIBLES = {
 
 /** Hyper scoreboard: punch, bloom, shake. */
 export const SCORE_UI = {
+  /** When false, world/camera jitter from impacts and score spikes is fully disabled. */
+  screenShakeEnabled: false,
   shakeDurationSec: 0.22,
   shakeMaxPx: 4.8,
   bigPointsThreshold: 14,

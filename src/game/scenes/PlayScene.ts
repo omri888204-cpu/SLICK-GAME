@@ -2779,6 +2779,16 @@ export class PlayScene implements Scene {
   }
 
   private updateScreenShake(dt: number): void {
+    if (!SCORE_UI.screenShakeEnabled) {
+      if (this.shakeTime > 0) {
+        this.shakeTime = Math.max(0, this.shakeTime - dt);
+      }
+      this.shakeOffsetX = 0;
+      this.shakeOffsetY = 0;
+      this.applyCameraTransform();
+      return;
+    }
+
     let ox = 0;
     let oy = 0;
     if (this.shakeTime > 0) {
