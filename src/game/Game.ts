@@ -3,7 +3,11 @@ import { RENDER } from '../config/game.config';
 import { BootScene } from './scenes/BootScene';
 import { MenuScene } from './scenes/MenuScene';
 import { PlayScene } from './scenes/PlayScene';
-import { clearLeaderboardDatabase, tryOneTimeScheduledLeaderboardPurge } from './services/leaderboard';
+import {
+  clearLeaderboardDatabase,
+  LEADERBOARD_PURGE_CONFIRM_LOG,
+  tryOneTimeScheduledLeaderboardPurge,
+} from './services/leaderboard';
 import type { Scene } from './scenes/Scene';
 
 export class Game {
@@ -53,7 +57,7 @@ export class Game {
       if (import.meta.env.VITE_CLEAR_LEADERBOARD_ON_BOOT === 'true') {
         await clearLeaderboardDatabase();
         if (!didScheduledPurge) {
-          console.info('Leaderboard database has been fully cleared');
+          console.info(LEADERBOARD_PURGE_CONFIRM_LOG);
         }
       }
     } catch (err) {
@@ -65,7 +69,11 @@ export class Game {
         window as unknown as {
           skyClimberClearLeaderboard?: () => Promise<number>;
         }
-      ).skyClimberClearLeaderboard = () => clearLeaderboardDatabase();
+      ).skyClimberClearLeaderboard = async () => {
+        const deleted = await clearLeaderboardDatabase();
+        console.info(LEADERBOARD_PURGE_CONFIRM_LOG);
+        return deleted;
+      };
     }
 
     await this.changeScene(

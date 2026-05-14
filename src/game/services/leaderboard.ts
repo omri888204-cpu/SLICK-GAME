@@ -39,6 +39,11 @@ export const LEADERBOARD_COLLECTION_ALT = 'global_top_runs';
 /** Legacy path name. */
 export const LEADERBOARD_SCORES_COLLECTION_LEGACY = 'scores';
 
+/** Console line after a successful full RTDB wipe (exact string for runbooks / filtering). */
+export const LEADERBOARD_PURGE_CONFIRM_LOG = 'Leaderboard database has been fully cleared';
+
+const STORAGE_LEADERBOARD_PURGE_DONE_PREFIX = 'sky_climber_leaderboard_purge_done:';
+
 /** Child paths removed entirely by {@link clearLeaderboardDatabase} (not the database root). */
 export const LEADERBOARD_CLEARABLE_COLLECTIONS = [
   LEADERBOARD_COLLECTION,
@@ -117,10 +122,18 @@ export async function clearLeaderboardCollection(): Promise<number> {
 }
 
 /**
- * When `import.meta.env.VITE_LEADERBOARD_ONE_TIME_PURGE` is non-empty, wipes leaderboard buckets **on every startup**
- * until you remove the env string and rebuild — briefly use for a controlled rollout or local QA only.
- *
- * Prints: Leaderboard database has been fully cleared
+ * Explicit one-time data wipe: Firebase Realtime Database **`remove()`** on each path in
+ * {@link LEADERBOARD_CLEARABLE_COLLECTIONS} — `leaderboard`, `global_top_runs`, and legacy `scores` (never `/` root).
+ */
+export async function purgeLeaderboardDataOnce(): Promise<number> {
+  return clearLeaderboardDatabase();
+}
+
+/**
+ * Called from {@link Game.start} before scenes load. If `VITE_LEADERBOARD_ONE_TIME_PURGE` is non-empty, runs
+ * {@link purgeLeaderboardDataOnce} **once per browser** for that sentinel (see `localStorage` key below), logs
+ * {@link LEADERBOARD_PURGE_CONFIRM_LOG}, then skips on later loads — **remove the env var and rebuild** so the boot
+ * purge path no longer runs (“function removed”). Bump the sentinel string if you need another wipe wave.
  */
 export async function tryOneTimeScheduledLeaderboardPurge(): Promise<boolean> {
   const sentinel =
@@ -131,8 +144,17 @@ export async function tryOneTimeScheduledLeaderboardPurge(): Promise<boolean> {
     return false;
   }
   try {
+    if (typeof globalThis.localStorage === 'undefined') {
+      console.warn('[leaderboard] one-time purge skipped — no localStorage');
+      return false;
+    }
+    const key = STORAGE_LEADERBOARD_PURGE_DONE_PREFIX + sentinel;
+    if (globalThis.localStorage.getItem(key) === '1') {
+      return false;
+    }
     await clearLeaderboardDatabase();
-    console.info('Leaderboard database has been fully cleared');
+    globalThis.localStorage.setItem(key, '1');
+    console.info(LEADERBOARD_PURGE_CONFIRM_LOG);
     return true;
   } catch (err) {
     console.error('[leaderboard] scheduled one-time purge failed', err);
