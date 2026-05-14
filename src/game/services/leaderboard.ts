@@ -22,14 +22,14 @@ export type LeaderboardEntry = {
   createdAtMs: number;
 };
 
-/** @deprecated Old collection; cleared when {@link clearLeaderboardCollection} runs. */
-export const LEADERBOARD_COLLECTION_LEGACY = 'leaderboard';
-
 /**
- * Global top runs (v2). Add matching Firestore rules mirroring the legacy `leaderboard` collection.
+ * Primary Firestore collection (must match Firebase Rules + any composite indexes).
  * Fields: `nickname`, `totalScore`, `maxHeightMeters`, `bestCombo`, `createdAt`.
  */
-export const LEADERBOARD_COLLECTION = 'global_top_runs';
+export const LEADERBOARD_COLLECTION = 'leaderboard';
+
+/** Older experiments / migrations; wiped by {@link clearLeaderboardCollection}. */
+export const LEADERBOARD_COLLECTION_ALT = 'global_top_runs';
 
 export type SaveLeaderboardRunPayload = {
   nickname: string;
@@ -91,14 +91,13 @@ async function deleteAllDocsInCollection(collectionId: string): Promise<number> 
 }
 
 /**
- * Deletes every document in the legacy `leaderboard` collection and {@link LEADERBOARD_COLLECTION}
- * (batched, 500/writeBatch).
+ * Deletes every document in {@link LEADERBOARD_COLLECTION} and {@link LEADERBOARD_COLLECTION_ALT}.
  */
 export async function clearLeaderboardCollection(): Promise<number> {
-  const legacy = await deleteAllDocsInCollection(LEADERBOARD_COLLECTION_LEGACY);
-  const current = await deleteAllDocsInCollection(LEADERBOARD_COLLECTION);
-  const total = legacy + current;
-  console.info('[leaderboard] clearLeaderboardCollection deleted', { legacy, current, total });
+  const main = await deleteAllDocsInCollection(LEADERBOARD_COLLECTION);
+  const alt = await deleteAllDocsInCollection(LEADERBOARD_COLLECTION_ALT);
+  const total = main + alt;
+  console.info('[leaderboard] clearLeaderboardCollection deleted', { main, alt, total });
   return total;
 }
 
@@ -160,14 +159,37 @@ export function compareLeaderboardRank(a: LeaderboardEntry, b: LeaderboardEntry)
   return b.createdAtMs - a.createdAtMs;
 }
 
+/**
+ * Ensures the row the player just submitted appears in the HUD even if Firestore read is delayed or empty.
+ */
+export function mergeSessionIntoTop(
+  remote: LeaderboardEntry[],
+  session: LeaderboardEntry,
+  limitCount: number,
+): LeaderboardEntry[] {
+  return [...remote, session].sort(compareLeaderboardRank).slice(0, limitCount);
+}
+
 export async function fetchTopLeaderboard(limitCount = 5): Promise<LeaderboardEntry[]> {
-  const q = query(
-    collection(db, LEADERBOARD_COLLECTION),
-    orderBy('totalScore', 'desc'),
-    limit(limitCount),
-  );
-  const snapshot = await getDocs(q);
-  const rows = snapshot.docs.map((docSnap) => parseLeaderboardDoc(docSnap.data() as Record<string, unknown>));
-  rows.sort(compareLeaderboardRank);
-  return rows.slice(0, limitCount);
+  const col = collection(db, LEADERBOARD_COLLECTION);
+  try {
+    const q = query(col, orderBy('totalScore', 'desc'), limit(limitCount));
+    const snapshot = await getDocs(q);
+    const rows = snapshot.docs.map((docSnap) =>
+      parseLeaderboardDoc(docSnap.data() as Record<string, unknown>),
+    );
+    rows.sort(compareLeaderboardRank);
+    return rows.slice(0, limitCount);
+  } catch (err) {
+    console.warn(
+      '[leaderboard] ordered query failed (missing index or rules); falling back to client sort',
+      err,
+    );
+    const snapshot = await getDocs(query(col, limit(200)));
+    const rows = snapshot.docs.map((docSnap) =>
+      parseLeaderboardDoc(docSnap.data() as Record<string, unknown>),
+    );
+    rows.sort(compareLeaderboardRank);
+    return rows.slice(0, limitCount);
+  }
 }

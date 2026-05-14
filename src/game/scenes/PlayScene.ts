@@ -31,7 +31,12 @@ import {
 } from '../ui/ComboBadge';
 import { ComboSynth } from '../audio/ComboSynth';
 import { Player } from '../entities/Player';
-import { fetchTopLeaderboard, saveLeaderboardRun, type LeaderboardEntry } from '../services/leaderboard';
+import {
+  fetchTopLeaderboard,
+  mergeSessionIntoTop,
+  saveLeaderboardRun,
+  type LeaderboardEntry,
+} from '../services/leaderboard';
 import { getSavedNickname } from '../services/playerProfile';
 import { InputManager } from '../systems/InputManager';
 import { Physics } from '../systems/Physics';
@@ -3091,11 +3096,30 @@ export class PlayScene implements Scene {
   }
 
   /**
+   * Best scored landing altitude in the same HUD “m” units as {@link getHudClimbMeters} (see {@link getPlatformMeters}).
+   * When auto-scroll + camera follow keep the player body’s Y in a narrow band, raw climb-from-body can plateau even
+   * though {@link lastScoredLandWorldTopY} keeps moving up — use this so SPD / peak height track real progress.
+   */
+  private getBestLandedClimbMeters(): number {
+    if (this.lastScoredLandWorldTopY === Number.POSITIVE_INFINITY) {
+      return 0;
+    }
+    return Math.max(
+      0,
+      (this.climbBaselineY - (this.lastScoredLandWorldTopY - this.player.body.height)) / 12,
+    );
+  }
+
+  /**
    * Scroll / difficulty: **continuous** climb scaling (not floor’d to 200 m steps) so SPD rises smoothly
    * while ascending; steeper slope above {@link SCROLL_SPEED_HIGH_TIER_FROM_METERS}; plus runtime + score.
    */
   private getAltitudeSpeedMultiplier(): number {
-    const m = Math.max(this.getHudClimbMeters(), this.peakClimbMetersThisRun);
+    const m = Math.max(
+      this.getHudClimbMeters(),
+      this.peakClimbMetersThisRun,
+      this.getBestLandedClimbMeters(),
+    );
     const w = SCROLL_SPEED_WARMUP_METERS;
     const band = SCROLL_SPEED_STEP_METERS;
     let altitudeMult = 1;
@@ -4803,6 +4827,7 @@ export class PlayScene implements Scene {
       this.peakClimbMetersThisRun,
       this.finalMetersAtDeath,
       Math.floor(this.getHudClimbMeters()),
+      Math.floor(this.getBestLandedClimbMeters()),
     );
     this.refreshGameOverScoreText();
     this.gameOverOverlay.visible = true;
@@ -4813,28 +4838,36 @@ export class PlayScene implements Scene {
     this.touchControlsLayer.visible = false;
     if (!this.deathSubmitted) {
       this.deathSubmitted = true;
-      const nickname = getSavedNickname() || 'Player';
+      const nicknameRaw = getSavedNickname() || 'Player';
+      const nickname = nicknameRaw.trim().slice(0, 20) || 'Player';
+      const sessionRow: LeaderboardEntry = {
+        nickname,
+        totalScore: Math.max(0, Math.floor(this.score)),
+        maxHeightMeters: Math.max(0, Math.floor(this.peakClimbMetersThisRun)),
+        bestCombo: Math.max(0, Math.floor(this.peakComboThisRun)),
+        createdAtMs: Date.now(),
+      };
       void (async () => {
         try {
           await saveLeaderboardRun({
             nickname,
-            totalScore: this.score,
-            maxHeightMeters: this.peakClimbMetersThisRun,
-            bestCombo: this.peakComboThisRun,
+            totalScore: sessionRow.totalScore,
+            maxHeightMeters: sessionRow.maxHeightMeters,
+            bestCombo: sessionRow.bestCombo,
           });
-          console.info('[PlayScene] leaderboard run saved', {
-            nickname,
-            totalScore: this.score,
-            maxHeightMeters: this.peakClimbMetersThisRun,
-            bestCombo: this.peakComboThisRun,
-          });
+          console.info('[PlayScene] leaderboard run saved', sessionRow);
           this.showScoreSavedHint();
-          this.lastLeaderboardTop = await fetchTopLeaderboard(5);
+          const remote = await fetchTopLeaderboard(5);
+          this.lastLeaderboardTop = mergeSessionIntoTop(remote, sessionRow, 5);
           if (this.leaderboardOverlay.visible) {
             this.renderLeaderboardShell(this.lastLeaderboardTop, false);
           }
         } catch (err) {
           console.error('[PlayScene] leaderboard save failed', err);
+          this.lastLeaderboardTop = mergeSessionIntoTop([], sessionRow, 5);
+          if (this.leaderboardOverlay.visible) {
+            this.renderLeaderboardShell(this.lastLeaderboardTop, false);
+          }
         }
       })();
     }
@@ -4847,7 +4880,10 @@ export class PlayScene implements Scene {
     } else {
       this.renderLeaderboardShell([], true);
     }
-    const top = await fetchTopLeaderboard(5).catch(() => []);
+    const top = await fetchTopLeaderboard(5).catch((err) => {
+      console.error('[PlayScene] fetchTopLeaderboard failed', err);
+      return [] as LeaderboardEntry[];
+    });
     this.lastLeaderboardTop = top;
     this.renderLeaderboardShell(top, false);
   }
@@ -4934,6 +4970,7 @@ export class PlayScene implements Scene {
       this.peakClimbMetersThisRun = Math.max(
         this.peakClimbMetersThisRun,
         Math.floor(this.getHudClimbMeters()),
+        Math.floor(this.getBestLandedClimbMeters()),
       );
       this.peakComboThisRun = Math.max(this.peakComboThisRun, this.comboCount);
     }
