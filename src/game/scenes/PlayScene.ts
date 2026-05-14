@@ -574,22 +574,21 @@ const SKILL_CHAIN_SCORE_PER_COMBO = 32;
 const COMBO_GLOW_STREAK = 15;
 /** Grounded jumps before the skill pair unlocks (both buttons; counter resets after mega jump / expiry). */
 const PULL_UP_JUMPS_REQUIRED = 8;
-/** Combo HUD anchor (screen px, top-left of unscaled layout). `comboHudRoot` applies scale. */
-/** Combo HUD anchor — sits below the skill pair strip (`SKILL_PAIR_HUD_Y`). */
+/** Combo HUD anchor (screen px); sits below the skill pair strip. */
 const COMBO_HUD_SCREEN_X = 20;
-const COMBO_HUD_SCREEN_Y = 172;
+const COMBO_HUD_SCREEN_Y = 182;
 /** Uniform scale for combo badge only (`uiLayer`, screen-fixed — equivalent to scrollFactor 0). */
 const COMBO_HUD_ROOT_SCALE = 0.33;
 /** Skill pair (`SUPER JUMP` + `PULL UP`): screen-fixed on `uiLayer` — Phaser `scrollFactor` 0 equivalent. */
 const PULL_UP_BTN_W = 152;
 const PULL_UP_BTN_H = 44;
 /** Horizontal gap between `SUPER JUMP` (left) and `PULL UP` (right) inside the pair. */
-const SKILL_PAIR_BTN_GAP_PX = 10;
+const SKILL_PAIR_BTN_GAP_PX = 14;
 /** Top-left anchor under main HUD / health stack (unscaled layout coords before `skillPairRoot.scale`). */
-const SKILL_PAIR_HUD_X = 20;
-const SKILL_PAIR_HUD_Y = 120;
-/** Uniform scale on `skillPairRoot` (~half size). */
-const PULL_UP_BTN_SCALE = 0.5;
+const SKILL_PAIR_HUD_X = 100;
+const SKILL_PAIR_HUD_Y = 140;
+/** Uniform scale on `skillPairRoot` (mobile tap targets). */
+const PULL_UP_BTN_SCALE = 0.65;
 /** Super Tongue effects (matches the user-confirmed "B" recipe). */
 const SUPER_TONGUE_STAIRS_UP = 4;
 const SUPER_TONGUE_BUFF_DURATION_SEC = 3.0;
@@ -3095,7 +3094,7 @@ export class PlayScene implements Scene {
     this.skillPairRoot.sortableChildren = true;
     this.skillPairRoot.visible = false;
     this.skillPairRoot.scale.set(PULL_UP_BTN_SCALE);
-    this.skillPairRoot.alpha = 0.8;
+    this.skillPairRoot.alpha = 0.9;
 
     this.superJumpBtnRoot.position.set(0, 0);
     this.superJumpBtnGfx.cursor = 'pointer';
