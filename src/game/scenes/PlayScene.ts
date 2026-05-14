@@ -593,7 +593,7 @@ const JUMP_BUFFER_SEC = 0.1;
  *     adds another combo step ({@link applySuperJumpAscendingStairCombo}); landing re-syncs the climb
  *     anchor (`comboLastJumpY`) so the next grounded jump chains normally.
  */
-const COMBO_CHAIN_WINDOW_SEC = 2.0;
+const COMBO_CHAIN_WINDOW_SEC = 5;
 const COMBO_MIN_CLIMB_PX = 6;
 /** Manual SUPER JUMP only (`SUPER_JUMP_VY_SCALE`× upward vs normal jump formula). */
 const SUPER_JUMP_VY_SCALE = 2;
@@ -3976,7 +3976,7 @@ export class PlayScene implements Scene {
     this.leaderboardTitle.anchor.set(0.5);
     this.leaderboardTitle.eventMode = 'none';
     this.leaderboardSubtitle = new Text({
-      text: 'Score · Max climb (m) · Best combo',
+      text: 'Places 1–5: highest total score first',
       style: this.createNeonGoldTextStyle(13, 2),
     });
     this.leaderboardSubtitle.anchor.set(0.5);

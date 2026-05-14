@@ -146,6 +146,20 @@ function parseLeaderboardDoc(data: Record<string, unknown>): LeaderboardEntry {
   };
 }
 
+/** Higher score first; ties use height, then combo, then newer run (deterministic UI). */
+export function compareLeaderboardRank(a: LeaderboardEntry, b: LeaderboardEntry): number {
+  if (b.totalScore !== a.totalScore) {
+    return b.totalScore - a.totalScore;
+  }
+  if (b.maxHeightMeters !== a.maxHeightMeters) {
+    return b.maxHeightMeters - a.maxHeightMeters;
+  }
+  if (b.bestCombo !== a.bestCombo) {
+    return b.bestCombo - a.bestCombo;
+  }
+  return b.createdAtMs - a.createdAtMs;
+}
+
 export async function fetchTopLeaderboard(limitCount = 5): Promise<LeaderboardEntry[]> {
   const q = query(
     collection(db, LEADERBOARD_COLLECTION),
@@ -153,5 +167,7 @@ export async function fetchTopLeaderboard(limitCount = 5): Promise<LeaderboardEn
     limit(limitCount),
   );
   const snapshot = await getDocs(q);
-  return snapshot.docs.map((docSnap) => parseLeaderboardDoc(docSnap.data() as Record<string, unknown>));
+  const rows = snapshot.docs.map((docSnap) => parseLeaderboardDoc(docSnap.data() as Record<string, unknown>));
+  rows.sort(compareLeaderboardRank);
+  return rows.slice(0, limitCount);
 }
