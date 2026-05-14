@@ -532,13 +532,15 @@ const STATUS_PANEL_TOGGLE_GAP_PX = 6;
 const STATUS_PANEL_ROUND_PX = 12;
 const STATUS_PANEL_LOGOUT_BTN_H_PX = 38;
 const STATUS_PANEL_STATS_LOGOUT_GAP_PX = 10;
-/** Stats column: NICK/NOW + TOTAL PTS + BEST/MAX (~16px lines + gaps). */
-const STATUS_PANEL_STATS_BLOCK_H_PX = 86;
-const STATUS_PANEL_LB_SECTION_GAP_PX = 6;
-const STATUS_PANEL_LB_HEADER_H_PX = 14;
-const STATUS_PANEL_LB_VIEW_TOP_GAP_PX = 4;
+/** Tab row below the PAUSED-style panel top padding. */
+const STATUS_PANEL_TAB_BAR_H_PX = 30;
+const STATUS_PANEL_TAB_GAP_PX = 6;
+/** Gap between tab row and shared stats / leaderboard content region. */
+const STATUS_PANEL_TAB_INNER_GAP_PX = 4;
+/** Shared slot: MY STATS block and global leaderboard viewport occupy the same vertical space. */
+const STATUS_PANEL_CONTENT_AREA_H_PX = 80;
 const STATUS_PANEL_LB_VIEWPORT_H_PX = 80;
-const STATUS_PANEL_LB_BELOW_VIEW_GAP_PX = 8;
+const STATUS_PANEL_CONTENT_TO_SEP_GAP_PX = 8;
 const STATUS_PANEL_LB_ROW_LINE_PX = 16;
 
 function getStatusPanelExpandedBodyHeightPx(): number {
@@ -546,12 +548,10 @@ function getStatusPanelExpandedBodyHeightPx(): number {
   const top = STATUS_PANEL_BODY_TOP_PAD_PX;
   const innerAboveLogout =
     top +
-    STATUS_PANEL_STATS_BLOCK_H_PX +
-    STATUS_PANEL_LB_SECTION_GAP_PX +
-    STATUS_PANEL_LB_HEADER_H_PX +
-    STATUS_PANEL_LB_VIEW_TOP_GAP_PX +
-    STATUS_PANEL_LB_VIEWPORT_H_PX +
-    STATUS_PANEL_LB_BELOW_VIEW_GAP_PX +
+    STATUS_PANEL_TAB_BAR_H_PX +
+    STATUS_PANEL_TAB_INNER_GAP_PX +
+    STATUS_PANEL_CONTENT_AREA_H_PX +
+    STATUS_PANEL_CONTENT_TO_SEP_GAP_PX +
     STATUS_PANEL_STATS_LOGOUT_GAP_PX +
     STATUS_PANEL_LOGOUT_BTN_H_PX;
   return innerAboveLogout + pad;
@@ -784,16 +784,20 @@ export class PlayScene implements Scene {
   private pauseResumeBtn = new Graphics();
   private pauseResumeLabel?: Text;
   private pauseTouchLockLabel?: Text;
-  /** Collapsible right sidebar: nickname session + live climb / PB / combo. */
+  /** Collapsible right sidebar: tabs (MY STATS / GLOBAL TOP 5), session stats, RTDB top list, LOG OUT. */
   private statusPanelRoot = new Container();
   private statusPanelExpanded = false;
   private statusPanelBodyGfx = new Graphics();
   private statusPanelToggleGfx = new Graphics();
   private statusPanelToggleHit = new Graphics();
-  private statusPanelBodyText?: Text;
-  /** Live session PTS (gold), between NOW and BEST/MAX. */
-  private statusPanelPtsTotalText?: Text;
-  private statusPanelBodyTailText?: Text;
+  /** Right sidebar: `MY STATS` vs `GLOBAL TOP 5` (mutually exclusive body content). */
+  private statusPanelSidebarTab: 'stats' | 'global' = 'stats';
+  private statusPanelTabStatsBtn = new Graphics();
+  private statusPanelTabGlobalBtn = new Graphics();
+  private statusPanelTabStatsLabel?: Text;
+  private statusPanelTabGlobalLabel?: Text;
+  private statusPanelMyStatsMainText?: Text;
+  private statusPanelMyStatsPtsText?: Text;
   private statusPanelSepGfx = new Graphics();
   private statusPanelLogoutBtn = new Graphics();
   private statusPanelLogoutLabel?: Text;
@@ -806,8 +810,7 @@ export class PlayScene implements Scene {
   private logoutConfirmCancelLabel?: Text;
   private logoutConfirmOkBtn = new Graphics();
   private logoutConfirmOkLabel?: Text;
-  /** In-sidebar global top 5 by max height — fetch only when panel opens. */
-  private statusPanelLbTitle?: Text;
+  /** In-sidebar global top — fetch when the Global tab is selected. */
   private statusPanelLbViewport = new Container();
   private statusPanelLbMask = new Graphics();
   private statusPanelLbScroll = new Container();
@@ -4661,7 +4664,7 @@ export class PlayScene implements Scene {
       this.statusPanelExpanded = !this.statusPanelExpanded;
       this.layoutStatusPanel();
       this.refreshStatusPanelContent();
-      if (this.statusPanelExpanded && !wasExpanded) {
+      if (this.statusPanelExpanded && !wasExpanded && this.statusPanelSidebarTab === 'global') {
         void this.refreshSidebarLeaderboardFromRtdb();
       }
     });
@@ -4677,7 +4680,57 @@ export class PlayScene implements Scene {
       this.showLogoutConfirm();
     });
 
-    this.statusPanelBodyText = new Text({
+    this.statusPanelTabStatsBtn.eventMode = 'static';
+    this.statusPanelTabStatsBtn.cursor = 'pointer';
+    this.statusPanelTabStatsBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.statusPanelTabStatsBtn.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.selectStatusPanelTab('stats');
+    });
+
+    this.statusPanelTabGlobalBtn.eventMode = 'static';
+    this.statusPanelTabGlobalBtn.cursor = 'pointer';
+    this.statusPanelTabGlobalBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.statusPanelTabGlobalBtn.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.selectStatusPanelTab('global');
+    });
+
+    this.statusPanelTabStatsLabel = new Text({
+      text: 'MY STATS',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 8,
+        fontWeight: '800',
+        fill: '#cce8d8',
+        stroke: { color: '#0f2814', width: 1 },
+        letterSpacing: 0.2,
+      }),
+    });
+    this.statusPanelTabStatsLabel.anchor.set(0.5);
+    this.statusPanelTabStatsLabel.eventMode = 'none';
+    this.statusPanelTabStatsLabel.visible = false;
+
+    this.statusPanelTabGlobalLabel = new Text({
+      text: 'GLOBAL TOP 5',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 8,
+        fontWeight: '800',
+        fill: '#cce8d8',
+        stroke: { color: '#0f2814', width: 1 },
+        letterSpacing: 0.2,
+      }),
+    });
+    this.statusPanelTabGlobalLabel.anchor.set(0.5);
+    this.statusPanelTabGlobalLabel.eventMode = 'none';
+    this.statusPanelTabGlobalLabel.visible = false;
+
+    this.statusPanelMyStatsMainText = new Text({
       text: '',
       style: new TextStyle({
         fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
@@ -4692,10 +4745,10 @@ export class PlayScene implements Scene {
         breakWords: true,
       }),
     });
-    this.statusPanelBodyText.eventMode = 'none';
-    this.statusPanelBodyText.visible = false;
+    this.statusPanelMyStatsMainText.eventMode = 'none';
+    this.statusPanelMyStatsMainText.visible = false;
 
-    this.statusPanelPtsTotalText = new Text({
+    this.statusPanelMyStatsPtsText = new Text({
       text: 'TOTAL PTS  0',
       style: new TextStyle({
         fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
@@ -4713,26 +4766,8 @@ export class PlayScene implements Scene {
         },
       }),
     });
-    this.statusPanelPtsTotalText.eventMode = 'none';
-    this.statusPanelPtsTotalText.visible = false;
-
-    this.statusPanelBodyTailText = new Text({
-      text: '',
-      style: new TextStyle({
-        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
-        fontSize: 11,
-        fontWeight: '700',
-        fill: '#e8fff0',
-        stroke: { color: '#15301a', width: 1.2 },
-        letterSpacing: 0.2,
-        lineHeight: 16,
-        wordWrap: true,
-        wordWrapWidth: STATUS_PANEL_BODY_W_PX - STATUS_PANEL_BODY_PAD_PX * 2,
-        breakWords: true,
-      }),
-    });
-    this.statusPanelBodyTailText.eventMode = 'none';
-    this.statusPanelBodyTailText.visible = false;
+    this.statusPanelMyStatsPtsText.eventMode = 'none';
+    this.statusPanelMyStatsPtsText.visible = false;
 
     this.statusPanelLogoutLabel = new Text({
       text: 'LOG OUT',
@@ -4748,20 +4783,6 @@ export class PlayScene implements Scene {
     this.statusPanelLogoutLabel.anchor.set(0.5);
     this.statusPanelLogoutLabel.eventMode = 'none';
     this.statusPanelLogoutLabel.visible = false;
-
-    this.statusPanelLbTitle = new Text({
-      text: 'GLOBAL · TOP PTS',
-      style: new TextStyle({
-        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
-        fontSize: 10,
-        fontWeight: '800',
-        fill: '#9fd4a8',
-        stroke: { color: '#0f2814', width: 1 },
-        letterSpacing: 0.6,
-      }),
-    });
-    this.statusPanelLbTitle.eventMode = 'none';
-    this.statusPanelLbTitle.visible = false;
 
     const lbMuted = new TextStyle({
       fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
@@ -4813,12 +4834,14 @@ export class PlayScene implements Scene {
 
     this.statusPanelRoot.addChild(
       this.statusPanelBodyGfx,
-      this.statusPanelSepGfx,
-      this.statusPanelBodyText,
-      this.statusPanelPtsTotalText,
-      this.statusPanelBodyTailText,
-      this.statusPanelLbTitle,
+      this.statusPanelTabStatsBtn,
+      this.statusPanelTabGlobalBtn,
+      this.statusPanelTabStatsLabel,
+      this.statusPanelTabGlobalLabel,
+      this.statusPanelMyStatsMainText,
+      this.statusPanelMyStatsPtsText,
       this.statusPanelLbViewport,
+      this.statusPanelSepGfx,
       this.statusPanelLogoutBtn,
       this.statusPanelLogoutLabel,
       this.statusPanelToggleGfx,
@@ -4844,7 +4867,6 @@ export class PlayScene implements Scene {
       this.statusPanelBodyGfx.position.set(0, 0);
       this.statusPanelToggleGfx.position.set(bodyW + gap, 0);
       this.statusPanelToggleHit.position.set(bodyW + gap, 0);
-      this.statusPanelBodyText?.position.set(STATUS_PANEL_BODY_PAD_PX, STATUS_PANEL_BODY_TOP_PAD_PX);
     } else {
       this.statusPanelRoot.position.set(this.width - margin - tw, rowY);
       this.statusPanelBodyGfx.position.set(0, 0);
@@ -4879,34 +4901,8 @@ export class PlayScene implements Scene {
         alpha: 0.82,
       });
       this.statusPanelBodyGfx.visible = true;
-      if (this.statusPanelBodyText) {
-        this.statusPanelBodyText.visible = true;
-      }
-      if (this.statusPanelPtsTotalText) {
-        this.statusPanelPtsTotalText.visible = true;
-      }
-      if (this.statusPanelBodyTailText) {
-        this.statusPanelBodyTailText.visible = true;
-      }
-      if (this.statusPanelLbTitle) {
-        this.statusPanelLbTitle.visible = true;
-      }
-      this.statusPanelLbViewport.visible = true;
     } else {
       this.statusPanelBodyGfx.visible = false;
-      if (this.statusPanelBodyText) {
-        this.statusPanelBodyText.visible = false;
-      }
-      if (this.statusPanelPtsTotalText) {
-        this.statusPanelPtsTotalText.visible = false;
-      }
-      if (this.statusPanelBodyTailText) {
-        this.statusPanelBodyTailText.visible = false;
-      }
-      if (this.statusPanelLbTitle) {
-        this.statusPanelLbTitle.visible = false;
-      }
-      this.statusPanelLbViewport.visible = false;
     }
 
     this.statusPanelToggleGfx.clear();
@@ -4930,44 +4926,157 @@ export class PlayScene implements Scene {
     }
   }
 
+  private selectStatusPanelTab(tab: 'stats' | 'global'): void {
+    if (this.statusPanelSidebarTab === tab) {
+      return;
+    }
+    this.statusPanelSidebarTab = tab;
+    if (tab === 'global') {
+      void this.refreshSidebarLeaderboardFromRtdb();
+    }
+    this.layoutStatusPanel();
+  }
+
+  private drawStatusPanelTabButton(
+    gfx: Graphics,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    active: boolean,
+  ): void {
+    gfx.clear();
+    gfx.roundRect(x, y, w, h, 8).fill({
+      color: UI_BG_BLACK,
+      alpha: active ? 0.48 : 0.32,
+    });
+    const strokeColor = active ? UI_GOLD : UI_NEON_GREEN;
+    gfx.roundRect(x, y, w, h, 8).stroke({
+      color: strokeColor,
+      width: active ? 2 : 1.5,
+      alpha: active ? 0.92 : 0.55,
+    });
+    if (active) {
+      gfx.rect(x + 5, y + h - 3, w - 10, 2.2).fill({ color: UI_GOLD, alpha: 0.88 });
+      gfx.roundRect(x + 3, y + 3, w - 6, h - 6, 6).stroke({
+        color: UI_NEON_GREEN,
+        width: 1,
+        alpha: 0.24,
+      });
+    }
+    gfx.hitArea = new Rectangle(x, y, w, h);
+  }
+
+  private redrawStatusPanelTabs(
+    tabStatsX: number,
+    tabGlobalX: number,
+    tabY: number,
+    tabW: number,
+    tabH: number,
+  ): void {
+    const statsActive = this.statusPanelSidebarTab === 'stats';
+    this.drawStatusPanelTabButton(
+      this.statusPanelTabStatsBtn,
+      tabStatsX,
+      tabY,
+      tabW,
+      tabH,
+      statsActive,
+    );
+    this.drawStatusPanelTabButton(
+      this.statusPanelTabGlobalBtn,
+      tabGlobalX,
+      tabY,
+      tabW,
+      tabH,
+      !statsActive,
+    );
+
+    if (this.statusPanelTabStatsLabel) {
+      this.statusPanelTabStatsLabel.position.set(tabStatsX + tabW * 0.5, tabY + tabH * 0.5);
+      this.statusPanelTabStatsLabel.style.fill = statsActive ? '#fff8c8' : '#7a9a8a';
+      this.statusPanelTabStatsLabel.style.stroke = statsActive
+        ? { color: '#4a3200', width: 1.2 }
+        : { color: '#0a120a', width: 1 };
+    }
+    if (this.statusPanelTabGlobalLabel) {
+      this.statusPanelTabGlobalLabel.position.set(tabGlobalX + tabW * 0.5, tabY + tabH * 0.5);
+      this.statusPanelTabGlobalLabel.style.fill = !statsActive ? '#fff8c8' : '#7a9a8a';
+      this.statusPanelTabGlobalLabel.style.stroke = !statsActive
+        ? { color: '#4a3200', width: 1.2 }
+        : { color: '#0a120a', width: 1 };
+    }
+  }
+
+  private applyStatusPanelTabVisibility(): void {
+    const expanded = this.statusPanelExpanded;
+    const statsTab = this.statusPanelSidebarTab === 'stats';
+
+    if (this.statusPanelMyStatsMainText) {
+      this.statusPanelMyStatsMainText.visible = expanded && statsTab;
+    }
+    if (this.statusPanelMyStatsPtsText) {
+      this.statusPanelMyStatsPtsText.visible = expanded && statsTab;
+    }
+
+    this.statusPanelLbViewport.visible = expanded && !statsTab;
+    this.statusPanelLbViewport.eventMode = statsTab ? 'none' : 'static';
+
+    if (this.statusPanelTabStatsBtn) {
+      this.statusPanelTabStatsBtn.visible = expanded;
+    }
+    if (this.statusPanelTabGlobalBtn) {
+      this.statusPanelTabGlobalBtn.visible = expanded;
+    }
+    if (this.statusPanelTabStatsLabel) {
+      this.statusPanelTabStatsLabel.visible = expanded;
+    }
+    if (this.statusPanelTabGlobalLabel) {
+      this.statusPanelTabGlobalLabel.visible = expanded;
+    }
+
+    if (statsTab) {
+      if (this.statusPanelLbLoading) {
+        this.statusPanelLbLoading.visible = false;
+      }
+      if (this.statusPanelLbEmpty) {
+        this.statusPanelLbEmpty.visible = false;
+      }
+    }
+  }
+
   private refreshStatusPanelContent(): void {
-    const top = this.statusPanelBodyText;
-    const pts = this.statusPanelPtsTotalText;
-    const tail = this.statusPanelBodyTailText;
-    if (!top || !pts || !tail || !this.statusPanelExpanded) {
+    const main = this.statusPanelMyStatsMainText;
+    const pts = this.statusPanelMyStatsPtsText;
+    if (!main || !pts || !this.statusPanelExpanded) {
       return;
     }
     const session = getGameUserSession();
     const nick = session?.nickname?.trim() || '—';
-    const cur = Math.max(
-      0,
-      Math.floor(Math.max(this.getHudClimbMeters(), this.getBestLandedClimbMeters())),
-    );
     const pbH = session?.personalBest.maxHeightMeters ?? 0;
     const best = Math.max(pbH, this.peakClimbMetersThisRun);
     const comboPb = session?.personalBest.bestCombo ?? 0;
     const comboMax = Math.max(comboPb, this.peakComboThisRun, this.comboCount);
+    const sessionPts = session?.personalBest.totalPoints ?? 0;
     const livePts = Math.max(0, Math.floor(this.score));
+    const totalPts = Math.max(sessionPts, livePts);
 
-    top.text = [`NICK  ${nick}`, `NOW   ${cur.toLocaleString()} m`].join('\n');
-    pts.text = `TOTAL PTS  ${livePts.toLocaleString()}`;
-    tail.text = [`BEST  ${best.toLocaleString()} m`, `MAX   ${comboMax.toLocaleString()} combo`].join('\n');
+    main.text = [
+      `NICK  ${nick}`,
+      `BEST HEIGHT  ${best.toLocaleString()} m`,
+      `MAX COMBO   ${comboMax.toLocaleString()}`,
+    ].join('\n');
+    pts.text = `TOTAL PTS  ${totalPts.toLocaleString()}`;
 
-    this.layoutStatusPanelStatTextPositions();
-  }
-
-  private layoutStatusPanelStatTextPositions(): void {
-    if (!this.statusPanelExpanded) {
-      return;
-    }
     const pad = STATUS_PANEL_BODY_PAD_PX;
-    const t = STATUS_PANEL_BODY_TOP_PAD_PX;
+    const top = STATUS_PANEL_BODY_TOP_PAD_PX;
+    const yTab = top + STATUS_PANEL_TAB_BAR_H_PX + STATUS_PANEL_TAB_INNER_GAP_PX;
     const lh = 16;
-    const g1 = 2;
-    const g2 = 4;
-    this.statusPanelBodyText?.position.set(pad, t);
-    this.statusPanelPtsTotalText?.position.set(pad, t + lh * 2 + g1);
-    this.statusPanelBodyTailText?.position.set(pad, t + lh * 2 + g1 + lh + g2);
+    const gPts = 4;
+    main.position.set(pad, yTab);
+    pts.position.set(pad, yTab + lh * 3 + gPts);
+
+    this.applyStatusPanelTabVisibility();
   }
 
   private createSidebarLbRowStyle(highlight: boolean): TextStyle {
@@ -5063,7 +5172,7 @@ export class PlayScene implements Scene {
   }
 
   private async refreshSidebarLeaderboardFromRtdb(): Promise<void> {
-    if (!this.statusPanelExpanded) {
+    if (!this.statusPanelExpanded || this.statusPanelSidebarTab !== 'global') {
       return;
     }
     if (this.statusPanelLbLoading) {
@@ -5103,17 +5212,27 @@ export class PlayScene implements Scene {
       if (this.statusPanelLogoutLabel) {
         this.statusPanelLogoutLabel.visible = false;
       }
-      if (this.statusPanelBodyText) {
-        this.statusPanelBodyText.visible = false;
+      if (this.statusPanelMyStatsMainText) {
+        this.statusPanelMyStatsMainText.visible = false;
       }
-      if (this.statusPanelPtsTotalText) {
-        this.statusPanelPtsTotalText.visible = false;
+      if (this.statusPanelMyStatsPtsText) {
+        this.statusPanelMyStatsPtsText.visible = false;
       }
-      if (this.statusPanelBodyTailText) {
-        this.statusPanelBodyTailText.visible = false;
+      if (this.statusPanelTabStatsBtn) {
+        this.statusPanelTabStatsBtn.clear();
+        this.statusPanelTabStatsBtn.visible = false;
+        this.statusPanelTabStatsBtn.hitArea = null;
       }
-      if (this.statusPanelLbTitle) {
-        this.statusPanelLbTitle.visible = false;
+      if (this.statusPanelTabGlobalBtn) {
+        this.statusPanelTabGlobalBtn.clear();
+        this.statusPanelTabGlobalBtn.visible = false;
+        this.statusPanelTabGlobalBtn.hitArea = null;
+      }
+      if (this.statusPanelTabStatsLabel) {
+        this.statusPanelTabStatsLabel.visible = false;
+      }
+      if (this.statusPanelTabGlobalLabel) {
+        this.statusPanelTabGlobalLabel.visible = false;
       }
       this.statusPanelLbViewport.visible = false;
       if (this.statusPanelLbLoading) {
@@ -5126,23 +5245,21 @@ export class PlayScene implements Scene {
     }
 
     const top = STATUS_PANEL_BODY_TOP_PAD_PX;
-    const yLbTitle =
-      top + STATUS_PANEL_STATS_BLOCK_H_PX + STATUS_PANEL_LB_SECTION_GAP_PX;
-    const yView =
-      yLbTitle +
-      STATUS_PANEL_LB_HEADER_H_PX +
-      STATUS_PANEL_LB_VIEW_TOP_GAP_PX;
+    const innerW = bodyW - pad * 2;
+    const tabGap = STATUS_PANEL_TAB_GAP_PX;
+    const tabW = (innerW - tabGap) * 0.5;
+    const tabStatsX = pad;
+    const tabY = top;
+    const tabGlobalX = pad + tabW + tabGap;
+    const tabH = STATUS_PANEL_TAB_BAR_H_PX;
+    this.redrawStatusPanelTabs(tabStatsX, tabGlobalX, tabY, tabW, tabH);
 
-    this.statusPanelLbTitle?.position.set(pad, yLbTitle);
-    if (this.statusPanelLbTitle) {
-      this.statusPanelLbTitle.visible = true;
-    }
+    const yContent = top + STATUS_PANEL_TAB_BAR_H_PX + STATUS_PANEL_TAB_INNER_GAP_PX;
 
-    this.sidebarLbViewportW = bodyW - pad * 2;
+    this.sidebarLbViewportW = innerW;
     const vw = this.sidebarLbViewportW;
     const vh = STATUS_PANEL_LB_VIEWPORT_H_PX;
-    this.statusPanelLbViewport.position.set(pad, yView);
-    this.statusPanelLbViewport.visible = true;
+    this.statusPanelLbViewport.position.set(pad, yContent);
 
     this.statusPanelLbMask.clear();
     this.statusPanelLbMask.roundRect(0, 0, vw, vh, 6).fill({ color: 0xffffff, alpha: 1 });
@@ -5169,7 +5286,7 @@ export class PlayScene implements Scene {
     this.statusPanelLogoutBtn.hitArea = new Rectangle(pad, logoutY, btnW, btnH);
     this.statusPanelLogoutLabel?.position.set(pad + btnW * 0.5, logoutY + btnH * 0.5);
 
-    this.layoutStatusPanelStatTextPositions();
+    this.refreshStatusPanelContent();
   }
 
   private setupLogoutConfirmOverlay(): void {
