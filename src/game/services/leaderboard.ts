@@ -85,7 +85,15 @@ async function deleteAllDocsInCollection(collectionId: string): Promise<number> 
     for (const d of chunk) {
       batch.delete(d.ref);
     }
-    await batch.commit();
+    try {
+      await batch.commit();
+    } catch (err) {
+      console.error(
+        `[leaderboard] delete batch failed for "${collectionId}" (${chunk.length} refs) — check Firestore rules allow delete`,
+        err,
+      );
+      throw err;
+    }
     deleted += chunk.length;
   }
   return deleted;

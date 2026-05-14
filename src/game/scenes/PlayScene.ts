@@ -4949,19 +4949,10 @@ export class PlayScene implements Scene {
   private async openLeaderboardOverlay(): Promise<void> {
     this.startLeaderboardRealtimeSubscription();
     this.leaderboardOverlay.visible = true;
-    if (this.lastLeaderboardTop.length > 0) {
-      this.renderLeaderboardShell(this.lastLeaderboardTop, false);
-      return;
-    }
-    this.renderLeaderboardShell([], true);
+    this.renderLeaderboardShell(this.lastLeaderboardTop, this.lastLeaderboardTop.length === 0);
     void fetchTopLeaderboard(5)
       .then((top) => {
-        if (top.length === 0) {
-          return;
-        }
-        if (this.lastLeaderboardTop.length === 0) {
-          this.lastLeaderboardTop = top;
-        }
+        this.lastLeaderboardTop = top;
         if (this.leaderboardOverlay.visible) {
           this.renderLeaderboardShell(this.lastLeaderboardTop, false);
         }
