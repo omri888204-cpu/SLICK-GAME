@@ -484,16 +484,21 @@ const SCROLL_SPEED_STEP_DELTA = 0.15;
  * Extra scroll / drift multiplier from run time (stacks with altitude). Avoids a soft ceiling around ~×5
  * when climb height stalls against auto-scroll so late runs keep getting faster.
  */
-const SCROLL_SPEED_RUNTIME_START_SEC = 40;
-const SCROLL_SPEED_RUNTIME_STEP_SEC = 30;
-const SCROLL_SPEED_RUNTIME_DELTA = 0.05;
+const SCROLL_SPEED_RUNTIME_START_SEC = 30;
+const SCROLL_SPEED_RUNTIME_STEP_SEC = 18;
+const SCROLL_SPEED_RUNTIME_DELTA = 0.07;
+/**
+ * Extra mult from total run score so SPD keeps rising while the player earns points even if HUD climb (m) plateaus vs auto-scroll.
+ */
+const SCROLL_SPEED_SCORE_STEP = 2000;
+const SCROLL_SPEED_SCORE_DELTA = 0.04;
 /**
  * Past this HUD altitude (m), each further {@link SCROLL_SPEED_STEP_METERS} band adds
  * {@link SCROLL_SPEED_HIGH_TIER_DELTA} instead of {@link SCROLL_SPEED_STEP_DELTA} (~×5 / ~6000m is no longer a practical cap).
  */
-const SCROLL_SPEED_HIGH_TIER_FROM_METERS = 6000;
+const SCROLL_SPEED_HIGH_TIER_FROM_METERS = 5200;
 /** Steeper per-step mult above {@link SCROLL_SPEED_HIGH_TIER_FROM_METERS} (same 200m banding as base). */
-const SCROLL_SPEED_HIGH_TIER_DELTA = 0.21;
+const SCROLL_SPEED_HIGH_TIER_DELTA = 0.26;
 /** Continuous altitude shake disabled; it became visible jitter around the 3000m+ tiers. */
 const ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD = Number.POSITIVE_INFINITY;
 const SPEED_TIER_SHAKE_SEC = 0;
@@ -3086,12 +3091,12 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Scroll / difficulty multiplier: 1× until `SCROLL_SPEED_WARMUP_METERS`, then +`SCROLL_SPEED_STEP_DELTA`
-   * each `SCROLL_SPEED_STEP_METERS` up to ~{@link SCROLL_SPEED_HIGH_TIER_FROM_METERS}, then the steeper
-   * {@link SCROLL_SPEED_HIGH_TIER_DELTA} per band, plus runtime steps from {@link SCROLL_SPEED_RUNTIME_*}.
+   * Scroll / difficulty multiplier: altitude bands + high tier past {@link SCROLL_SPEED_HIGH_TIER_FROM_METERS},
+   * plus runtime ({@link SCROLL_SPEED_RUNTIME_START_SEC}, step/delta) and points ({@link SCROLL_SPEED_SCORE_STEP}) so SPD keeps climbing
+   * past ~×5 when HUD meters plateau against scroll.
    */
   private getAltitudeSpeedMultiplier(): number {
-    const m = this.getHudClimbMeters();
+    const m = Math.max(this.getHudClimbMeters(), this.peakClimbMetersThisRun);
     const w = SCROLL_SPEED_WARMUP_METERS;
     const band = SCROLL_SPEED_STEP_METERS;
     let altitudeMult = 1;
@@ -3107,7 +3112,12 @@ export class PlayScene implements Scene {
       0,
       Math.floor((this.runTime - SCROLL_SPEED_RUNTIME_START_SEC) / SCROLL_SPEED_RUNTIME_STEP_SEC),
     );
-    return altitudeMult + SCROLL_SPEED_RUNTIME_DELTA * runtimeSteps;
+    const scoreSteps = Math.max(0, Math.floor(this.score / SCROLL_SPEED_SCORE_STEP));
+    return (
+      altitudeMult +
+      SCROLL_SPEED_RUNTIME_DELTA * runtimeSteps +
+      SCROLL_SPEED_SCORE_DELTA * scoreSteps
+    );
   }
 
   private getCameraScrollSpeedPx(): number {
