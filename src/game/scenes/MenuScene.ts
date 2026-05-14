@@ -1,13 +1,16 @@
+import { signOut } from 'firebase/auth';
 import { Application, Assets, Container, Graphics, Text, type Ticker } from 'pixi.js';
 import slickLogoUrl from '../../assets/ui/slick-logo.png';
-import { getSavedNickname, saveNickname } from '../services/playerProfile';
+import { auth } from '../../firebase.js';
+import { getSavedNickname } from '../services/playerProfile';
+import { getGameUserSession, clearGameUserSession } from '../services/userSession';
 import { SlickLogoImage } from '../ui/SlickLogoImage';
 import { loadLogoTextureTransparent } from '../utils/logoTexture';
 import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
 import type { Scene } from './Scene';
 
 /**
- * Main menu: dark field, SLICK raster logo top-center (compact), tap/click to play.
+ * Main menu after auth: logo, session summary (nickname + personal best), PLAY, log out.
  */
 export class MenuScene implements Scene {
   readonly name = 'menu';
@@ -17,20 +20,17 @@ export class MenuScene implements Scene {
   private logo?: SlickLogoImage;
   private readonly hint: Text;
   private lobbyOverlay?: HTMLDivElement;
-  private nicknameInput?: HTMLInputElement;
-  private playButton?: HTMLButtonElement;
-  private errorText?: HTMLDivElement;
 
   private readonly keyHandler = (ev: KeyboardEvent): void => {
     if (ev.code === 'Space') {
       ev.preventDefault();
-      void this.handlePlayFromLobby();
+      void this.handlePlay();
     }
   };
 
   constructor(private readonly onPlay: () => void | Promise<void>) {
     this.hint = new Text({
-      text: 'Tap · click · or press Space to climb',
+      text: 'Press Space to play',
       style: {
         fill: '#7eb89a',
         fontFamily: 'system-ui, Segoe UI, sans-serif',
@@ -56,9 +56,6 @@ export class MenuScene implements Scene {
 
     this.background.eventMode = 'static';
     this.container.eventMode = 'static';
-    this.container.on('pointerdown', () => {
-      this.nicknameInput?.focus();
-    });
 
     window.addEventListener('keydown', this.keyHandler);
     this.mountLobbyOverlay();
@@ -74,9 +71,8 @@ export class MenuScene implements Scene {
     this.background.rect(0, 0, width, height).fill({ color: 0x050510, alpha: 0.35 });
 
     if (this.logo) {
-      /** Compact header — max ~240px wide on menu. */
       this.logo.fitWidth(Math.min(width * 0.44, 240));
-      this.logo.position.set(width * 0.5, height * 0.14);
+      this.logo.position.set(width * 0.5, height * 0.12);
     }
 
     this.hint.position.set(width * 0.5, height * 0.36);
@@ -96,6 +92,11 @@ export class MenuScene implements Scene {
     }
     host.style.position = 'relative';
 
+    const session = getGameUserSession();
+    const nickname = (session?.nickname ?? getSavedNickname()) || 'Player';
+    const bestH = session?.personalBest.maxHeightMeters ?? 0;
+    const bestC = session?.personalBest.bestCombo ?? 0;
+
     const overlay = document.createElement('div');
     overlay.style.position = 'absolute';
     overlay.style.inset = '0';
@@ -107,7 +108,7 @@ export class MenuScene implements Scene {
 
     const card = document.createElement('div');
     card.style.pointerEvents = 'auto';
-    card.style.width = 'min(420px, 86vw)';
+    card.style.width = 'min(440px, 88vw)';
     card.style.padding = '20px';
     card.style.borderRadius = '18px';
     card.style.background = 'rgba(46, 0, 75, 0.55)';
@@ -117,89 +118,77 @@ export class MenuScene implements Scene {
     card.style.display = 'grid';
     card.style.gap = '12px';
 
-    const title = document.createElement('div');
-    title.textContent = 'ENTER NICKNAME';
-    title.style.color = '#FFD700';
-    title.style.fontFamily = 'Orbitron, "Press Start 2P", Arial Black, sans-serif';
-    title.style.fontSize = '20px';
-    title.style.fontWeight = '800';
-    title.style.textAlign = 'center';
-    title.style.textShadow = '0 0 8px rgba(255,215,0,0.75)';
+    const welcome = document.createElement('div');
+    welcome.textContent = nickname.toUpperCase();
+    welcome.style.color = '#FFD700';
+    welcome.style.fontFamily = 'Orbitron, "Press Start 2P", Arial Black, sans-serif';
+    welcome.style.fontSize = '22px';
+    welcome.style.fontWeight = '800';
+    welcome.style.textAlign = 'center';
+    welcome.style.textShadow = '0 0 8px rgba(255,215,0,0.75)';
 
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.maxLength = 20;
-    input.placeholder = 'Your nickname';
-    input.value = getSavedNickname();
-    input.style.height = '46px';
-    input.style.borderRadius = '12px';
-    input.style.padding = '0 14px';
-    input.style.border = '1px solid rgba(57,255,20,0.75)';
-    input.style.background = 'rgba(0,0,0,0.55)';
-    input.style.color = '#FFD700';
-    input.style.fontFamily = 'Orbitron, "Press Start 2P", Arial Black, sans-serif';
-    input.style.fontSize = '18px';
-    input.style.outline = 'none';
+    const stats = document.createElement('div');
+    stats.textContent = `Personal best · ${bestH.toLocaleString()} m height · ${bestC.toLocaleString()} combo`;
+    stats.style.color = '#9ab8a8';
+    stats.style.fontFamily = 'system-ui, Segoe UI, sans-serif';
+    stats.style.fontSize = '15px';
+    stats.style.textAlign = 'center';
+    stats.style.lineHeight = '1.35';
 
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = 'START CLIMB';
-    button.style.height = '48px';
+    button.textContent = 'PLAY';
+    button.style.height = '52px';
     button.style.borderRadius = '12px';
     button.style.border = '1px solid rgba(57,255,20,0.85)';
     button.style.background = 'rgba(46,0,75,0.8)';
     button.style.color = '#FFD700';
     button.style.fontFamily = 'Orbitron, "Press Start 2P", Arial Black, sans-serif';
     button.style.fontWeight = '800';
-    button.style.letterSpacing = '0.7px';
+    button.style.letterSpacing = '0.1em';
     button.style.cursor = 'pointer';
     button.style.textShadow = '0 0 8px rgba(255,215,0,0.85)';
 
-    const error = document.createElement('div');
-    error.style.minHeight = '18px';
-    error.style.textAlign = 'center';
-    error.style.color = '#ff8ea7';
-    error.style.fontFamily = 'system-ui, Segoe UI, sans-serif';
-    error.style.fontSize = '13px';
+    const logout = document.createElement('button');
+    logout.type = 'button';
+    logout.textContent = 'Log out';
+    logout.style.height = '40px';
+    logout.style.borderRadius = '10px';
+    logout.style.border = '1px solid rgba(255,255,255,0.2)';
+    logout.style.background = 'rgba(0,0,0,0.35)';
+    logout.style.color = '#b8c4c0';
+    logout.style.fontFamily = 'system-ui, Segoe UI, sans-serif';
+    logout.style.fontSize = '14px';
+    logout.style.cursor = 'pointer';
 
     button.addEventListener('click', () => {
-      void this.handlePlayFromLobby();
+      void this.handlePlay();
     });
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        void this.handlePlayFromLobby();
-      }
+    logout.addEventListener('click', () => {
+      void (async (): Promise<void> => {
+        try {
+          await signOut(auth);
+        } catch {
+          /* still clear local session */
+        }
+        clearGameUserSession();
+        location.reload();
+      })();
     });
 
-    card.append(title, input, button, error);
+    card.append(welcome, stats, button, logout);
     overlay.appendChild(card);
     host.appendChild(overlay);
 
     this.lobbyOverlay = overlay;
-    this.nicknameInput = input;
-    this.playButton = button;
-    this.errorText = error;
   }
 
   private unmountLobbyOverlay(): void {
     this.lobbyOverlay?.remove();
     this.lobbyOverlay = undefined;
-    this.nicknameInput = undefined;
-    this.playButton = undefined;
-    this.errorText = undefined;
   }
 
-  private async handlePlayFromLobby(): Promise<void> {
-    const nickname = this.nicknameInput?.value.trim() ?? '';
-    if (!nickname) {
-      if (this.errorText) {
-        this.errorText.textContent = 'Please enter a nickname';
-      }
-      this.nicknameInput?.focus();
-      return;
-    }
-    saveNickname(nickname);
+  private async handlePlay(): Promise<void> {
     await Promise.resolve(this.onPlay());
   }
 }

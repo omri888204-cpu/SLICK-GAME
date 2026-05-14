@@ -32,6 +32,7 @@ import {
 import { ComboSynth } from '../audio/ComboSynth';
 import { Player } from '../entities/Player';
 import {
+  buildLeaderboardRowFromSyncedUser,
   fetchTopLeaderboard,
   LEADERBOARD_DISPLAY_LIMIT,
   mergeSessionIntoTop,
@@ -40,7 +41,9 @@ import {
   subscribeTopLeaderboard,
   type LeaderboardEntry,
 } from '../services/leaderboard';
-import { getSavedNickname } from '../services/playerProfile';
+import { upsertPersonalBestIfBetter } from '../services/rtdbUsers';
+import { getGameUserSession, patchSessionPersonalBest } from '../services/userSession';
+import { auth } from '../../firebase.js';
 import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
 import { InputManager } from '../systems/InputManager';
 import { Physics } from '../systems/Physics';
@@ -515,6 +518,16 @@ const HEADER_PAUSE_BTN_W = 40;
 const HEADER_PAUSE_BTN_H = 34;
 const HEADER_PAUSE_LEFT_MARGIN_PX = 12;
 const HEADER_PAUSE_BELOW_HEADER_GAP_PX = 8;
+/** Right sidebar status panel: toggle sits on the far right; expanded body grows left (below header strip). */
+const STATUS_PANEL_RIGHT_MARGIN_PX = 12;
+const STATUS_PANEL_TOGGLE_W_PX = 40;
+const STATUS_PANEL_TOGGLE_H_PX = 34;
+const STATUS_PANEL_BODY_W_PX = 220;
+const STATUS_PANEL_BODY_PAD_PX = 10;
+const STATUS_PANEL_BODY_TOP_PAD_PX = 8;
+const STATUS_PANEL_TOGGLE_GAP_PX = 6;
+const STATUS_PANEL_ROUND_PX = 12;
+const STATUS_PANEL_BODY_MIN_H_PX = 104;
 const UI_BG_BLACK = 0x000000;
 const UI_PANEL_PURPLE = 0x2e004b;
 const UI_NEON_GREEN = 0x39ff14;
@@ -527,7 +540,7 @@ const HURRY_BANNER_H = 46;
 const HURRY_BANNER_SLIDE_SPEED = 760;
 const OVERLAY_BG_ALPHA = 0.72;
 const WORLD_BOUNDS_X = 0;
-/** Room for ≥100 000 HUD meters (÷12 px/m) relative to baseline without leaving the playable band while rebasing catches up. */
+/** Room for >= 100000 HUD meters (/12 px per m) relative to baseline without leaving the playable band while rebasing catches up. */
 const WORLD_BOUNDS_Y = -2_500_000;
 const WORLD_BOUNDS_W = 1400;
 const WORLD_BOUNDS_H = 2_501_000;
@@ -539,7 +552,7 @@ const VIEWPORT_BOTTOM_CULL_EXTRA_PX = 500;
  */
 const WORLD_REBASE_SHIFT_PX = 360_000;
 const WORLD_REBASE_LOW_WATER_Y = -340_000;
-/** Cap transient VFX allocations after each 1000 m milestone sweep ({@link maybeRunPeriodicPoolMaintenance}). */
+/** Cap transient VFX allocations after each 1000m milestone sweep ({@link maybeRunPeriodicPoolMaintenance}). */
 const MAX_LEVEL_UP_PARTICLES_AFTER_CLEANUP = 48;
 const MAX_COMBO_SUPER_JUMP_PARTICLES_AFTER_CLEANUP = 40;
 /** Screen-space inset (px) from each side; converted to world px via zoom for spawn + player clamp. */
@@ -743,6 +756,13 @@ export class PlayScene implements Scene {
   private pauseResumeBtn = new Graphics();
   private pauseResumeLabel?: Text;
   private pauseTouchLockLabel?: Text;
+  /** Collapsible right sidebar: nickname session + live climb / PB / combo. */
+  private statusPanelRoot = new Container();
+  private statusPanelExpanded = false;
+  private statusPanelBodyGfx = new Graphics();
+  private statusPanelToggleGfx = new Graphics();
+  private statusPanelToggleHit = new Graphics();
+  private statusPanelBodyText?: Text;
   /** Touch accessibility: first finger locks steering without needing to tap near the player (default on). */
   private touchGlobalAnywhereLock = true;
   /** Full-screen HUD flash when scroll speed tier increases (see `getScrollSpeedTier`). */
@@ -1059,11 +1079,13 @@ export class PlayScene implements Scene {
     this.touchGlobalAnywhereLock = this.loadTouchGlobalSteeringPreference();
     this.setupPauseUi();
     this.setupHeaderPauseButton();
+    this.setupStatusPanel();
     this.setupAttackButton();
     this.setupHealthHud();
     this.setupSpeedTierPulseOverlay();
     this.drawTopHeaderPanel();
     this.layoutHeaderPauseButton();
+    this.layoutStatusPanel();
     if (this.scoreboard) {
       this.scoreboard.visible = false;
     }
@@ -1335,6 +1357,7 @@ export class PlayScene implements Scene {
     this.layoutAutoScrollHud();
     this.layoutGameOverUi();
     this.layoutHeaderPauseButton();
+    this.layoutStatusPanel();
     this.layoutAttackButton();
     this.layoutHealthHud();
     this.layoutPauseOverlay();
@@ -1349,6 +1372,7 @@ export class PlayScene implements Scene {
       this.drawStaticWorld();
       this.drawTopHeaderPanel();
       this.layoutHeaderPauseButton();
+      this.layoutStatusPanel();
       this.layoutAttackButton();
       this.layoutHealthHud();
       this.layoutPauseOverlay();
@@ -4564,6 +4588,154 @@ export class PlayScene implements Scene {
     this.headerPauseIcon?.position.set(btnW * 0.5, btnH * 0.5);
   }
 
+  private setupStatusPanel(): void {
+    this.statusPanelRoot.zIndex = 1005;
+    this.statusPanelBodyGfx.eventMode = 'none';
+    this.statusPanelToggleGfx.eventMode = 'none';
+    this.statusPanelToggleHit.eventMode = 'static';
+    this.statusPanelToggleHit.cursor = 'pointer';
+    this.statusPanelToggleHit.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.statusPanelToggleHit.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.statusPanelExpanded = !this.statusPanelExpanded;
+      this.layoutStatusPanel();
+      this.refreshStatusPanelContent();
+    });
+
+    this.statusPanelBodyText = new Text({
+      text: '',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 11,
+        fontWeight: '700',
+        fill: '#e8fff0',
+        stroke: { color: '#15301a', width: 1.2 },
+        letterSpacing: 0.2,
+        lineHeight: 16,
+        wordWrap: true,
+        wordWrapWidth: STATUS_PANEL_BODY_W_PX - STATUS_PANEL_BODY_PAD_PX * 2,
+        breakWords: true,
+      }),
+    });
+    this.statusPanelBodyText.eventMode = 'none';
+    this.statusPanelBodyText.visible = false;
+
+    this.statusPanelRoot.addChild(
+      this.statusPanelBodyGfx,
+      this.statusPanelBodyText,
+      this.statusPanelToggleGfx,
+      this.statusPanelToggleHit,
+    );
+    this.uiLayer.addChild(this.statusPanelRoot);
+    this.layoutStatusPanel();
+  }
+
+  private layoutStatusPanel(): void {
+    const rowY = UI_SAFE_PAD_TOP + UI_HEADER_H + HEADER_PAUSE_BELOW_HEADER_GAP_PX;
+    const tw = STATUS_PANEL_TOGGLE_W_PX;
+    const th = STATUS_PANEL_TOGGLE_H_PX;
+    const margin = STATUS_PANEL_RIGHT_MARGIN_PX;
+    const gap = STATUS_PANEL_TOGGLE_GAP_PX;
+    const bodyW = STATUS_PANEL_BODY_W_PX;
+    const bodyH = this.statusPanelExpanded ? STATUS_PANEL_BODY_MIN_H_PX : 0;
+
+    if (this.statusPanelExpanded) {
+      const totalW = bodyW + gap + tw;
+      this.statusPanelRoot.position.set(this.width - margin - totalW, rowY);
+      this.statusPanelBodyGfx.position.set(0, 0);
+      this.statusPanelToggleGfx.position.set(bodyW + gap, 0);
+      this.statusPanelToggleHit.position.set(bodyW + gap, 0);
+      this.statusPanelBodyText?.position.set(STATUS_PANEL_BODY_PAD_PX, STATUS_PANEL_BODY_TOP_PAD_PX);
+    } else {
+      this.statusPanelRoot.position.set(this.width - margin - tw, rowY);
+      this.statusPanelBodyGfx.position.set(0, 0);
+      this.statusPanelToggleGfx.position.set(0, 0);
+      this.statusPanelToggleHit.position.set(0, 0);
+    }
+
+    this.statusPanelToggleHit.clear();
+    this.statusPanelToggleHit.rect(0, 0, tw, th).fill({ color: 0xffffff, alpha: 0.001 });
+    this.statusPanelToggleHit.hitArea = new Rectangle(0, 0, tw, th);
+
+    this.redrawStatusPanelChrome(bodyH);
+  }
+
+  private redrawStatusPanelChrome(bodyH: number): void {
+    const tw = STATUS_PANEL_TOGGLE_W_PX;
+    const th = STATUS_PANEL_TOGGLE_H_PX;
+    const bodyW = STATUS_PANEL_BODY_W_PX;
+    const inset = 11;
+    const lineW = tw - inset * 2;
+
+    this.statusPanelBodyGfx.clear();
+    if (this.statusPanelExpanded && bodyH > 0) {
+      this.statusPanelBodyGfx.roundRect(0, 0, bodyW, bodyH, STATUS_PANEL_ROUND_PX).fill({
+        color: UI_PANEL_PURPLE,
+        alpha: 0.88,
+      });
+      this.statusPanelBodyGfx.roundRect(0, 0, bodyW, bodyH, STATUS_PANEL_ROUND_PX).stroke({
+        color: UI_NEON_GREEN,
+        width: 2,
+        alpha: 0.82,
+      });
+      this.statusPanelBodyGfx.visible = true;
+      if (this.statusPanelBodyText) {
+        this.statusPanelBodyText.visible = true;
+      }
+    } else {
+      this.statusPanelBodyGfx.visible = false;
+      if (this.statusPanelBodyText) {
+        this.statusPanelBodyText.visible = false;
+      }
+    }
+
+    this.statusPanelToggleGfx.clear();
+    this.statusPanelToggleGfx.roundRect(0, 0, tw, th, 8).fill({ color: UI_BG_BLACK, alpha: 0.48 });
+    this.statusPanelToggleGfx.roundRect(0, 0, tw, th, 8).stroke({
+      color: UI_NEON_GREEN,
+      width: 1.5,
+      alpha: 0.82,
+    });
+
+    if (!this.statusPanelExpanded) {
+      const lineY1 = 10;
+      const lineY2 = 16;
+      const lineY3 = 22;
+      this.statusPanelToggleGfx.rect(inset, lineY1, lineW, 2.5).fill({ color: UI_GOLD, alpha: 0.9 });
+      this.statusPanelToggleGfx.rect(inset, lineY2, lineW, 2.5).fill({ color: UI_GOLD, alpha: 0.9 });
+      this.statusPanelToggleGfx.rect(inset, lineY3, lineW, 2.5).fill({ color: UI_GOLD, alpha: 0.9 });
+    } else {
+      const my = th * 0.5 - 1.25;
+      this.statusPanelToggleGfx.rect(inset, my, lineW, 2.5).fill({ color: UI_GOLD, alpha: 0.92 });
+    }
+  }
+
+  private refreshStatusPanelContent(): void {
+    const text = this.statusPanelBodyText;
+    if (!text || !this.statusPanelExpanded) {
+      return;
+    }
+    const session = getGameUserSession();
+    const nick = session?.nickname?.trim() || '—';
+    const cur = Math.max(
+      0,
+      Math.floor(Math.max(this.getHudClimbMeters(), this.getBestLandedClimbMeters())),
+    );
+    const pbH = session?.personalBest.maxHeightMeters ?? 0;
+    const best = Math.max(pbH, this.peakClimbMetersThisRun);
+    const comboPb = session?.personalBest.bestCombo ?? 0;
+    const comboMax = Math.max(comboPb, this.peakComboThisRun, this.comboCount);
+
+    text.text = [
+      `NICK  ${nick}`,
+      `NOW   ${cur.toLocaleString()} m`,
+      `BEST  ${best.toLocaleString()} m`,
+      `MAX   ${comboMax.toLocaleString()} combo`,
+    ].join('\n');
+  }
+
   /**
    * Bottom-right virtual attack button. Tapping or clicking it triggers `playerAttack()`,
    * matching the keyboard `F` binding. Uses `stopPropagation` so the underlying full-screen
@@ -5108,16 +5280,36 @@ export class PlayScene implements Scene {
     this.touchControlsLayer.visible = false;
     if (!this.deathSubmitted) {
       this.deathSubmitted = true;
-      const nicknameRaw = getSavedNickname() || 'Player';
-      const nickname = nicknameRaw.trim().slice(0, 20) || 'Player';
-      const sessionRow: LeaderboardEntry = {
-        nickname,
-        totalScore: totalForLeaderboard,
-        maxHeightMeters: Math.max(0, Math.floor(this.peakClimbMetersThisRun)),
-        bestCombo: Math.max(0, Math.floor(this.peakComboThisRun)),
-        createdAtMs: Date.now(),
-      };
       void (async () => {
+        const user = auth.currentUser;
+        if (!user?.uid) {
+          console.warn('[PlayScene] No signed-in user — leaderboard save skipped');
+          return;
+        }
+        const hPB = Math.max(0, Math.floor(this.peakClimbMetersThisRun));
+        const cPB = Math.max(0, Math.floor(this.peakComboThisRun));
+
+        try {
+          await upsertPersonalBestIfBetter(user, hPB, cPB);
+          patchSessionPersonalBest(hPB, cPB);
+          this.refreshStatusPanelContent();
+        } catch {
+          /* offline / rules — still try leaderboard with last known ledger */
+        }
+
+        let sessionRow: LeaderboardEntry;
+        try {
+          const synced = await buildLeaderboardRowFromSyncedUser(user.uid, totalForLeaderboard);
+          if (!synced) {
+            console.warn('[PlayScene] Missing /users/ ledger — leaderboard save skipped');
+            return;
+          }
+          sessionRow = synced;
+        } catch {
+          console.error('[PlayScene] Failed building synced leaderboard row');
+          return;
+        }
+
         let remote: LeaderboardEntry[];
         try {
           remote = await fetchTopLeaderboard(LEADERBOARD_DISPLAY_LIMIT);
@@ -5134,10 +5326,11 @@ export class PlayScene implements Scene {
         }
         try {
           await saveLeaderboardRun({
-            nickname,
+            nickname: sessionRow.nickname,
             totalScore: sessionRow.totalScore,
             maxHeightMeters: sessionRow.maxHeightMeters,
             bestCombo: sessionRow.bestCombo,
+            playerUid: user.uid,
           });
           console.info('[PlayScene] leaderboard run saved', sessionRow);
           this.showScoreSavedHint();
@@ -5295,6 +5488,7 @@ export class PlayScene implements Scene {
     this.updateWindParticles(dt);
     this.spawnWindParticlesForAltitude(dt);
     this.refreshClimbHudText();
+    this.refreshStatusPanelContent();
     this.redrawMushroomStompBadge();
     this.refreshAutoScrollHud();
   }

@@ -11,6 +11,7 @@ import {
   set,
 } from 'firebase/database';
 import { rtdb } from '../../firebase.js';
+import { fetchUserLedger } from './rtdbUsers';
 
 /** One saved run for RTDB + HUD (sorted by {@link LeaderboardEntry.totalScore}). */
 export type LeaderboardEntry = {
@@ -22,6 +23,8 @@ export type LeaderboardEntry = {
   /** Peak jump-chain (combo) count reached during that run. */
   bestCombo: number;
   createdAtMs: number;
+  /** Auth UID when row was synced from `/users/` (optional legacy rows omit this). */
+  playerUid?: string;
 };
 
 /** Rows shown on the leaderboard UI (`orderByChild('totalScore')` + limit). */
@@ -55,11 +58,37 @@ function leaderboardRootRef() {
   return ref(rtdb, LEADERBOARD_COLLECTION);
 }
 
+/**
+ * Leaderboard snapshot row with **nickname** and PB stats sourced from `/users/{uid}/profile`
+ * and `/users/{uid}/stats` (expects stats already merged for this run).
+ */
+export async function buildLeaderboardRowFromSyncedUser(
+  uid: string,
+  totalScore: number,
+): Promise<LeaderboardEntry | null> {
+  const ledger = await fetchUserLedger(uid);
+  if (!ledger) {
+    return null;
+  }
+  const nickname = ledger.profile.nickname.trim().slice(0, 20) || 'Player';
+  const maxHeightMeters = Math.max(0, Math.floor(ledger.stats.maxHeight ?? 0));
+  const bestCombo = Math.max(0, Math.floor(ledger.stats.bestCombo ?? 0));
+  return {
+    nickname,
+    totalScore: Math.max(0, Math.floor(totalScore)),
+    maxHeightMeters,
+    bestCombo,
+    createdAtMs: Date.now(),
+    playerUid: uid,
+  };
+}
+
 export type SaveLeaderboardRunPayload = {
   nickname: string;
   totalScore: number;
   maxHeightMeters: number;
   bestCombo: number;
+  playerUid?: string;
 };
 
 /**
@@ -76,6 +105,7 @@ export async function saveLeaderboardRun(payload: SaveLeaderboardRunPayload): Pr
     maxHeightMeters: Math.max(0, Math.floor(payload.maxHeightMeters)),
     bestCombo: Math.max(0, Math.floor(payload.bestCombo)),
     createdAt: createdAtMs,
+    ...(payload.playerUid ? { playerUid: payload.playerUid } : {}),
   };
   console.info('[leaderboard] saveLeaderboardRun → push /' + LEADERBOARD_COLLECTION, doc);
   const newRef = push(leaderboardRootRef());
@@ -207,6 +237,11 @@ function parseLeaderboardDoc(data: Record<string, unknown>): LeaderboardEntry {
     maxHeightMeters: Math.max(0, Math.floor(maxHeightMeters)),
     bestCombo: Math.max(0, Math.floor(bestCombo)),
     createdAtMs,
+    ...(typeof data.playerUid === 'string'
+      ? { playerUid: data.playerUid.trim() || undefined }
+      : typeof data.uid === 'string'
+        ? { playerUid: (data.uid as string).trim() || undefined }
+        : {}),
   };
 }
 

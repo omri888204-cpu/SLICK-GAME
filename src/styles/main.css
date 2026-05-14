@@ -17,9 +17,159 @@ body,
   user-select: none;
 }
 
-canvas {
-  display: block;
-  max-width: none;
-  max-height: none;
-  touch-action: none;
+.sk-landing {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 20%, rgba(57, 255, 20, 0.08), transparent 52%),
+    linear-gradient(#05050a 0%, #080818 55%, #030308 100%);
+  overflow: hidden auto;
+  touch-action: auto;
+}
+
+.sk-landing__panel {
+  width: min(440px, 92vw);
+  padding: 24px;
+  border-radius: 18px;
+  background: rgba(46, 0, 75, 0.72);
+  border: 1px solid rgba(57, 255, 20, 0.6);
+  box-shadow:
+    0 0 20px rgba(57, 255, 20, 0.2),
+    inset 0 0 42px rgba(0, 0, 0, 0.25);
+}
+
+.sk-landing__panel--wide {
+  width: min(560px, 94vw);
+}
+
+.sk-landing__title {
+  margin: 0 0 6px;
+  font-family: Orbitron, 'Segoe UI', system-ui, sans-serif;
+  font-size: 1.65rem;
+  font-weight: 800;
+  color: #ffd700;
+  text-align: center;
+  text-shadow: 0 0 10px rgba(255, 215, 0, 0.55);
+}
+
+.sk-landing__sub {
+  margin: 0 0 16px;
+  font-size: 0.95rem;
+  color: #9ab8a8;
+  text-align: center;
+  line-height: 1.35;
+}
+
+.sk-landing__tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.sk-landing__tab {
+  flex: 1;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(57, 255, 20, 0.35);
+  background: rgba(0, 0, 0, 0.35);
+  color: #8ae89a;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sk-landing__tab--on {
+  border-color: rgba(255, 215, 0, 0.75);
+  color: #ffd700;
+}
+
+.sk-landing__form {
+  display: grid;
+  gap: 10px;
+}
+
+.sk-landing__input {
+  height: 46px;
+  border-radius: 12px;
+  padding: 0 14px;
+  border: 1px solid rgba(57, 255, 20, 0.55);
+  background: rgba(0, 0, 0, 0.5);
+  color: #ffd700;
+  outline: none;
+  font-family: Orbitron, 'Segoe UI', system-ui, sans-serif;
+  font-size: 1rem;
+  user-select: text;
+  touch-action: manipulation;
+}
+
+.sk-landing__btn {
+  height: 48px;
+  border-radius: 12px;
+  border: 1px solid rgba(57, 255, 20, 0.75);
+  background: rgba(46, 0, 75, 0.9);
+  color: #ffd700;
+  font-family: Orbitron, 'Segoe UI', system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  text-shadow: 0 0 8px rgba(255, 215, 0, 0.55);
+}
+
+.sk-landing__divider {
+  margin: 4px 0 2px;
+  text-align: center;
+  font-size: 0.85rem;
+  color: #6a8a7a;
+}
+
+.sk-landing__btn--google {
+  border-color: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.1);
+  color: #f0faf4;
+  text-shadow: none;
+}
+
+.sk-landing__btn--google:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.sk-landing__err {
+  min-height: 22px;
+  margin: 10px 0 0;
+  text-align: center;
+  color: #ff8ea7;
+  font-size: 0.9rem;
+}
+
+.sk-landing__char-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.sk-landing__char {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(57, 255, 20, 0.45);
+  background: rgba(0, 0, 0, 0.4);
+  color: #e8fff0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sk-landing__char-title {
+  font-family: Orbitron, 'Segoe UI', system-ui, sans-serif;
+  font-weight: 800;
+  color: #ffd700;
+}
+
+.sk-landing__char-hint {
+  font-size: 0.82rem;
+  color: #8aa898;
 }
