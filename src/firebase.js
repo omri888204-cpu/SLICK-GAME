@@ -1,10 +1,14 @@
 import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import { getDatabase } from 'firebase/database';
 
-/** Hardcoded web app config (bypasses build-time env on hosts like Vercel). */
+/**
+ * Hardcoded web app config (bypasses build-time env on hosts like Vercel).
+ * `databaseURL` targets the europe-west1 Realtime Database instance (not the root; app code only uses child paths).
+ */
 const firebaseConfig = {
   apiKey: 'AIzaSyCAbFNV0Z2Nkzz95s9_Fk1GzgmpuFRqJ1k',
   authDomain: 'drift-vip.firebaseapp.com',
+  databaseURL: 'https://drift-vip-default-rtdb.europe-west1.firebasedatabase.app/',
   projectId: 'drift-vip',
   storageBucket: 'drift-vip.appspot.com',
   messagingSenderId: '474930466991',
@@ -13,7 +17,7 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 
-/** Shared Firestore instance for leaderboard reads/writes. */
-export const db = getFirestore(app);
+/** Realtime Database — leaderboard code uses child paths only (e.g. `leaderboard/`), never the DB root. */
+export const rtdb = getDatabase(app);
 
 export { app, firebaseConfig };

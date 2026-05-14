@@ -1,17 +1,18 @@
 import {
-  addDoc,
-  collection,
-  getDocs,
-  limit,
-  onSnapshot,
-  orderBy,
+  type DataSnapshot,
+  get,
+  limitToLast,
+  onValue,
+  orderByChild,
+  push,
   query,
-  serverTimestamp,
-  writeBatch,
-} from 'firebase/firestore';
-import { db } from '../../firebase.js';
+  ref,
+  remove,
+  set,
+} from 'firebase/database';
+import { rtdb } from '../../firebase.js';
 
-/** One saved run for Firestore + HUD (sorted by {@link LeaderboardEntry.totalScore}). */
+/** One saved run for RTDB + HUD (sorted by {@link LeaderboardEntry.totalScore}). */
 export type LeaderboardEntry = {
   nickname: string;
   /** Total points for this run — primary leaderboard sort. */
@@ -23,27 +24,31 @@ export type LeaderboardEntry = {
   createdAtMs: number;
 };
 
-/** Rows shown on the leaderboard UI and capped Firestore reads (`orderBy totalScore`, `limit`). */
+/** Rows shown on the leaderboard UI (`orderByChild('totalScore')` + limit). */
 export const LEADERBOARD_DISPLAY_LIMIT = 5;
 
 /**
- * Primary Firestore collection (must match Firebase Rules + any composite indexes).
- * Fields: `nickname`, `totalScore`, `maxHeightMeters`, `bestCombo`, `createdAt`.
+ * Top-level RTDB path for scores (child of db root — does not replace `/`).
+ * Full path: `/leaderboard/{pushId}`.
  */
 export const LEADERBOARD_COLLECTION = 'leaderboard';
 
-/** Older experiments / migrations; wiped by {@link clearLeaderboardDatabase}. */
+/** Legacy path; emptied together with main leaderboard. */
 export const LEADERBOARD_COLLECTION_ALT = 'global_top_runs';
 
-/** Legacy Firebase path name — emptied together with `{@link LEADERBOARD_COLLECTION}`. */
+/** Legacy path name. */
 export const LEADERBOARD_SCORES_COLLECTION_LEGACY = 'scores';
 
-/** All Firestore buckets deleted by bootstrap / purge (batch `delete`). */
+/** Child paths removed entirely by {@link clearLeaderboardDatabase} (not the database root). */
 export const LEADERBOARD_CLEARABLE_COLLECTIONS = [
   LEADERBOARD_COLLECTION,
   LEADERBOARD_COLLECTION_ALT,
   LEADERBOARD_SCORES_COLLECTION_LEGACY,
 ] as const;
+
+function leaderboardRootRef() {
+  return ref(rtdb, LEADERBOARD_COLLECTION);
+}
 
 export type SaveLeaderboardRunPayload = {
   nickname: string;
@@ -53,26 +58,23 @@ export type SaveLeaderboardRunPayload = {
 };
 
 /**
- * Persist one run that already qualifies as a global top-{@link LEADERBOARD_DISPLAY_LIMIT} entry.
- * Fields: `nickname`, `totalScore`, `maxHeightMeters`, `bestCombo`, `createdAt`.
+ * Write one qualifying run under `/leaderboard/{autoId}`.
  *
- * **Purging legacy rows:** set `VITE_LEADERBOARD_ONE_TIME_PURGE` until you redeploy without it (see {@link tryOneTimeScheduledLeaderboardPurge}); or briefly `VITE_CLEAR_LEADERBOARD_ON_BOOT=true`.
+ * **RTDB rules:** add `"leaderboard": { ".indexOn": ["totalScore"] }` for ordered queries.
  */
 export async function saveLeaderboardRun(payload: SaveLeaderboardRunPayload): Promise<void> {
   const cleanNick = payload.nickname.trim().slice(0, 20) || 'Player';
+  const createdAtMs = Date.now();
   const doc = {
     nickname: cleanNick,
     totalScore: Math.max(0, Math.floor(payload.totalScore)),
     maxHeightMeters: Math.max(0, Math.floor(payload.maxHeightMeters)),
     bestCombo: Math.max(0, Math.floor(payload.bestCombo)),
-    createdAt: serverTimestamp(),
+    createdAt: createdAtMs,
   };
-  console.info('[leaderboard] saveLeaderboardRun → addDoc', {
-    collection: LEADERBOARD_COLLECTION,
-    ...doc,
-    createdAt: '[serverTimestamp]',
-  });
-  await addDoc(collection(db, LEADERBOARD_COLLECTION), doc);
+  console.info('[leaderboard] saveLeaderboardRun → push /' + LEADERBOARD_COLLECTION, doc);
+  const newRef = push(leaderboardRootRef());
+  await set(newRef, doc);
 }
 
 /** @deprecated Prefer {@link saveLeaderboardRun}. */
@@ -88,38 +90,23 @@ export async function saveScore(nickname: string, score: number): Promise<void> 
 /** @deprecated Use {@link saveLeaderboardRun} */
 export const submitLeaderboardScore = saveScore;
 
-async function deleteAllDocsInCollection(collectionId: string): Promise<number> {
-  const snap = await getDocs(collection(db, collectionId));
-  const docs = snap.docs;
-  let deleted = 0;
-  const BATCH = 500;
-  for (let i = 0; i < docs.length; i += BATCH) {
-    const batch = writeBatch(db);
-    const chunk = docs.slice(i, i + BATCH);
-    for (const d of chunk) {
-      batch.delete(d.ref);
-    }
-    try {
-      await batch.commit();
-    } catch (err) {
-      console.error(
-        `[leaderboard] delete batch failed for "${collectionId}" (${chunk.length} refs) — check Firestore rules allow delete`,
-        err,
-      );
-      throw err;
-    }
-    deleted += chunk.length;
+async function removeSubtreeAtPath(path: string): Promise<number> {
+  const r = ref(rtdb, path);
+  const snap = await get(r);
+  const n = snap.exists() && snap.val() !== null ? Object.keys(snap.val() as object).length : 0;
+  if (snap.exists()) {
+    await remove(r);
   }
-  return deleted;
+  return n;
 }
 
 /**
- * Batch-deletes **every document** under {@link LEADERBOARD_CLEARABLE_COLLECTIONS} (`delete()` on each ref).
+ * Deletes each top-level child path in {@link LEADERBOARD_CLEARABLE_COLLECTIONS} (`remove()` on that node only).
  */
 export async function clearLeaderboardDatabase(): Promise<number> {
   let total = 0;
-  for (const cid of LEADERBOARD_CLEARABLE_COLLECTIONS) {
-    total += await deleteAllDocsInCollection(cid);
+  for (const p of LEADERBOARD_CLEARABLE_COLLECTIONS) {
+    total += await removeSubtreeAtPath(p);
   }
   return total;
 }
@@ -173,20 +160,24 @@ function parseLeaderboardDoc(data: Record<string, unknown>): LeaderboardEntry {
     Number.isFinite(legacyScore) &&
     typeof totalScoreRaw !== 'number'
   ) {
-    /** Legacy docs stored meters as `score` only. */
     maxHeightMeters = legacyScore;
   }
 
   const bc = data.bestCombo;
   const bestCombo = typeof bc === 'number' && Number.isFinite(bc) ? bc : 0;
 
-  const createdAtMs =
-    typeof data.createdAt === 'object' &&
-    data.createdAt !== null &&
-    'toMillis' in data.createdAt &&
-    typeof (data.createdAt as { toMillis: () => number }).toMillis === 'function'
-      ? (data.createdAt as { toMillis: () => number }).toMillis()
-      : Date.now();
+  let createdAtMs = Date.now();
+  const ca = data.createdAt;
+  if (typeof ca === 'number' && Number.isFinite(ca)) {
+    createdAtMs = ca;
+  } else if (
+    typeof ca === 'object' &&
+    ca !== null &&
+    'toMillis' in ca &&
+    typeof (ca as { toMillis: () => number }).toMillis === 'function'
+  ) {
+    createdAtMs = (ca as { toMillis: () => number }).toMillis();
+  }
 
   return {
     nickname,
@@ -195,6 +186,14 @@ function parseLeaderboardDoc(data: Record<string, unknown>): LeaderboardEntry {
     bestCombo: Math.max(0, Math.floor(bestCombo)),
     createdAtMs,
   };
+}
+
+function snapshotToEntries(snap: DataSnapshot): LeaderboardEntry[] {
+  if (!snap.exists() || snap.val() == null) {
+    return [];
+  }
+  const val = snap.val() as Record<string, Record<string, unknown>>;
+  return Object.values(val).map((row) => parseLeaderboardDoc(row));
 }
 
 /** Higher score first; ties use height, then combo, then newer run (deterministic UI). */
@@ -212,7 +211,7 @@ export function compareLeaderboardRank(a: LeaderboardEntry, b: LeaderboardEntry)
 }
 
 /**
- * After a qualifying save, merges the submitted run into `remote` for immediate UI parity with Firestore.
+ * After a qualifying save, merges the submitted run into `remote` for immediate UI parity with RTDB.
  */
 export function mergeSessionIntoTop(
   remote: LeaderboardEntry[],
@@ -224,7 +223,6 @@ export function mergeSessionIntoTop(
 
 /**
  * True if `session` is one of the best `limitCount` runs among `remote ∪ {session}` (same ranking as the UI).
- * Used to avoid saving or locally merging runs that cannot appear on the leaderboard.
  */
 export function sessionQualifiesForTop(
   remote: LeaderboardEntry[],
@@ -238,51 +236,44 @@ export function sessionQualifiesForTop(
 }
 
 export async function fetchTopLeaderboard(limitCount = LEADERBOARD_DISPLAY_LIMIT): Promise<LeaderboardEntry[]> {
-  const col = collection(db, LEADERBOARD_COLLECTION);
+  const base = leaderboardRootRef();
   try {
-    const q = query(col, orderBy('totalScore', 'desc'), limit(limitCount));
-    const snapshot = await getDocs(q);
-    const rows = snapshot.docs.map((docSnap) =>
-      parseLeaderboardDoc(docSnap.data() as Record<string, unknown>),
-    );
+    const q = query(base, orderByChild('totalScore'), limitToLast(limitCount));
+    const snapshot = await get(q);
+    const rows = snapshotToEntries(snapshot);
     rows.sort(compareLeaderboardRank);
     return rows.slice(0, limitCount);
   } catch (err) {
     console.warn(
-      '[leaderboard] ordered query failed (missing index or rules); falling back to client sort',
+      '[leaderboard] RTDB ordered query failed (rules / index); falling back to client sort',
       err,
     );
-    const snapshot = await getDocs(query(col, limit(200)));
-    const rows = snapshot.docs.map((docSnap) =>
-      parseLeaderboardDoc(docSnap.data() as Record<string, unknown>),
-    );
+    const snapshot = await get(base);
+    const rows = snapshotToEntries(snapshot);
     rows.sort(compareLeaderboardRank);
     return rows.slice(0, limitCount);
   }
 }
 
 /**
- * Live Top N — updates whenever any qualifying document changes (same query as {@link fetchTopLeaderboard}).
- * Caller must invoke the returned unsubscribe (e.g. in `Scene.destroy`) to avoid leaks.
+ * Live Top N — updates whenever `/leaderboard` data matching the query changes.
+ * Caller must invoke the returned unsubscribe to avoid leaks.
  */
 export function subscribeTopLeaderboard(
   limitCount: number,
   onUpdate: (entries: LeaderboardEntry[]) => void,
   onError?: (err: unknown) => void,
 ): () => void {
-  const col = collection(db, LEADERBOARD_COLLECTION);
-  const q = query(col, orderBy('totalScore', 'desc'), limit(limitCount));
-  return onSnapshot(
+  const q = query(leaderboardRootRef(), orderByChild('totalScore'), limitToLast(limitCount));
+  return onValue(
     q,
     (snapshot) => {
-      const rows = snapshot.docs.map((docSnap) =>
-        parseLeaderboardDoc(docSnap.data() as Record<string, unknown>),
-      );
+      const rows = snapshotToEntries(snapshot);
       rows.sort(compareLeaderboardRank);
       onUpdate(rows.slice(0, limitCount));
     },
     (err) => {
-      console.warn('[leaderboard] onSnapshot failed — check Firestore index for leaderboard/totalScore', err);
+      console.warn('[leaderboard] onValue failed — check RTDB rules and .indexOn for leaderboard/totalScore', err);
       onError?.(err);
     },
   );
