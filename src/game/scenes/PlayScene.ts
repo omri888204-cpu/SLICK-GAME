@@ -574,9 +574,10 @@ const SKILL_CHAIN_SCORE_PER_COMBO = 32;
 const COMBO_GLOW_STREAK = 15;
 /** Grounded jumps before the skill pair unlocks (both buttons; counter resets after mega jump / expiry). */
 const PULL_UP_JUMPS_REQUIRED = 8;
-/** Combo HUD anchor (screen px); sits below the skill pair strip. */
+/** Combo HUD anchor X; Y is computed under the skill pair in `layoutComboHudRoot`. */
 const COMBO_HUD_SCREEN_X = 20;
-const COMBO_HUD_SCREEN_Y = 182;
+/** Vertical gap between skill buttons strip and combo badge. */
+const COMBO_BELOW_SKILL_PAIR_GAP_PX = 8;
 /** Uniform scale for combo badge only (`uiLayer`, screen-fixed — equivalent to scrollFactor 0). */
 const COMBO_HUD_ROOT_SCALE = 0.33;
 /** Skill pair (`SUPER JUMP` + `PULL UP`): screen-fixed on `uiLayer` — Phaser `scrollFactor` 0 equivalent. */
@@ -586,7 +587,8 @@ const PULL_UP_BTN_H = 44;
 const SKILL_PAIR_BTN_GAP_PX = 14;
 /** Top-left anchor under main HUD / health stack (unscaled layout coords before `skillPairRoot.scale`). */
 const SKILL_PAIR_HUD_X = 100;
-const SKILL_PAIR_HUD_Y = 140;
+/** Tight offset below the main header panel bottom (`UI_SAFE_PAD_TOP` + `UI_HEADER_H`). */
+const SKILL_PAIR_BELOW_HEADER_GAP_PX = 4;
 /** Uniform scale on `skillPairRoot` (mobile tap targets). */
 const PULL_UP_BTN_SCALE = 0.65;
 /** Super Tongue effects (matches the user-confirmed "B" recipe). */
@@ -1214,8 +1216,8 @@ export class PlayScene implements Scene {
     }
     this.layoutCollectibleHud();
     this.layoutClimbHud();
-    this.layoutComboHudRoot();
     this.layoutSkillPairHud();
+    this.layoutComboHudRoot();
     this.layoutAutoScrollHud();
     this.layoutGameOverUi();
     this.layoutHeaderPauseButton();
@@ -3070,7 +3072,10 @@ export class PlayScene implements Scene {
    * equivalent to Phaser `scrollFactor(0)` / camera‑fixed HUD.
    */
   private layoutComboHudRoot(): void {
-    this.comboHudRoot.position.set(COMBO_HUD_SCREEN_X, COMBO_HUD_SCREEN_Y);
+    const skillBarTop = UI_SAFE_PAD_TOP + UI_HEADER_H + SKILL_PAIR_BELOW_HEADER_GAP_PX;
+    const skillBarBottom = skillBarTop + PULL_UP_BTN_H * PULL_UP_BTN_SCALE;
+    const comboY = skillBarBottom + COMBO_BELOW_SKILL_PAIR_GAP_PX;
+    this.comboHudRoot.position.set(COMBO_HUD_SCREEN_X, comboY);
     this.comboHudRoot.scale.set(COMBO_HUD_ROOT_SCALE);
   }
 
@@ -3133,19 +3138,22 @@ export class PlayScene implements Scene {
     this.comboHudRoot.addChild(this.comboBadge);
     this.uiLayer.addChild(this.comboHudRoot);
     this.uiLayer.addChild(this.skillPairRoot);
-    this.layoutComboHudRoot();
     this.layoutSkillPairHud();
+    this.layoutComboHudRoot();
     this.drawSuperJumpButton();
     this.drawSuperTongueButton();
   }
 
   /**
-   * Skill pair fixed on `uiLayer` (never `world`) — camera-fixed HUD (`scrollFactor` 0 equivalent).
-   * Top-left anchor `(SKILL_PAIR_HUD_X, SKILL_PAIR_HUD_Y)` under the main header / health stack.
+   * Skill pair on `uiLayer` only — fixed to the camera (`scrollFactor` 0 equivalent).
+   * Y sits flush under the purple header bar bottom: `UI_SAFE_PAD_TOP + UI_HEADER_H` + {@link SKILL_PAIR_BELOW_HEADER_GAP_PX}.
    */
   private layoutSkillPairHud(): void {
     this.skillPairRoot.pivot.set(0, 0);
-    this.skillPairRoot.position.set(SKILL_PAIR_HUD_X, SKILL_PAIR_HUD_Y);
+    this.skillPairRoot.position.set(
+      SKILL_PAIR_HUD_X,
+      UI_SAFE_PAD_TOP + UI_HEADER_H + SKILL_PAIR_BELOW_HEADER_GAP_PX,
+    );
     this.superJumpBtnGfx.hitArea = new Rectangle(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H);
     this.superTongueBtnGfx.hitArea = new Rectangle(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H);
   }
