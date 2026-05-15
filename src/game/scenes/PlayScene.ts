@@ -2603,10 +2603,15 @@ export class PlayScene implements Scene {
   }
 
   private resumePlatformsAboveRestFloor(restY: number): void {
-    if (this.platforms.some((platform) => platform.y < restY && platform.kind !== 'rest')) {
+    const restPlatform = this.platforms.find(
+      (platform) => platform.kind === 'rest' && Math.abs(platform.y - restY) < 0.5,
+    );
+    if (!restPlatform) {
       return;
     }
 
+    this.platforms = [restPlatform];
+    this.collectibles = [];
     let previousTopY = restY;
     for (let i = 1; i < STAIRS.poolCount; i += 1) {
       this.nextStairId += 1;
@@ -2628,6 +2633,11 @@ export class PlayScene implements Scene {
       previousTopY = y;
     }
 
+    this.currentGroundPlatform = null;
+    this.lastLandedPlatform = restPlatform;
+    if (this.grapple && !this.platforms.some((platform) => platform.stairId === this.grapple?.hookStairId)) {
+      this.grapple = null;
+    }
     this.rebuildPlatformSprites();
     this.spawnCollectibleField();
     this.spawnMushroomEnemies();
