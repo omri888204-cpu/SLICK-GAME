@@ -8,7 +8,7 @@ export const RENDER = {
    * multiple logical steps per vsync (smoother, more consistent dt).
    */
   forceSingleUpdate: true,
-  maxTickerFps: 60,
+  maxTickerFps: 120,
   /** Floor for FPS cap on the ticker (limits how large deltaMS can grow between ticks). */
   minTickerFps: 10,
   /**
