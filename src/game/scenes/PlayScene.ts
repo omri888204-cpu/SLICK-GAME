@@ -42,7 +42,11 @@ import {
   subscribeTopLeaderboard,
   type LeaderboardEntry,
 } from '../services/leaderboard';
-import { upsertPersonalBestIfBetter } from '../services/rtdbUsers';
+import {
+  incrementUserBagBalances,
+  subscribeUserBagBalances,
+  upsertPersonalBestIfBetter,
+} from '../services/rtdbUsers';
 import { getGameUserSession, patchSessionPersonalBest, clearGameUserSession } from '../services/userSession';
 import { clearSavedPlayerProfile } from '../services/playerProfile';
 import { auth } from '../../firebase.js';
@@ -106,6 +110,17 @@ type MushroomDeathEffect = {
 };
 
 type CollectibleKind = 'coin' | 'diamond' | 'shield';
+
+type BagItemKind = 'gold' | 'diamond';
+
+type BagSlotItem = {
+  kind: BagItemKind;
+};
+
+type BagDragState = {
+  fromSlot: number;
+  item: BagSlotItem;
+};
 
 type Collectible = {
   kind: CollectibleKind;
@@ -538,10 +553,14 @@ const STATUS_PANEL_TAB_GAP_PX = 6;
 /** Gap between tab row and shared stats / leaderboard content region. */
 const STATUS_PANEL_TAB_INNER_GAP_PX = 4;
 /** Shared slot: MY STATS block and global leaderboard viewport occupy the same vertical space. */
-const STATUS_PANEL_CONTENT_AREA_H_PX = 80;
-const STATUS_PANEL_LB_VIEWPORT_H_PX = 80;
+const STATUS_PANEL_CONTENT_AREA_H_PX = 138;
+const STATUS_PANEL_LB_VIEWPORT_H_PX = 138;
 const STATUS_PANEL_CONTENT_TO_SEP_GAP_PX = 8;
 const STATUS_PANEL_LB_ROW_LINE_PX = 16;
+const STATUS_PANEL_BAG_SLOT_COUNT = 24;
+const STATUS_PANEL_BAG_COLS = 6;
+const STATUS_PANEL_BAG_SLOT_PX = 27;
+const STATUS_PANEL_BAG_SLOT_GAP_PX = 4;
 
 function getStatusPanelExpandedBodyHeightPx(): number {
   const pad = STATUS_PANEL_BODY_PAD_PX;
@@ -790,14 +809,25 @@ export class PlayScene implements Scene {
   private statusPanelBodyGfx = new Graphics();
   private statusPanelToggleGfx = new Graphics();
   private statusPanelToggleHit = new Graphics();
-  /** Right sidebar: `MY STATS` vs `GLOBAL TOP 5` (mutually exclusive body content). */
-  private statusPanelSidebarTab: 'stats' | 'global' = 'stats';
+  /** Right sidebar: `MY STATS` vs `YOUR BAG` vs `GLOBAL TOP 5` (mutually exclusive body content). */
+  private statusPanelSidebarTab: 'stats' | 'bag' | 'global' = 'stats';
   private statusPanelTabStatsBtn = new Graphics();
+  private statusPanelTabBagBtn = new Graphics();
   private statusPanelTabGlobalBtn = new Graphics();
   private statusPanelTabStatsLabel?: Text;
+  private statusPanelTabBagLabel?: Text;
   private statusPanelTabGlobalLabel?: Text;
   private statusPanelMyStatsMainText?: Text;
   private statusPanelMyStatsPtsText?: Text;
+  private statusPanelBagRoot = new Container();
+  private statusPanelBagSlots: Graphics[] = [];
+  private statusPanelBagItems = new Container();
+  private statusPanelBagDragGhost = new Container();
+  private statusPanelBagDragState: BagDragState | null = null;
+  private statusPanelBagSlotItems: Array<BagSlotItem | null> = Array.from(
+    { length: STATUS_PANEL_BAG_SLOT_COUNT },
+    () => null,
+  );
   private statusPanelSepGfx = new Graphics();
   private statusPanelLogoutBtn = new Graphics();
   private statusPanelLogoutLabel?: Text;
@@ -890,14 +920,20 @@ export class PlayScene implements Scene {
   /** Peak {@link comboCount} this run — for leaderboard best combo. */
   private peakComboThisRun = 0;
   private deathSubmitted = false;
-  /** Latest remote top N from Firestore — kept fresh via {@link subscribeTopLeaderboard} while PlayScene lives. */
+  /** Latest remote top N from RTDB — kept fresh via {@link subscribeTopLeaderboard} while PlayScene lives. */
   private lastLeaderboardTop: LeaderboardEntry[] = [];
   private leaderboardUnsubscribe: (() => void) | null = null;
+  /** Lifetime YOUR BAG totals from `/users/{uid}/stats` — updated live via {@link subscribeUserBagBalances}. */
+  private remoteBagGold = 0;
+  private remoteBagDiamond = 0;
+  private userBagUnsubscribe: (() => void) | null = null;
   private collectibles: Collectible[] = [];
   /** Last-milestone sweep (⌊max climb m / 1000⌋) — see {@link maybeRunPeriodicPoolMaintenance}. */
   private lastPoolSweepKmBand = -1;
   private goldCount = 0;
   private diamondCount = 0;
+  private runGoldCollected = 0;
+  private runDiamondCollected = 0;
   /**
    * Mushroom enemies live in their own world-space container so they sort above platforms but
    * below the player. The `mushroomEnemies` / `mushroomEnemySprites` arrays are kept in
@@ -1158,6 +1194,7 @@ export class PlayScene implements Scene {
     this.applyCameraTransform();
     this.drawDynamicWorld();
     this.startLeaderboardRealtimeSubscription();
+    this.startUserBagRealtimeSubscription();
   }
 
   update(ticker: Ticker): void {
@@ -1450,6 +1487,10 @@ export class PlayScene implements Scene {
   }
 
   destroy(): void {
+    this.app?.stage.off('pointermove', this.handleStatusPanelBagPointerMove);
+    this.app?.stage.off('pointerup', this.handleStatusPanelBagPointerUp);
+    this.app?.stage.off('pointerupoutside', this.handleStatusPanelBagPointerUp);
+    this.app?.stage.off('pointercancel', this.handleStatusPanelBagPointerUp);
     if (this.input?.isTouchControlsActive()) {
       this.app?.stage.off('pointerdown', this.handleTouchPointerDown);
       this.app?.stage.off('pointermove', this.handleTouchPointerMove);
@@ -1474,6 +1515,8 @@ export class PlayScene implements Scene {
     this.gameShake.destroy({ children: true });
     this.leaderboardUnsubscribe?.();
     this.leaderboardUnsubscribe = null;
+    this.userBagUnsubscribe?.();
+    this.userBagUnsubscribe = null;
   }
 
   private handleActions(): void {
@@ -2138,6 +2181,9 @@ export class PlayScene implements Scene {
     this.lastPoolSweepKmBand = -1;
     this.goldCount = 0;
     this.diamondCount = 0;
+    this.runGoldCollected = 0;
+    this.runDiamondCollected = 0;
+    this.resetBagSlots();
     this.collectibles = [];
     this.jumpCount = 0;
     this.comboCount = 0;
@@ -2218,6 +2264,9 @@ export class PlayScene implements Scene {
     this.syncScrollSpeedTierBaseline();
     if (opts?.pickNewBgm === true) {
       this.startBackgroundMusic();
+    }
+    if (this.statusPanelExpanded) {
+      this.refreshStatusPanelContent();
     }
   }
 
@@ -4700,6 +4749,16 @@ export class PlayScene implements Scene {
       this.selectStatusPanelTab('stats');
     });
 
+    this.statusPanelTabBagBtn.eventMode = 'static';
+    this.statusPanelTabBagBtn.cursor = 'pointer';
+    this.statusPanelTabBagBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.statusPanelTabBagBtn.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.selectStatusPanelTab('bag');
+    });
+
     this.statusPanelTabGlobalBtn.eventMode = 'static';
     this.statusPanelTabGlobalBtn.cursor = 'pointer';
     this.statusPanelTabGlobalBtn.on('pointerdown', (event) => {
@@ -4725,8 +4784,23 @@ export class PlayScene implements Scene {
     this.statusPanelTabStatsLabel.eventMode = 'none';
     this.statusPanelTabStatsLabel.visible = false;
 
+    this.statusPanelTabBagLabel = new Text({
+      text: 'YOUR BAG',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 8,
+        fontWeight: '800',
+        fill: '#cce8d8',
+        stroke: { color: '#0f2814', width: 1 },
+        letterSpacing: 0.2,
+      }),
+    });
+    this.statusPanelTabBagLabel.anchor.set(0.5);
+    this.statusPanelTabBagLabel.eventMode = 'none';
+    this.statusPanelTabBagLabel.visible = false;
+
     this.statusPanelTabGlobalLabel = new Text({
-      text: 'GLOBAL TOP 5',
+      text: 'GLOBAL',
       style: new TextStyle({
         fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
         fontSize: 8,
@@ -4778,6 +4852,14 @@ export class PlayScene implements Scene {
     });
     this.statusPanelMyStatsPtsText.eventMode = 'none';
     this.statusPanelMyStatsPtsText.visible = false;
+
+    this.statusPanelBagRoot.eventMode = 'passive';
+    this.statusPanelBagRoot.visible = false;
+    this.statusPanelBagItems.eventMode = 'none';
+    this.statusPanelBagDragGhost.eventMode = 'none';
+    this.statusPanelBagDragGhost.visible = false;
+    this.createStatusPanelBagSlots();
+    this.statusPanelBagRoot.addChild(this.statusPanelBagItems, this.statusPanelBagDragGhost);
 
     this.statusPanelLogoutLabel = new Text({
       text: 'LOG OUT',
@@ -4845,11 +4927,14 @@ export class PlayScene implements Scene {
     this.statusPanelRoot.addChild(
       this.statusPanelBodyGfx,
       this.statusPanelTabStatsBtn,
+      this.statusPanelTabBagBtn,
       this.statusPanelTabGlobalBtn,
       this.statusPanelTabStatsLabel,
+      this.statusPanelTabBagLabel,
       this.statusPanelTabGlobalLabel,
       this.statusPanelMyStatsMainText,
       this.statusPanelMyStatsPtsText,
+      this.statusPanelBagRoot,
       this.statusPanelLbViewport,
       this.statusPanelSepGfx,
       this.statusPanelLogoutBtn,
@@ -4857,6 +4942,10 @@ export class PlayScene implements Scene {
       this.statusPanelToggleGfx,
       this.statusPanelToggleHit,
     );
+    this.app?.stage.on('pointermove', this.handleStatusPanelBagPointerMove);
+    this.app?.stage.on('pointerup', this.handleStatusPanelBagPointerUp);
+    this.app?.stage.on('pointerupoutside', this.handleStatusPanelBagPointerUp);
+    this.app?.stage.on('pointercancel', this.handleStatusPanelBagPointerUp);
     this.uiLayer.addChild(this.statusPanelRoot);
     this.setupLogoutConfirmOverlay();
     this.layoutStatusPanel();
@@ -4936,7 +5025,7 @@ export class PlayScene implements Scene {
     }
   }
 
-  private selectStatusPanelTab(tab: 'stats' | 'global'): void {
+  private selectStatusPanelTab(tab: 'stats' | 'bag' | 'global'): void {
     if (this.statusPanelSidebarTab === tab) {
       return;
     }
@@ -4979,12 +5068,15 @@ export class PlayScene implements Scene {
 
   private redrawStatusPanelTabs(
     tabStatsX: number,
+    tabBagX: number,
     tabGlobalX: number,
     tabY: number,
     tabW: number,
     tabH: number,
   ): void {
     const statsActive = this.statusPanelSidebarTab === 'stats';
+    const bagActive = this.statusPanelSidebarTab === 'bag';
+    const globalActive = this.statusPanelSidebarTab === 'global';
     this.drawStatusPanelTabButton(
       this.statusPanelTabStatsBtn,
       tabStatsX,
@@ -4994,12 +5086,20 @@ export class PlayScene implements Scene {
       statsActive,
     );
     this.drawStatusPanelTabButton(
+      this.statusPanelTabBagBtn,
+      tabBagX,
+      tabY,
+      tabW,
+      tabH,
+      bagActive,
+    );
+    this.drawStatusPanelTabButton(
       this.statusPanelTabGlobalBtn,
       tabGlobalX,
       tabY,
       tabW,
       tabH,
-      !statsActive,
+      globalActive,
     );
 
     if (this.statusPanelTabStatsLabel) {
@@ -5009,10 +5109,17 @@ export class PlayScene implements Scene {
         ? { color: '#4a3200', width: 1.2 }
         : { color: '#0a120a', width: 1 };
     }
+    if (this.statusPanelTabBagLabel) {
+      this.statusPanelTabBagLabel.position.set(tabBagX + tabW * 0.5, tabY + tabH * 0.5);
+      this.statusPanelTabBagLabel.style.fill = bagActive ? '#fff8c8' : '#7a9a8a';
+      this.statusPanelTabBagLabel.style.stroke = bagActive
+        ? { color: '#4a3200', width: 1.2 }
+        : { color: '#0a120a', width: 1 };
+    }
     if (this.statusPanelTabGlobalLabel) {
       this.statusPanelTabGlobalLabel.position.set(tabGlobalX + tabW * 0.5, tabY + tabH * 0.5);
-      this.statusPanelTabGlobalLabel.style.fill = !statsActive ? '#fff8c8' : '#7a9a8a';
-      this.statusPanelTabGlobalLabel.style.stroke = !statsActive
+      this.statusPanelTabGlobalLabel.style.fill = globalActive ? '#fff8c8' : '#7a9a8a';
+      this.statusPanelTabGlobalLabel.style.stroke = globalActive
         ? { color: '#4a3200', width: 1.2 }
         : { color: '#0a120a', width: 1 };
     }
@@ -5021,6 +5128,8 @@ export class PlayScene implements Scene {
   private applyStatusPanelTabVisibility(): void {
     const expanded = this.statusPanelExpanded;
     const statsTab = this.statusPanelSidebarTab === 'stats';
+    const bagTab = this.statusPanelSidebarTab === 'bag';
+    const globalTab = this.statusPanelSidebarTab === 'global';
 
     if (this.statusPanelMyStatsMainText) {
       this.statusPanelMyStatsMainText.visible = expanded && statsTab;
@@ -5028,12 +5137,16 @@ export class PlayScene implements Scene {
     if (this.statusPanelMyStatsPtsText) {
       this.statusPanelMyStatsPtsText.visible = expanded && statsTab;
     }
+    this.statusPanelBagRoot.visible = expanded && bagTab;
 
-    this.statusPanelLbViewport.visible = expanded && !statsTab;
-    this.statusPanelLbViewport.eventMode = statsTab ? 'none' : 'static';
+    this.statusPanelLbViewport.visible = expanded && globalTab;
+    this.statusPanelLbViewport.eventMode = globalTab ? 'static' : 'none';
 
     if (this.statusPanelTabStatsBtn) {
       this.statusPanelTabStatsBtn.visible = expanded;
+    }
+    if (this.statusPanelTabBagBtn) {
+      this.statusPanelTabBagBtn.visible = expanded;
     }
     if (this.statusPanelTabGlobalBtn) {
       this.statusPanelTabGlobalBtn.visible = expanded;
@@ -5041,11 +5154,14 @@ export class PlayScene implements Scene {
     if (this.statusPanelTabStatsLabel) {
       this.statusPanelTabStatsLabel.visible = expanded;
     }
+    if (this.statusPanelTabBagLabel) {
+      this.statusPanelTabBagLabel.visible = expanded;
+    }
     if (this.statusPanelTabGlobalLabel) {
       this.statusPanelTabGlobalLabel.visible = expanded;
     }
 
-    if (statsTab) {
+    if (!globalTab) {
       if (this.statusPanelLbLoading) {
         this.statusPanelLbLoading.visible = false;
       }
@@ -5085,9 +5201,221 @@ export class PlayScene implements Scene {
     const gPts = 4;
     main.position.set(pad, yTab);
     pts.position.set(pad, yTab + lh * 3 + gPts);
+    this.statusPanelBagRoot.position.set(pad, yTab);
+    this.renderStatusPanelBag();
 
     this.applyStatusPanelTabVisibility();
   }
+
+  private resetBagSlots(): void {
+    this.statusPanelBagSlotItems = Array.from({ length: STATUS_PANEL_BAG_SLOT_COUNT }, () => null);
+    this.statusPanelBagDragState = null;
+    this.statusPanelBagDragGhost.visible = false;
+  }
+
+  private createStatusPanelBagSlots(): void {
+    for (let i = 0; i < STATUS_PANEL_BAG_SLOT_COUNT; i += 1) {
+      const slot = new Graphics();
+      slot.eventMode = 'static';
+      slot.cursor = 'grab';
+      slot.on('pointerdown', (event: FederatedPointerEvent) => {
+        this.handleStatusPanelBagSlotPointerDown(i, event);
+      });
+      this.statusPanelBagRoot.addChild(slot);
+      this.statusPanelBagSlots.push(slot);
+    }
+  }
+
+  private ensureBagItemSlot(kind: BagItemKind): void {
+    const existingIndex = this.statusPanelBagSlotItems.findIndex((item) => item?.kind === kind);
+    if (existingIndex >= 0) {
+      return;
+    }
+    const emptyIndex = this.statusPanelBagSlotItems.findIndex((item) => item === null);
+    if (emptyIndex >= 0) {
+      this.statusPanelBagSlotItems[emptyIndex] = { kind };
+    }
+  }
+
+  private getBagItemCount(kind: BagItemKind): number {
+    return kind === 'gold' ? this.remoteBagGold : this.remoteBagDiamond;
+  }
+
+  private renderBagIcon(gfx: Graphics, kind: BagItemKind, cx: number, cy: number, scale = 1): void {
+    if (kind === 'gold') {
+      gfx.circle(cx, cy, 8 * scale).fill({ color: UI_GOLD, alpha: 0.96 });
+      gfx.circle(cx, cy, 8 * scale).stroke({ color: UI_NEON_GREEN, width: 1.5 * scale, alpha: 0.74 });
+      gfx
+        .poly([
+          cx,
+          cy - 5 * scale,
+          cx + 1.4 * scale,
+          cy - 1.7 * scale,
+          cx + 5.1 * scale,
+          cy - 1.7 * scale,
+          cx + 2.1 * scale,
+          cy + 0.5 * scale,
+          cx + 3.2 * scale,
+          cy + 4.4 * scale,
+          cx,
+          cy + 2.1 * scale,
+          cx - 3.2 * scale,
+          cy + 4.4 * scale,
+          cx - 2.1 * scale,
+          cy + 0.5 * scale,
+          cx - 5.1 * scale,
+          cy - 1.7 * scale,
+          cx - 1.4 * scale,
+          cy - 1.7 * scale,
+        ])
+        .fill({ color: 0xffff88, alpha: 0.9 });
+      return;
+    }
+
+    const diamond = [
+      cx,
+      cy - 9 * scale,
+      cx + 8 * scale,
+      cy,
+      cx,
+      cy + 9 * scale,
+      cx - 8 * scale,
+      cy,
+    ];
+    gfx.poly(diamond).fill({ color: 0x9fe8ff, alpha: 0.97 });
+    gfx.poly(diamond).stroke({ color: UI_NEON_GREEN, width: 1.4 * scale, alpha: 0.82 });
+    gfx.poly([cx, cy - 6 * scale, cx + 5 * scale, cy, cx, cy + 5 * scale, cx - 5 * scale, cy]).stroke({
+      color: 0xffffff,
+      width: 0.9 * scale,
+      alpha: 0.55,
+    });
+  }
+
+  private renderStatusPanelBag(): void {
+    this.ensureBagItemSlot('gold');
+    this.ensureBagItemSlot('diamond');
+
+    const slot = STATUS_PANEL_BAG_SLOT_PX;
+    const gap = STATUS_PANEL_BAG_SLOT_GAP_PX;
+    for (let i = 0; i < this.statusPanelBagSlots.length; i += 1) {
+      const col = i % STATUS_PANEL_BAG_COLS;
+      const row = Math.floor(i / STATUS_PANEL_BAG_COLS);
+      const x = col * (slot + gap);
+      const y = row * (slot + gap);
+      const gfx = this.statusPanelBagSlots[i];
+      gfx.position.set(x, y);
+      gfx.clear();
+      gfx.roundRect(0, 0, slot, slot, 5).fill({ color: UI_BG_BLACK, alpha: 0.5 });
+      gfx.roundRect(0, 0, slot, slot, 5).stroke({ color: UI_NEON_GREEN, width: 1.2, alpha: 0.45 });
+      gfx.hitArea = new Rectangle(0, 0, slot, slot);
+    }
+
+    this.statusPanelBagItems.removeChildren().forEach((child) => child.destroy({ children: true }));
+    for (let i = 0; i < this.statusPanelBagSlotItems.length; i += 1) {
+      const item = this.statusPanelBagSlotItems[i];
+      if (!item || this.statusPanelBagDragState?.fromSlot === i) {
+        continue;
+      }
+      const count = this.getBagItemCount(item.kind);
+      this.statusPanelBagItems.addChild(this.createBagItemDisplay(item.kind, count, i));
+    }
+  }
+
+  private createBagItemDisplay(kind: BagItemKind, count: number, slotIndex: number): Container {
+    const slot = STATUS_PANEL_BAG_SLOT_PX;
+    const gap = STATUS_PANEL_BAG_SLOT_GAP_PX;
+    const col = slotIndex % STATUS_PANEL_BAG_COLS;
+    const row = Math.floor(slotIndex / STATUS_PANEL_BAG_COLS);
+    const root = new Container();
+    const gfx = new Graphics();
+    const label = new Text({
+      text: count.toLocaleString(),
+      style: new TextStyle({
+        fontFamily: 'Orbitron, Arial Black, sans-serif',
+        fontSize: 9,
+        fontWeight: '900',
+        fill: '#fff8c8',
+        stroke: { color: '#0a120a', width: 2 },
+      }),
+    });
+    label.anchor.set(1, 1);
+    this.renderBagIcon(gfx, kind, slot * 0.5, slot * 0.43, 0.92);
+    label.position.set(slot - 2, slot - 1);
+    root.position.set(col * (slot + gap), row * (slot + gap));
+    root.addChild(gfx, label);
+    return root;
+  }
+
+  private handleStatusPanelBagSlotPointerDown(slotIndex: number, event: FederatedPointerEvent): void {
+    event.stopPropagation();
+    if (!this.statusPanelExpanded || this.statusPanelSidebarTab !== 'bag') {
+      return;
+    }
+    const item = this.statusPanelBagSlotItems[slotIndex];
+    if (!item || this.getBagItemCount(item.kind) <= 0) {
+      return;
+    }
+    this.statusPanelBagDragState = { fromSlot: slotIndex, item: { ...item } };
+    this.statusPanelBagDragGhost.visible = true;
+    this.renderStatusPanelBagDragGhost(item.kind);
+    this.updateStatusPanelBagDragGhost(event);
+    this.renderStatusPanelBag();
+  }
+
+  private renderStatusPanelBagDragGhost(kind: BagItemKind): void {
+    this.statusPanelBagDragGhost.removeChildren().forEach((child) => child.destroy({ children: true }));
+    const gfx = new Graphics();
+    gfx.roundRect(-15, -15, 30, 30, 6).fill({ color: UI_BG_BLACK, alpha: 0.6 });
+    gfx.roundRect(-15, -15, 30, 30, 6).stroke({ color: UI_GOLD, width: 1.5, alpha: 0.88 });
+    this.renderBagIcon(gfx, kind, 0, -1, 0.95);
+    this.statusPanelBagDragGhost.addChild(gfx);
+  }
+
+  private updateStatusPanelBagDragGhost(event: FederatedPointerEvent): void {
+    if (!this.statusPanelBagDragState) {
+      return;
+    }
+    const local = this.statusPanelBagRoot.toLocal(event.global);
+    this.statusPanelBagDragGhost.position.set(local.x, local.y);
+  }
+
+  private getBagSlotIndexAtLocal(x: number, y: number): number | null {
+    const slot = STATUS_PANEL_BAG_SLOT_PX;
+    const gap = STATUS_PANEL_BAG_SLOT_GAP_PX;
+    const col = Math.floor(x / (slot + gap));
+    const row = Math.floor(y / (slot + gap));
+    if (col < 0 || col >= STATUS_PANEL_BAG_COLS || row < 0) {
+      return null;
+    }
+    const cellX = x - col * (slot + gap);
+    const cellY = y - row * (slot + gap);
+    if (cellX < 0 || cellX > slot || cellY < 0 || cellY > slot) {
+      return null;
+    }
+    const index = row * STATUS_PANEL_BAG_COLS + col;
+    return index >= 0 && index < STATUS_PANEL_BAG_SLOT_COUNT ? index : null;
+  }
+
+  private readonly handleStatusPanelBagPointerMove = (event: FederatedPointerEvent): void => {
+    this.updateStatusPanelBagDragGhost(event);
+  };
+
+  private readonly handleStatusPanelBagPointerUp = (event: FederatedPointerEvent): void => {
+    const drag = this.statusPanelBagDragState;
+    if (!drag) {
+      return;
+    }
+    const local = this.statusPanelBagRoot.toLocal(event.global);
+    const toSlot = this.getBagSlotIndexAtLocal(local.x, local.y);
+    if (toSlot !== null && toSlot !== drag.fromSlot) {
+      const target = this.statusPanelBagSlotItems[toSlot];
+      this.statusPanelBagSlotItems[toSlot] = drag.item;
+      this.statusPanelBagSlotItems[drag.fromSlot] = target;
+    }
+    this.statusPanelBagDragState = null;
+    this.statusPanelBagDragGhost.visible = false;
+    this.renderStatusPanelBag();
+  };
 
   private createSidebarLbRowStyle(highlight: boolean): TextStyle {
     return new TextStyle({
@@ -5228,10 +5556,16 @@ export class PlayScene implements Scene {
       if (this.statusPanelMyStatsPtsText) {
         this.statusPanelMyStatsPtsText.visible = false;
       }
+      this.statusPanelBagRoot.visible = false;
       if (this.statusPanelTabStatsBtn) {
         this.statusPanelTabStatsBtn.clear();
         this.statusPanelTabStatsBtn.visible = false;
         this.statusPanelTabStatsBtn.hitArea = null;
+      }
+      if (this.statusPanelTabBagBtn) {
+        this.statusPanelTabBagBtn.clear();
+        this.statusPanelTabBagBtn.visible = false;
+        this.statusPanelTabBagBtn.hitArea = null;
       }
       if (this.statusPanelTabGlobalBtn) {
         this.statusPanelTabGlobalBtn.clear();
@@ -5240,6 +5574,9 @@ export class PlayScene implements Scene {
       }
       if (this.statusPanelTabStatsLabel) {
         this.statusPanelTabStatsLabel.visible = false;
+      }
+      if (this.statusPanelTabBagLabel) {
+        this.statusPanelTabBagLabel.visible = false;
       }
       if (this.statusPanelTabGlobalLabel) {
         this.statusPanelTabGlobalLabel.visible = false;
@@ -5257,12 +5594,13 @@ export class PlayScene implements Scene {
     const top = STATUS_PANEL_BODY_TOP_PAD_PX;
     const innerW = bodyW - pad * 2;
     const tabGap = STATUS_PANEL_TAB_GAP_PX;
-    const tabW = (innerW - tabGap) * 0.5;
+    const tabW = (innerW - tabGap * 2) / 3;
     const tabStatsX = pad;
     const tabY = top;
-    const tabGlobalX = pad + tabW + tabGap;
+    const tabBagX = pad + tabW + tabGap;
+    const tabGlobalX = tabBagX + tabW + tabGap;
     const tabH = STATUS_PANEL_TAB_BAR_H_PX;
-    this.redrawStatusPanelTabs(tabStatsX, tabGlobalX, tabY, tabW, tabH);
+    this.redrawStatusPanelTabs(tabStatsX, tabBagX, tabGlobalX, tabY, tabW, tabH);
 
     const yContent = top + STATUS_PANEL_TAB_BAR_H_PX + STATUS_PANEL_TAB_INNER_GAP_PX;
 
@@ -6014,6 +6352,15 @@ export class PlayScene implements Scene {
         const hPB = Math.max(0, Math.floor(this.peakClimbMetersThisRun));
         const cPB = Math.max(0, Math.floor(this.peakComboThisRun));
 
+        const goldEarned = this.runGoldCollected;
+        const diamondEarned = this.runDiamondCollected;
+
+        try {
+          await incrementUserBagBalances(user.uid, goldEarned, diamondEarned);
+        } catch (bagErr) {
+          console.warn('[PlayScene] YOUR BAG persist failed — loot may not be saved', bagErr);
+        }
+
         try {
           await upsertPersonalBestIfBetter(user, hPB, cPB, Math.floor(totalForLeaderboard));
           patchSessionPersonalBest(hPB, cPB, Math.floor(totalForLeaderboard));
@@ -6078,6 +6425,29 @@ export class PlayScene implements Scene {
         }
       })();
     }
+  }
+
+  private startUserBagRealtimeSubscription(): void {
+    if (this.userBagUnsubscribe) {
+      return;
+    }
+    const uid = auth.currentUser?.uid;
+    if (!uid) {
+      return;
+    }
+    this.userBagUnsubscribe = subscribeUserBagBalances(
+      uid,
+      (b) => {
+        this.remoteBagGold = b.bagGold;
+        this.remoteBagDiamond = b.bagDiamonds;
+        if (this.statusPanelExpanded) {
+          this.refreshStatusPanelContent();
+        }
+      },
+      (err) => {
+        console.warn('[PlayScene] YOUR BAG stats subscribe failed', err);
+      },
+    );
   }
 
   private startLeaderboardRealtimeSubscription(): void {
@@ -6717,9 +7087,11 @@ export class PlayScene implements Scene {
     }
     if (c.kind === 'coin') {
       this.goldCount += 1;
+      this.runGoldCollected += 1;
       this.sfx.play('collect_coin', 0.9);
     } else if (c.kind === 'diamond') {
       this.diamondCount += 1;
+      this.runDiamondCollected += 1;
       this.sfx.play('collect_diamond', 0.92);
       this.spawnDiamondCollectShine(pos.x, pos.y);
     } else {
@@ -6730,6 +7102,7 @@ export class PlayScene implements Scene {
         this.recomputeDerivedTotalScore();
       } else {
         this.goldCount += 3;
+        this.runGoldCollected += 3;
       }
       this.sfx.play('collect_diamond', 0.92);
       this.spawnDiamondCollectShine(pos.x, pos.y);
@@ -6737,6 +7110,7 @@ export class PlayScene implements Scene {
     this.hudGoldShown = this.goldCount;
     this.hudDiamondShown = this.diamondCount;
     this.collectibleHudBump = 1;
+    this.refreshStatusPanelContent();
     c.phase = 'collecting';
     c.collectT = 0;
     c.collectStartX = pos.x;

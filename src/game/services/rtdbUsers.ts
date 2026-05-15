@@ -2,7 +2,8 @@
  * Canonical user ledger under `/users/{uid}` (Realtime Database).
  *
  * - `/users/{uid}/profile` → nickname, email, onboarding fields
- * - `/users/{uid}/stats` → maxHeight (m HUD), bestCombo, totalPoints (best session PTS)
+ * - `/users/{uid}/stats` → maxHeight (m HUD), bestCombo, totalPoints (best session PTS),
+ *   bagGold / bagDiamonds (lifetime collectible totals for YOUR BAG; RTDB `increment()`)
  *
  * **RTDB rules (example)**:
  * ```json
@@ -21,7 +22,7 @@
  */
 
 import type { User } from 'firebase/auth';
-import { get, ref, set, update } from 'firebase/database';
+import { get, increment, onValue, ref, set, update } from 'firebase/database';
 import { rtdb } from '../../firebase.js';
 
 export const USERS_PATH = 'users';
@@ -41,6 +42,15 @@ export type UserStatsNode = {
   /** Best single-run peak PTS (same units as HUD score: height×10 + combo×5). */
   totalPoints: number;
   updatedAt?: number;
+  /** Lifetime gold bars stored for YOUR BAG (sum of per-run pickups). */
+  bagGold?: number;
+  /** Lifetime diamonds stored for YOUR BAG (sum of per-run pickups). */
+  bagDiamonds?: number;
+};
+
+export type UserBagBalances = {
+  bagGold: number;
+  bagDiamonds: number;
 };
 
 /** Convenience shape for landing + menu (matches former `RemoteUserProfile` usage). */
@@ -72,8 +82,12 @@ export async function fetchUserLedger(uid: string): Promise<RemoteUserLedger | n
         maxHeight: 0,
         bestCombo: 0,
         totalPoints: 0,
+        bagGold: 0,
+        bagDiamonds: 0,
         updatedAt: Date.now(),
       } satisfies UserStatsNode);
+  stats.bagGold = Math.max(0, Math.floor(Number(stats.bagGold ?? 0)));
+  stats.bagDiamonds = Math.max(0, Math.floor(Number(stats.bagDiamonds ?? 0)));
   return { profile, stats };
 }
 
@@ -123,8 +137,57 @@ export async function registerNewUser(
     maxHeight: 0,
     bestCombo: 0,
     totalPoints: 0,
+    bagGold: 0,
+    bagDiamonds: 0,
     updatedAt: now,
   } satisfies UserStatsNode);
+}
+
+/**
+ * Atomically add session loot to `/users/{uid}/stats` using RTDB {@link increment}
+ * (Firestore-style “add to balance” semantics).
+ */
+export async function incrementUserBagBalances(
+  uid: string,
+  goldDelta: number,
+  diamondDelta: number,
+): Promise<void> {
+  const g = Math.max(0, Math.floor(goldDelta));
+  const d = Math.max(0, Math.floor(diamondDelta));
+  if (g === 0 && d === 0) {
+    return;
+  }
+  const patch: Record<string, unknown> = {
+    updatedAt: Date.now(),
+  };
+  if (g > 0) {
+    patch.bagGold = increment(g);
+  }
+  if (d > 0) {
+    patch.bagDiamonds = increment(d);
+  }
+  await update(userStatsRef(uid), patch);
+}
+
+/** Live YOUR BAG totals while PlayScene is active. */
+export function subscribeUserBagBalances(
+  uid: string,
+  onBalances: (b: UserBagBalances) => void,
+  onError?: (e: unknown) => void,
+): () => void {
+  return onValue(
+    userStatsRef(uid),
+    (snap) => {
+      const raw = snap.val() as Partial<UserStatsNode> | null;
+      onBalances({
+        bagGold: Math.max(0, Math.floor(Number(raw?.bagGold ?? 0))),
+        bagDiamonds: Math.max(0, Math.floor(Number(raw?.bagDiamonds ?? 0))),
+      });
+    },
+    (err) => {
+      onError?.(err);
+    },
+  );
 }
 
 export async function finalizeCharacterSelection(
