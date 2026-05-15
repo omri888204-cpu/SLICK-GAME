@@ -111,7 +111,7 @@ type MushroomDeathEffect = {
 
 type CollectibleKind = 'coin' | 'diamond' | 'shield';
 
-type BagItemKind = 'gold' | 'diamond';
+type BagItemKind = 'gold' | 'diamond' | 'purpleMushroom';
 
 type BagSlotItem = {
   kind: BagItemKind;
@@ -322,8 +322,6 @@ const MUSHROOM_ATTACK_RANGE_PX = 220;
 /** First stair index that may host a mushroom — skips Floor 0 spawn deck + early climb. */
 const MUSHROOM_PLATFORM_START_INDEX = 5;
 const MUSHROOM_PLATFORM_STRIDE = 3;
-/** After this many mushroom kills in one run, show a small glowing purple badge under SPD (top-right HUD). */
-const MUSHROOM_STOMP_BADGE_AT = 10;
 
 /** Player melee attack — virtual button (bottom-right) + KeyF, plays the attack row of the character spritesheet. */
 const ATTACK_BTN_RADIUS_PX = 44;
@@ -883,10 +881,6 @@ export class PlayScene implements Scene {
   private climbHudText?: Text;
   /** New jump-counter HUD line beneath the climb readout. Driven by `this.jumpCount`. */
   private jumpsHudText?: Text;
-  /** Glowing purple mushroom badge (top-right, under SPD) after {@link MUSHROOM_STOMP_BADGE_AT} stomps. */
-  private mushroomStompsThisRun = 0;
-  private readonly mushroomStompBadgeRoot = new Container();
-  private readonly mushroomStompBadgeGfx = new Graphics();
   private timerHudText?: Text;
   private hurryBannerRoot = new Container();
   private hurryBannerGfx = new Graphics();
@@ -926,6 +920,7 @@ export class PlayScene implements Scene {
   /** Lifetime YOUR BAG totals from `/users/{uid}/stats` — updated live via {@link subscribeUserBagBalances}. */
   private remoteBagGold = 0;
   private remoteBagDiamond = 0;
+  private remoteBagPurpleMushrooms = 0;
   private userBagUnsubscribe: (() => void) | null = null;
   private collectibles: Collectible[] = [];
   /** Last-milestone sweep (⌊max climb m / 1000⌋) — see {@link maybeRunPeriodicPoolMaintenance}. */
@@ -934,6 +929,8 @@ export class PlayScene implements Scene {
   private diamondCount = 0;
   private runGoldCollected = 0;
   private runDiamondCollected = 0;
+  /** Purple mushroom enemies defeated this run (melee or touch — persisted like gold/gems). */
+  private runPurpleMushroomsCollected = 0;
   /**
    * Mushroom enemies live in their own world-space container so they sort above platforms but
    * below the player. The `mushroomEnemies` / `mushroomEnemySprites` arrays are kept in
@@ -2183,12 +2180,11 @@ export class PlayScene implements Scene {
     this.diamondCount = 0;
     this.runGoldCollected = 0;
     this.runDiamondCollected = 0;
+    this.runPurpleMushroomsCollected = 0;
     this.resetBagSlots();
     this.collectibles = [];
     this.jumpCount = 0;
     this.comboCount = 0;
-    this.mushroomStompsThisRun = 0;
-    this.mushroomStompBadgeRoot.visible = false;
     this.comboLastJumpY = Number.POSITIVE_INFINITY;
     this.comboLastJumpTime = -1e9;
     this.superJumpComboGraceUntil = Number.NEGATIVE_INFINITY;
@@ -3741,12 +3737,6 @@ export class PlayScene implements Scene {
     this.jumpsHudText.alpha = 0.95;
     this.uiLayer.addChild(this.jumpsHudText);
 
-    this.mushroomStompBadgeGfx.eventMode = 'none';
-    this.mushroomStompBadgeRoot.addChild(this.mushroomStompBadgeGfx);
-    this.mushroomStompBadgeRoot.visible = false;
-    this.mushroomStompBadgeRoot.zIndex = 1004;
-    this.uiLayer.addChild(this.mushroomStompBadgeRoot);
-
     this.layoutClimbHud();
     this.refreshClimbHudText();
   }
@@ -3755,35 +3745,9 @@ export class PlayScene implements Scene {
     if (this.climbHudText) {
       this.climbHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + 34);
     }
-    this.mushroomStompBadgeRoot.position.set(this.width - 14, UI_SAFE_PAD_TOP + 52);
-    const jumpsY = this.mushroomStompBadgeRoot.visible ? UI_SAFE_PAD_TOP + 72 : UI_SAFE_PAD_TOP + 54;
     if (this.jumpsHudText) {
-      this.jumpsHudText.position.set(this.width - 20, jumpsY);
+      this.jumpsHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + 54);
     }
-  }
-
-  /** Small stylized purple mushroom + soft glow; drawn in local space (anchor toward screen right). */
-  private redrawMushroomStompBadge(): void {
-    if (!this.mushroomStompBadgeRoot.visible) {
-      return;
-    }
-    const g = this.mushroomStompBadgeGfx;
-    g.clear();
-    const t = this.runTime;
-    const pulse = 0.7 + 0.3 * Math.sin(t * Math.PI * 2 * 2.35);
-    const cx = -11;
-    const capY = -1;
-    const rx = 10 * 0.9 * pulse;
-    const ry = 6.5 * 0.92 * pulse;
-    g.ellipse(cx, capY, rx + 6, ry + 5).fill({ color: 0xe9d5ff, alpha: 0.2 * pulse });
-    g.ellipse(cx, capY, rx + 3, ry + 2.5).fill({ color: 0xc4b5fd, alpha: 0.38 * pulse });
-    g.ellipse(cx, capY, rx, ry)
-      .fill({ color: 0x9333ea, alpha: 0.96 })
-      .stroke({ width: 1.3, color: 0xfae8ff, alpha: 0.88 });
-    g.ellipse(cx - 3.5, capY - 2.8, rx * 0.35, ry * 0.32).fill({ color: 0xf5d0fe, alpha: 0.62 });
-    g.roundRect(cx - 4, capY + ry - 1, 8, 10, 2)
-      .fill({ color: 0x6b21a8, alpha: 0.94 })
-      .stroke({ width: 1, color: 0xd8b4fe, alpha: 0.75 });
   }
 
   private refreshClimbHudText(): void {
@@ -5191,6 +5155,7 @@ export class PlayScene implements Scene {
       `NICK  ${nick}`,
       `BEST HEIGHT  ${best.toLocaleString()} m`,
       `MAX COMBO   ${comboMax.toLocaleString()}`,
+      `RUN LOOT   ${this.runGoldCollected.toLocaleString()} gold · ${this.runDiamondCollected.toLocaleString()} gems · ${this.runPurpleMushroomsCollected.toLocaleString()} mushrooms`,
     ].join('\n');
     pts.text = `TOTAL PTS  ${totalPts.toLocaleString()}`;
 
@@ -5200,7 +5165,7 @@ export class PlayScene implements Scene {
     const lh = 16;
     const gPts = 4;
     main.position.set(pad, yTab);
-    pts.position.set(pad, yTab + lh * 3 + gPts);
+    pts.position.set(pad, yTab + lh * 4 + gPts);
     this.statusPanelBagRoot.position.set(pad, yTab);
     this.renderStatusPanelBag();
 
@@ -5238,7 +5203,13 @@ export class PlayScene implements Scene {
   }
 
   private getBagItemCount(kind: BagItemKind): number {
-    return kind === 'gold' ? this.remoteBagGold : this.remoteBagDiamond;
+    if (kind === 'gold') {
+      return this.remoteBagGold;
+    }
+    if (kind === 'diamond') {
+      return this.remoteBagDiamond;
+    }
+    return this.remoteBagPurpleMushrooms;
   }
 
   private renderBagIcon(gfx: Graphics, kind: BagItemKind, cx: number, cy: number, scale = 1): void {
@@ -5272,28 +5243,47 @@ export class PlayScene implements Scene {
       return;
     }
 
-    const diamond = [
-      cx,
-      cy - 9 * scale,
-      cx + 8 * scale,
-      cy,
-      cx,
-      cy + 9 * scale,
-      cx - 8 * scale,
-      cy,
-    ];
-    gfx.poly(diamond).fill({ color: 0x9fe8ff, alpha: 0.97 });
-    gfx.poly(diamond).stroke({ color: UI_NEON_GREEN, width: 1.4 * scale, alpha: 0.82 });
-    gfx.poly([cx, cy - 6 * scale, cx + 5 * scale, cy, cx, cy + 5 * scale, cx - 5 * scale, cy]).stroke({
-      color: 0xffffff,
-      width: 0.9 * scale,
-      alpha: 0.55,
-    });
+    if (kind === 'diamond') {
+      const diamond = [
+        cx,
+        cy - 9 * scale,
+        cx + 8 * scale,
+        cy,
+        cx,
+        cy + 9 * scale,
+        cx - 8 * scale,
+        cy,
+      ];
+      gfx.poly(diamond).fill({ color: 0x9fe8ff, alpha: 0.97 });
+      gfx.poly(diamond).stroke({ color: UI_NEON_GREEN, width: 1.4 * scale, alpha: 0.82 });
+      gfx.poly([cx, cy - 6 * scale, cx + 5 * scale, cy, cx, cy + 5 * scale, cx - 5 * scale, cy]).stroke({
+        color: 0xffffff,
+        width: 0.9 * scale,
+        alpha: 0.55,
+      });
+      return;
+    }
+
+    /** Purple mushroom — compact cap + stem for YOUR BAG grid. */
+    const capY = cy - 4 * scale;
+    const rx = 8 * scale;
+    const ry = 5.2 * scale;
+    gfx.ellipse(cx, capY, rx + 3 * scale, ry + 2 * scale).fill({ color: 0xe9d5ff, alpha: 0.28 });
+    gfx
+      .ellipse(cx, capY, rx, ry)
+      .fill({ color: 0x9333ea, alpha: 0.96 })
+      .stroke({ width: 1.2 * scale, color: 0xfae8ff, alpha: 0.82 });
+    gfx.ellipse(cx - 2.8 * scale, capY - 2 * scale, rx * 0.32, ry * 0.3).fill({ color: 0xf5d0fe, alpha: 0.58 });
+    gfx
+      .roundRect(cx - 3 * scale, capY + ry - 1 * scale, 6 * scale, 8 * scale, 1.5 * scale)
+      .fill({ color: 0x6b21a8, alpha: 0.94 })
+      .stroke({ width: 1 * scale, color: 0xd8b4fe, alpha: 0.72 });
   }
 
   private renderStatusPanelBag(): void {
     this.ensureBagItemSlot('gold');
     this.ensureBagItemSlot('diamond');
+    this.ensureBagItemSlot('purpleMushroom');
 
     const slot = STATUS_PANEL_BAG_SLOT_PX;
     const gap = STATUS_PANEL_BAG_SLOT_GAP_PX;
@@ -5967,14 +5957,7 @@ export class PlayScene implements Scene {
     }
     this.mushroomEnemies.splice(index, 1);
     this.mushroomEnemySprites.splice(index, 1);
-    this.mushroomStompsThisRun += 1;
-    if (
-      this.mushroomStompsThisRun >= MUSHROOM_STOMP_BADGE_AT &&
-      !this.mushroomStompBadgeRoot.visible
-    ) {
-      this.mushroomStompBadgeRoot.visible = true;
-      this.layoutClimbHud();
-    }
+    this.runPurpleMushroomsCollected += 1;
   }
 
   private clearMushroomDeathEffects(): void {
@@ -6354,9 +6337,15 @@ export class PlayScene implements Scene {
 
         const goldEarned = this.runGoldCollected;
         const diamondEarned = this.runDiamondCollected;
+        const purpleMushroomsEarned = this.runPurpleMushroomsCollected;
 
         try {
-          await incrementUserBagBalances(user.uid, goldEarned, diamondEarned);
+          await incrementUserBagBalances(
+            user.uid,
+            goldEarned,
+            diamondEarned,
+            purpleMushroomsEarned,
+          );
         } catch (bagErr) {
           console.warn('[PlayScene] YOUR BAG persist failed — loot may not be saved', bagErr);
         }
@@ -6440,6 +6429,7 @@ export class PlayScene implements Scene {
       (b) => {
         this.remoteBagGold = b.bagGold;
         this.remoteBagDiamond = b.bagDiamonds;
+        this.remoteBagPurpleMushrooms = b.purpleMushrooms;
         if (this.statusPanelExpanded) {
           this.refreshStatusPanelContent();
         }
@@ -6584,7 +6574,6 @@ export class PlayScene implements Scene {
     this.spawnWindParticlesForAltitude(dt);
     this.refreshClimbHudText();
     this.refreshStatusPanelContent();
-    this.redrawMushroomStompBadge();
     this.refreshAutoScrollHud();
   }
 

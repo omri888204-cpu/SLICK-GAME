@@ -3,7 +3,7 @@
  *
  * - `/users/{uid}/profile` → nickname, email, onboarding fields
  * - `/users/{uid}/stats` → maxHeight (m HUD), bestCombo, totalPoints (best session PTS),
- *   bagGold / bagDiamonds (lifetime collectible totals for YOUR BAG; RTDB `increment()`)
+ *   bagGold / bagDiamonds / purpleMushrooms (YOUR BAG inventory; RTDB `increment()`)
  *
  * **RTDB rules (example)**:
  * ```json
@@ -46,11 +46,14 @@ export type UserStatsNode = {
   bagGold?: number;
   /** Lifetime diamonds stored for YOUR BAG (sum of per-run pickups). */
   bagDiamonds?: number;
+  /** Purple mushrooms defeated across runs (YOUR BAG). */
+  purpleMushrooms?: number;
 };
 
 export type UserBagBalances = {
   bagGold: number;
   bagDiamonds: number;
+  purpleMushrooms: number;
 };
 
 /** Convenience shape for landing + menu (matches former `RemoteUserProfile` usage). */
@@ -84,10 +87,12 @@ export async function fetchUserLedger(uid: string): Promise<RemoteUserLedger | n
         totalPoints: 0,
         bagGold: 0,
         bagDiamonds: 0,
+        purpleMushrooms: 0,
         updatedAt: Date.now(),
       } satisfies UserStatsNode);
   stats.bagGold = Math.max(0, Math.floor(Number(stats.bagGold ?? 0)));
   stats.bagDiamonds = Math.max(0, Math.floor(Number(stats.bagDiamonds ?? 0)));
+  stats.purpleMushrooms = Math.max(0, Math.floor(Number(stats.purpleMushrooms ?? 0)));
   return { profile, stats };
 }
 
@@ -139,6 +144,7 @@ export async function registerNewUser(
     totalPoints: 0,
     bagGold: 0,
     bagDiamonds: 0,
+    purpleMushrooms: 0,
     updatedAt: now,
   } satisfies UserStatsNode);
 }
@@ -151,10 +157,12 @@ export async function incrementUserBagBalances(
   uid: string,
   goldDelta: number,
   diamondDelta: number,
+  purpleMushroomsDelta: number,
 ): Promise<void> {
   const g = Math.max(0, Math.floor(goldDelta));
   const d = Math.max(0, Math.floor(diamondDelta));
-  if (g === 0 && d === 0) {
+  const m = Math.max(0, Math.floor(purpleMushroomsDelta));
+  if (g === 0 && d === 0 && m === 0) {
     return;
   }
   const patch: Record<string, unknown> = {
@@ -165,6 +173,9 @@ export async function incrementUserBagBalances(
   }
   if (d > 0) {
     patch.bagDiamonds = increment(d);
+  }
+  if (m > 0) {
+    patch.purpleMushrooms = increment(m);
   }
   await update(userStatsRef(uid), patch);
 }
@@ -182,6 +193,7 @@ export function subscribeUserBagBalances(
       onBalances({
         bagGold: Math.max(0, Math.floor(Number(raw?.bagGold ?? 0))),
         bagDiamonds: Math.max(0, Math.floor(Number(raw?.bagDiamonds ?? 0))),
+        purpleMushrooms: Math.max(0, Math.floor(Number(raw?.purpleMushrooms ?? 0))),
       });
     },
     (err) => {
