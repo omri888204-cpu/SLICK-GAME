@@ -109,7 +109,7 @@ export class MenuScene implements Scene {
 
     const card = document.createElement('div');
     card.style.pointerEvents = 'auto';
-    card.style.width = 'min(440px, 88vw)';
+    card.style.width = 'min(480px, 92vw)';
     card.style.padding = '20px';
     card.style.borderRadius = '18px';
     card.style.background = 'rgba(46, 0, 75, 0.55)';
@@ -135,6 +135,9 @@ export class MenuScene implements Scene {
     stats.style.fontSize = '15px';
     stats.style.textAlign = 'center';
     stats.style.lineHeight = '1.35';
+    stats.style.letterSpacing = '0.04em';
+    stats.style.maxWidth = '100%';
+    stats.style.overflowWrap = 'break-word';
 
     const button = document.createElement('button');
     button.type = 'button';

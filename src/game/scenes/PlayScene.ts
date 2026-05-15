@@ -817,6 +817,8 @@ export class PlayScene implements Scene {
   private statusPanelTabGlobalLabel?: Text;
   private statusPanelMyStatsMainText?: Text;
   private statusPanelMyStatsPtsText?: Text;
+  /** Gold chip behind MY STATS total points — sized to label each refresh so text stays centered. */
+  private statusPanelPtsPillGfx = new Graphics();
   private statusPanelBagRoot = new Container();
   private statusPanelBagSlots: Graphics[] = [];
   private statusPanelBagItems = new Container();
@@ -4796,24 +4798,21 @@ export class PlayScene implements Scene {
     this.statusPanelMyStatsMainText.eventMode = 'none';
     this.statusPanelMyStatsMainText.visible = false;
 
+    this.statusPanelPtsPillGfx.eventMode = 'none';
+
     this.statusPanelMyStatsPtsText = new Text({
       text: 'TOTAL PTS  0',
       style: new TextStyle({
-        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontFamily: 'Orbitron, Arial Black, Helvetica Neue, sans-serif',
         fontSize: 11,
-        fontWeight: '800',
+        fontWeight: '700',
         fill: '#ffe066',
-        stroke: { color: '#5a4a00', width: 1.4 },
-        letterSpacing: 0.35,
-        dropShadow: {
-          color: '#ffd700',
-          alpha: 0.55,
-          blur: 5,
-          angle: Math.PI / 4,
-          distance: 0,
-        },
+        stroke: { color: '#5a4a00', width: 1 },
+        letterSpacing: 0,
+        lineHeight: 16,
       }),
     });
+    this.statusPanelMyStatsPtsText.anchor.set(0.5, 0.5);
     this.statusPanelMyStatsPtsText.eventMode = 'none';
     this.statusPanelMyStatsPtsText.visible = false;
 
@@ -4897,6 +4896,7 @@ export class PlayScene implements Scene {
       this.statusPanelTabBagLabel,
       this.statusPanelTabGlobalLabel,
       this.statusPanelMyStatsMainText,
+      this.statusPanelPtsPillGfx,
       this.statusPanelMyStatsPtsText,
       this.statusPanelBagRoot,
       this.statusPanelLbViewport,
@@ -5101,6 +5101,9 @@ export class PlayScene implements Scene {
     if (this.statusPanelMyStatsPtsText) {
       this.statusPanelMyStatsPtsText.visible = expanded && statsTab;
     }
+    if (this.statusPanelPtsPillGfx) {
+      this.statusPanelPtsPillGfx.visible = expanded && statsTab;
+    }
     this.statusPanelBagRoot.visible = expanded && bagTab;
 
     this.statusPanelLbViewport.visible = expanded && globalTab;
@@ -5160,12 +5163,37 @@ export class PlayScene implements Scene {
     pts.text = `TOTAL PTS  ${totalPts.toLocaleString()}`;
 
     const pad = STATUS_PANEL_BODY_PAD_PX;
+    const innerW = STATUS_PANEL_BODY_W_PX - pad * 2;
     const top = STATUS_PANEL_BODY_TOP_PAD_PX;
     const yTab = top + STATUS_PANEL_TAB_BAR_H_PX + STATUS_PANEL_TAB_INNER_GAP_PX;
     const lh = 16;
     const gPts = 4;
+    const ptsRowTop = yTab + lh * 4 + gPts;
+
+    /** Horizontal padding inside the gold capsule (CSS padding-inline). */
+    const pillPadInline = 12;
+    /** Vertical padding above/below the line box inside the capsule. */
+    const pillPadBlock = 6;
+
+    const pill = this.statusPanelPtsPillGfx;
+    pill.clear();
+
+    const lineBoxH = Math.max(pts.height, lh);
+    const textW = Math.max(pts.width, 8);
+    const naturalW = Math.ceil(textW + pillPadInline * 2);
+    const pillW = Math.min(naturalW, innerW);
+    const pillH = Math.ceil(lineBoxH + pillPadBlock * 2);
+    const pillX = pad;
+    const pillY = ptsRowTop;
+
+    const statsTab = this.statusPanelSidebarTab === 'stats';
+    if (statsTab) {
+      pill.roundRect(pillX, pillY, pillW, pillH, 10).fill({ color: 0x2a2210, alpha: 0.94 });
+      pill.roundRect(pillX, pillY, pillW, pillH, 10).stroke({ color: 0xffcc33, width: 1.25, alpha: 0.72 });
+    }
+
     main.position.set(pad, yTab);
-    pts.position.set(pad, yTab + lh * 4 + gPts);
+    pts.position.set(pillX + pillW * 0.5, pillY + pillH * 0.5);
     this.statusPanelBagRoot.position.set(pad, yTab);
     this.renderStatusPanelBag();
 
@@ -5545,6 +5573,9 @@ export class PlayScene implements Scene {
       }
       if (this.statusPanelMyStatsPtsText) {
         this.statusPanelMyStatsPtsText.visible = false;
+      }
+      if (this.statusPanelPtsPillGfx) {
+        this.statusPanelPtsPillGfx.visible = false;
       }
       this.statusPanelBagRoot.visible = false;
       if (this.statusPanelTabStatsBtn) {
