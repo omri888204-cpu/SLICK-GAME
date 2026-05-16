@@ -168,6 +168,10 @@ const STATIC_BG_TESET3_CANDIDATES = [
   `${BG_TESET_DIR_URL}/${encodeURIComponent('teset 3-Photoroom.png')}`,
   `${BG_TESET_DIR_URL}/${encodeURIComponent('טסט 3.png')}`,
 ] as const;
+/** 1000m+ swap texture: `sky.png` under {@link BG_TESET_DIR_URL} (same folder as teset 1/2). */
+const STATIC_BG_TESET3_POST_REST_1K_CANDIDATES = [
+  `${BG_TESET_DIR_URL}/${encodeURIComponent('sky.png')}`,
+] as const;
 const STATIC_BG_TESET2_PHOTOROOM_CANDIDATES = [
   `${BG_TESET_DIR_URL}/${encodeURIComponent('teset 2-Photoroom.png')}`,
   `${BG_TESET_DIR_URL}/${encodeURIComponent('טסט 2.png')}`,
@@ -735,6 +739,11 @@ export class PlayScene implements Scene {
   private bgParallaxLayers: { tile: TilingSprite; speed: number }[] = [];
   /** Photoroom sky (teset 3) — `TilingSprite` at −30; parallax via `tilePosition`. */
   private bgStaticTeset3Tile: TilingSprite | null = null;
+  private bgStaticTeset3BaseTexture?: Texture;
+/** Preloaded `sky.png` (1000m+ far sky) — see {@link STATIC_BG_TESET3_POST_REST_1K_CANDIDATES}. */
+  private background1kTexture?: Texture;
+  /** Strict-task flag: `bgChangedAt1k` — texture swap runs once. */
+  private bgChangedAt1k = false;
   /**
    * teset 2/1: viewport-locked on `backgroundRoot` (`setScrollFactor(0)`). Positions finalized in
    * {@link syncPhotoroomTeset12ScreenAnchoredOscillation} so {@link layoutBackground} does not reset Y each frame.
@@ -1365,6 +1374,8 @@ export class PlayScene implements Scene {
     } else if (!this.player.body.grounded) {
       this.currentGroundPlatform = null;
     }
+
+    this.maybeTriggerBackground1kAt1000mPlatformLanding();
 
     this.updateRestFloorHoldState();
     this.updateCamera(dt);
@@ -2160,6 +2171,7 @@ export class PlayScene implements Scene {
     this.cameraFrozenUntilFirstFloor0Jump = true;
     this.activeRestFloorY = null;
     this.restFloorHoldY = null;
+    this.resetBackground1kSwapState();
     this.lastPoolSweepKmBand = -1;
     this.goldCount = 0;
     this.diamondCount = 0;
@@ -3122,16 +3134,84 @@ export class PlayScene implements Scene {
     );
   }
 
+  /** Integer HUD meters — matches altitude used for scoring (includes run peak). */
+  private get playerDistance(): number {
+    return Math.floor(
+      Math.max(
+        this.getHudClimbMeters(),
+        this.getBestLandedClimbMeters(),
+        this.peakClimbMetersThisRun,
+      ),
+    );
+  }
+
+  /** Strict-task — Phaser `teset1Photoroom`; Pixi foreground Photoroom sprite. */
+  private get teset1Photoroom(): Sprite | null {
+    return this.bgStaticTeset1Sprite;
+  }
+
+  /** Strict-task — Phaser `teset2Photoroom`; Pixi mid Photoroom sprite. */
+  private get teset2Photoroom(): Sprite | null {
+    return this.bgStaticTeset2Sprite;
+  }
+
+  private resetBackground1kSwapState(): void {
+    this.bgChangedAt1k = false;
+    const sky = this.bgStaticTeset3Tile;
+    const b3 = this.bgStaticTeset3BaseTexture;
+    if (sky && b3) {
+      sky.texture = b3;
+    }
+  }
+
+  /**
+   * מחיל את טקסטורת `sky.png` רק על שכבת השמיים **האחורית** (`bgStaticTeset3Tile` — tiling).
+   */
+  private applyBackground1kTextureToAllSkyLayers(tex: Texture): void {
+    const skyTile = this.bgStaticTeset3Tile;
+    if (skyTile) {
+      skyTile.texture = tex;
+    }
+  }
+
+  /** מעל 1000 מ׳ במשחק: רק שכבת השמיים האחורית עוברת מ־`new background.png` (בסיס) ל־`sky.png`. */
+  private maybeTriggerBackground1kAt1000mPlatformLanding(): void {
+    if (this.playerDistance >= 1000 && !this.bgChangedAt1k) {
+      const tex = this.background1kTexture;
+      console.log('[BG1K] trigger — tex:', tex ? 'loaded' : 'MISSING', '| dist:', this.playerDistance);
+      if (tex) {
+        this.applyBackground1kTextureToAllSkyLayers(tex);
+        this.bgChangedAt1k = true;
+        console.log('[BG1K] sky.png applied!');
+      } else {
+        console.error('[BG1K] sky.png missing — check: public/assets/backgroud teset/sky.png');
+      }
+    }
+  }
+
   private async loadStaticTeset3BackgroundLayer(): Promise<void> {
     const vw = Math.max(1, this.worldWidthFromScreen());
     const vh = Math.max(1, this.worldHeightFromScreen());
     try {
-      const tex = await this.loadTextureFromCandidates(STATIC_BG_TESET3_CANDIDATES);
+      const baseTex = await this.loadTextureFromCandidates(STATIC_BG_TESET3_CANDIDATES);
+      this.prepareTextureForInfiniteTile(baseTex);
+      this.bgStaticTeset3BaseTexture = baseTex;
+
+      try {
+        const skyTex = await this.loadTextureFromCandidates(
+          STATIC_BG_TESET3_POST_REST_1K_CANDIDATES,
+        );
+        this.prepareTextureForInfiniteTile(skyTex);
+        this.background1kTexture = skyTex;
+      } catch (error) {
+        console.error("CRITICAL ERROR: Failed to load sky.png from candidates!", error);
+        this.background1kTexture = undefined;
+      }
+
       const hAboveOrange = Math.max(1, vh - DEATH_ORANGE_BAR_HEIGHT_PX);
       const orangeBarTopY = vh - DEATH_ORANGE_BAR_HEIGHT_PX;
-      this.prepareTextureForInfiniteTile(tex);
       const tile = new TilingSprite({
-        texture: tex,
+        texture: baseTex,
         width: vw,
         height: hAboveOrange,
       });
@@ -3143,8 +3223,14 @@ export class PlayScene implements Scene {
       tile.tilePosition.set(0, 0);
       this.bgStaticTeset3Tile = tile;
       this.attachStaticTeset3TileBehindParallax();
-    } catch {
+    } catch (error) {
+      console.error(
+        'CRITICAL ERROR: Failed to load base teset-3 background stack (outer load).',
+        error,
+      );
       this.bgStaticTeset3Tile = null;
+      this.bgStaticTeset3BaseTexture = undefined;
+      this.background1kTexture = undefined;
     }
   }
 

@@ -13,6 +13,25 @@ import {
 import { rtdb } from '../../firebase.js';
 import { fetchUserLedger } from './rtdbUsers';
 
+/**
+ * RTDB ordered queries use {@link orderByChild} on `totalScore` / `maxHeightMeters`.
+ * Deploy rules that declare indices on the **`leaderboard`** node (Firebase Console → Realtime Database → Rules):
+ *
+ * ```json
+ * {
+ *   "rules": {
+ *     "leaderboard": {
+ *       ".indexOn": ["totalScore", "maxHeightMeters"]
+ *     }
+ *   }
+ * }
+ * ```
+ *
+ * Without `.indexOn`, queries fall back to fetching the full subtree and sorting client-side (see
+ * {@link fetchTopLeaderboard} / {@link subscribeTopLeaderboard}). Auth + MFA do not replace this;
+ * signed-in clients still need indexes for efficient `orderByChild` + `limitToLast`.
+ */
+
 /** One saved run for RTDB + HUD (sorted by {@link LeaderboardEntry.totalScore}). */
 export type LeaderboardEntry = {
   nickname: string;
@@ -350,7 +369,9 @@ export async function fetchTopLeaderboardByMaxHeight(
 }
 
 /**
- * Live Top N — updates whenever `/leaderboard` data matching the query changes.
+ * Live Top N — prefers `orderByChild('totalScore')` + `limitToLast` when RTDB rules include
+ * `.indexOn` for `leaderboard`. On subscription error (missing index / permission), falls back to
+ * listening on the full `leaderboard` node and sorting client-side (same shape as {@link fetchTopLeaderboard}).
  * Caller must invoke the returned unsubscribe to avoid leaks.
  */
 export function subscribeTopLeaderboard(
@@ -358,17 +379,39 @@ export function subscribeTopLeaderboard(
   onUpdate: (entries: LeaderboardEntry[]) => void,
   onError?: (err: unknown) => void,
 ): () => void {
-  const q = query(leaderboardRootRef(), orderByChild('totalScore'), limitToLast(limitCount));
-  return onValue(
-    q,
-    (snapshot) => {
-      const rows = snapshotToEntries(snapshot);
-      rows.sort(compareLeaderboardRank);
-      onUpdate(rows.slice(0, limitCount));
-    },
+  const base = leaderboardRootRef();
+  const orderedQuery = query(base, orderByChild('totalScore'), limitToLast(limitCount));
+
+  const pushSortedTop = (snapshot: DataSnapshot): void => {
+    const rows = snapshotToEntries(snapshot);
+    rows.sort(compareLeaderboardRank);
+    onUpdate(rows.slice(0, limitCount));
+  };
+
+  let detach: (() => void) | undefined;
+
+  detach = onValue(
+    orderedQuery,
+    pushSortedTop,
     (err) => {
-      console.warn('[leaderboard] onValue failed — check RTDB rules and .indexOn for leaderboard/totalScore', err);
+      console.warn(
+        '[leaderboard] ordered subscription failed — ensure `.indexOn`: ["totalScore","maxHeightMeters"] on `leaderboard`; using full-tree listener + client sort',
+        err,
+      );
       onError?.(err);
+      detach?.();
+      detach = onValue(
+        base,
+        pushSortedTop,
+        (err2) => {
+          console.error('[leaderboard] leaderboard listener failed', err2);
+          onError?.(err2);
+        },
+      );
     },
   );
+
+  return () => {
+    detach?.();
+  };
 }
