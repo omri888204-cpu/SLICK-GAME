@@ -163,6 +163,8 @@ const SFX_REMOTE: Record<SfxId, string> = {
 /** Game binaries live in `public/assets/` and grouped subfolders. */
 const GAME_ASSETS = `${import.meta.env.BASE_URL}assets`;
 const BG_TESET_DIR_URL = `${GAME_ASSETS}/${encodeURIComponent('backgroud teset')}`;
+/** Bottom death hazard — full `line power.png` scaled to viewport width (see {@link drawBottomDeathLine}). */
+const DEATH_LINE_IMAGE_URL = `${BG_TESET_DIR_URL}/${encodeURIComponent('line power.png')}`;
 const STATIC_BG_TESET3_CANDIDATES = [
   `${BG_TESET_DIR_URL}/${encodeURIComponent('new background.png')}`,
   `${BG_TESET_DIR_URL}/${encodeURIComponent('teset 3-Photoroom.png')}`,
@@ -171,6 +173,18 @@ const STATIC_BG_TESET3_CANDIDATES = [
 /** 1000m+ swap texture: `sky.png` under {@link BG_TESET_DIR_URL} (same folder as teset 1/2). */
 const STATIC_BG_TESET3_POST_REST_1K_CANDIDATES = [
   `${BG_TESET_DIR_URL}/${encodeURIComponent('sky.png')}`,
+] as const;
+/** מ־2000 מ׳: רקע אחורי — `sky 3.png` תחת {@link BG_TESET_DIR_URL}. */
+const STATIC_BG_TESET3_POST_REST_2K_CANDIDATES = [
+  `${BG_TESET_DIR_URL}/${encodeURIComponent('sky 3.png')}`,
+] as const;
+/** מ־3000 מ׳: רקע אחורי — `sky 4.png` תחת {@link BG_TESET_DIR_URL}. */
+const STATIC_BG_TESET3_POST_REST_3K_CANDIDATES = [
+  `${BG_TESET_DIR_URL}/${encodeURIComponent('sky 4.png')}`,
+] as const;
+/** מ־5000 מ׳: רקע אחורי — `sky 5.png` תחת {@link BG_TESET_DIR_URL}. */
+const STATIC_BG_TESET3_POST_REST_5K_CANDIDATES = [
+  `${BG_TESET_DIR_URL}/${encodeURIComponent('sky 5.png')}`,
 ] as const;
 const STATIC_BG_TESET2_PHOTOROOM_CANDIDATES = [
   `${BG_TESET_DIR_URL}/${encodeURIComponent('teset 2-Photoroom.png')}`,
@@ -192,8 +206,12 @@ const BG_Z_TESET2_SPRITE = -20;
 const BG_Z_TESET1_SPRITE = -10;
 /** Only Photoroom stack + fill — skip altitude tier parallax (set `false` to restore `BACKGROUND_TIERS`). */
 const STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY = true;
-/** Orange strip at viewport bottom — must stay in sync with `drawBottomDeathLine`. */
-const DEATH_ORANGE_BAR_HEIGHT_PX = 9;
+/** Orange strip at viewport bottom — vector fallback only (see {@link drawBottomDeathLine}). */
+const DEATH_ORANGE_BAR_HEIGHT_PX = 18;
+/** Full viewport-bottom hazard band height (matches legacy vector lava block). */
+const DEATH_HAZARD_BAND_PX = 32;
+/** Tiny +Y nudge so line-power art meets gums / baseline without a hairline gap. */
+const LINE_POWER_NUDGE_DOWN_PX = 3;
 /** Gameplay BGM: random track from `public/assets/game music/` on each fresh run (see `pickRandomGameMusicBgmUrl`). */
 const GAME_MUSIC_DIR_URL = `${GAME_ASSETS}/${encodeURIComponent('game music')}`;
 const GAME_MUSIC_BGM_FILENAMES = [
@@ -360,6 +378,8 @@ const MUSHROOM_PLATFORM_START_INDEX = 5;
 const MUSHROOM_PLATFORM_STRIDE = 3;
 
 /** Player melee attack — virtual button (bottom-right) + KeyF, plays the attack row of the character spritesheet. */
+/** When false, hides the on-screen attack circle; `KeyF` still triggers {@link PlayScene.playerAttack} via `InputManager`. */
+const ATTACK_VIRTUAL_BUTTON_VISIBLE = false;
 const ATTACK_BTN_RADIUS_PX = 44;
 const ATTACK_BTN_MARGIN_PX = 24;
 const ATTACK_BTN_FILL_COLOR = 0xff4d1a;
@@ -740,10 +760,22 @@ export class PlayScene implements Scene {
   /** Photoroom sky (teset 3) — `TilingSprite` at −30; parallax via `tilePosition`. */
   private bgStaticTeset3Tile: TilingSprite | null = null;
   private bgStaticTeset3BaseTexture?: Texture;
-/** Preloaded `sky.png` (1000m+ far sky) — see {@link STATIC_BG_TESET3_POST_REST_1K_CANDIDATES}. */
+  /** Preloaded `sky.png` — החלפה מ־1000 מ׳ (ראה {@link STATIC_BG_TESET3_POST_REST_1K_CANDIDATES}). */
   private background1kTexture?: Texture;
-  /** Strict-task flag: `bgChangedAt1k` — texture swap runs once. */
+  /** Preloaded `sky 3.png` — החלפה מ־2000 מ׳ (ראה {@link STATIC_BG_TESET3_POST_REST_2K_CANDIDATES}). */
+  private background2kSkyTexture?: Texture;
+  /** Preloaded `sky 4.png` — החלפה מ־3000 מ׳ (ראה {@link STATIC_BG_TESET3_POST_REST_3K_CANDIDATES}). */
+  private background3kSkyTexture?: Texture;
+  /** Preloaded `sky 5.png` — החלפה מ־5000 מ׳ (ראה {@link STATIC_BG_TESET3_POST_REST_5K_CANDIDATES}). */
+  private background5kSkyTexture?: Texture;
+  /** Milestone: החלפה ל־`sky.png` פעם אחת אחרי 1000 מ׳. */
   private bgChangedAt1k = false;
+  /** Milestone: החלפה ל־`sky 3.png` פעם אחת אחרי 2000 מ׳. */
+  private bgChangedAt2k = false;
+  /** Milestone: החלפה ל־`sky 4.png` פעם אחת אחרי 3000 מ׳. */
+  private bgChangedAt3k = false;
+  /** Milestone: החלפה ל־`sky 5.png` פעם אחת אחרי 5000 מ׳. */
+  private bgChangedAt5k = false;
   /**
    * teset 2/1: viewport-locked on `backgroundRoot` (`setScrollFactor(0)`). Positions finalized in
    * {@link syncPhotoroomTeset12ScreenAnchoredOscillation} so {@link layoutBackground} does not reset Y each frame.
@@ -764,6 +796,16 @@ export class PlayScene implements Scene {
   /** Bottom hazard strip (vector lava fallback; crystal/ice asset removed). */
   private lavaLayer = new Container();
   private deathZoneFallback = new Graphics();
+  /** Preloaded death-line art ({@link DEATH_LINE_IMAGE_URL}); vector lava if missing. */
+  private deathHazardTexture?: Texture;
+  /** Full-width death strip sprite (`line power`); vector {@link deathZoneFallback} if load fails. */
+  private deathHazardSprite: Sprite | null = null;
+  /** Alias for {@link deathHazardSprite} — line power artwork at viewport bottom. */
+  private get linePower(): Sprite | null {
+    return this.deathHazardSprite;
+  }
+  /** World-space line-power strip anchor Y when bob offset is zero (see {@link drawBottomDeathLine}). */
+  private linePowerBaseY = 0;
   private gameShake = new Container();
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
@@ -1075,6 +1117,8 @@ export class PlayScene implements Scene {
     this.refreshWorldViewport();
 
     this.lavaLayer.addChild(this.deathZoneFallback);
+    this.lavaLayer.sortableChildren = true;
+    this.deathZoneFallback.zIndex = 0;
     const quickMobile = isQuickStartMobileDevice();
     await Promise.all([
       quickMobile ? this.loadPlatformSpriteCore() : this.loadPlatformSprite(),
@@ -1375,7 +1419,7 @@ export class PlayScene implements Scene {
       this.currentGroundPlatform = null;
     }
 
-    this.maybeTriggerBackground1kAt1000mPlatformLanding();
+    this.maybeTriggerFarSkyTextureMilestones();
 
     this.updateRestFloorHoldState();
     this.updateCamera(dt);
@@ -3157,11 +3201,36 @@ export class PlayScene implements Scene {
 
   private resetBackground1kSwapState(): void {
     this.bgChangedAt1k = false;
+    this.bgChangedAt2k = false;
+    this.bgChangedAt3k = false;
+    this.bgChangedAt5k = false;
     const sky = this.bgStaticTeset3Tile;
     const b3 = this.bgStaticTeset3BaseTexture;
     if (sky && b3) {
       sky.texture = b3;
+      this.syncTeset3FarSkyTileScaleForTexture(b3);
     }
+  }
+
+  /**
+   * `sky 4.png` and siblings may export at different pixel sizes than the teset-3 base; normalize
+   * {@link TilingSprite.tileScale} so horizontal/vertical repeat matches {@link bgStaticTeset3BaseTexture}.
+   */
+  private syncTeset3FarSkyTileScaleForTexture(tex: Texture): void {
+    const tile = this.bgStaticTeset3Tile;
+    const ref = this.bgStaticTeset3BaseTexture;
+    if (!tile) {
+      return;
+    }
+    const rw = ref?.source.width ?? tex.source.width;
+    const rh = ref?.source.height ?? tex.source.height;
+    const tw = tex.source.width;
+    const th = tex.source.height;
+    if (tw <= 0 || th <= 0 || rw <= 0 || rh <= 0) {
+      tile.tileScale.set(1);
+      return;
+    }
+    tile.tileScale.set(rw / tw, rh / th);
   }
 
   /**
@@ -3171,20 +3240,38 @@ export class PlayScene implements Scene {
     const skyTile = this.bgStaticTeset3Tile;
     if (skyTile) {
       skyTile.texture = tex;
+      this.syncTeset3FarSkyTileScaleForTexture(tex);
     }
   }
 
-  /** מעל 1000 מ׳ במשחק: רק שכבת השמיים האחורית עוברת מ־`new background.png` (בסיס) ל־`sky.png`. */
-  private maybeTriggerBackground1kAt1000mPlatformLanding(): void {
-    if (this.playerDistance >= 1000 && !this.bgChangedAt1k) {
+  /**
+   * רקע אחורי (tiling): מ־1000 מ׳ `sky.png`, מ־2000 מ׳ `sky 3.png`, מ־3000 מ׳ `sky 4.png`, מ־5000 מ׳ `sky 5.png`; דגלים רק אחרי טקסטורה תקינה.
+   */
+  private maybeTriggerFarSkyTextureMilestones(): void {
+    const d = this.playerDistance;
+    if (d >= 5000 && !this.bgChangedAt5k) {
+      const tex = this.background5kSkyTexture;
+      if (tex) {
+        this.applyBackground1kTextureToAllSkyLayers(tex);
+        this.bgChangedAt5k = true;
+      }
+    } else if (d >= 3000 && !this.bgChangedAt3k) {
+      const tex = this.background3kSkyTexture;
+      if (tex) {
+        this.applyBackground1kTextureToAllSkyLayers(tex);
+        this.bgChangedAt3k = true;
+      }
+    } else if (d >= 2000 && !this.bgChangedAt2k) {
+      const tex = this.background2kSkyTexture;
+      if (tex) {
+        this.applyBackground1kTextureToAllSkyLayers(tex);
+        this.bgChangedAt2k = true;
+      }
+    } else if (d >= 1000 && !this.bgChangedAt1k) {
       const tex = this.background1kTexture;
-      console.log('[BG1K] trigger — tex:', tex ? 'loaded' : 'MISSING', '| dist:', this.playerDistance);
       if (tex) {
         this.applyBackground1kTextureToAllSkyLayers(tex);
         this.bgChangedAt1k = true;
-        console.log('[BG1K] sky.png applied!');
-      } else {
-        console.error('[BG1K] sky.png missing — check: public/assets/backgroud teset/sky.png');
       }
     }
   }
@@ -3204,8 +3291,41 @@ export class PlayScene implements Scene {
         this.prepareTextureForInfiniteTile(skyTex);
         this.background1kTexture = skyTex;
       } catch (error) {
-        console.error("CRITICAL ERROR: Failed to load sky.png from candidates!", error);
+        console.error('CRITICAL ERROR: Failed to load sky.png from candidates!', error);
         this.background1kTexture = undefined;
+      }
+
+      try {
+        const sky3Tex = await this.loadTextureFromCandidates(
+          STATIC_BG_TESET3_POST_REST_2K_CANDIDATES,
+        );
+        this.prepareTextureForInfiniteTile(sky3Tex);
+        this.background2kSkyTexture = sky3Tex;
+      } catch (error) {
+        console.error('CRITICAL ERROR: Failed to load sky 3.png from candidates!', error);
+        this.background2kSkyTexture = undefined;
+      }
+
+      try {
+        const sky4Tex = await this.loadTextureFromCandidates(
+          STATIC_BG_TESET3_POST_REST_3K_CANDIDATES,
+        );
+        this.prepareTextureForInfiniteTile(sky4Tex);
+        this.background3kSkyTexture = sky4Tex;
+      } catch (error) {
+        console.error('CRITICAL ERROR: Failed to load sky 4.png from candidates!', error);
+        this.background3kSkyTexture = undefined;
+      }
+
+      try {
+        const sky5Tex = await this.loadTextureFromCandidates(
+          STATIC_BG_TESET3_POST_REST_5K_CANDIDATES,
+        );
+        this.prepareTextureForInfiniteTile(sky5Tex);
+        this.background5kSkyTexture = sky5Tex;
+      } catch (error) {
+        console.error('CRITICAL ERROR: Failed to load sky 5.png from candidates!', error);
+        this.background5kSkyTexture = undefined;
       }
 
       const hAboveOrange = Math.max(1, vh - DEATH_ORANGE_BAR_HEIGHT_PX);
@@ -3231,6 +3351,9 @@ export class PlayScene implements Scene {
       this.bgStaticTeset3Tile = null;
       this.bgStaticTeset3BaseTexture = undefined;
       this.background1kTexture = undefined;
+      this.background2kSkyTexture = undefined;
+      this.background3kSkyTexture = undefined;
+      this.background5kSkyTexture = undefined;
     }
   }
 
@@ -6037,12 +6160,19 @@ export class PlayScene implements Scene {
   private setupAttackButton(): void {
     this.attackBtnRoot.zIndex = 1002;
     this.attackBtnRoot.sortableChildren = false;
-    this.attackBtn.eventMode = 'static';
-    this.attackBtn.cursor = 'pointer';
-    this.attackBtn.on('pointerdown', (event) => {
-      event.stopPropagation();
-      this.playerAttack();
-    });
+    if (ATTACK_VIRTUAL_BUTTON_VISIBLE) {
+      this.attackBtn.eventMode = 'static';
+      this.attackBtn.cursor = 'pointer';
+      this.attackBtn.on('pointerdown', (event) => {
+        event.stopPropagation();
+        this.playerAttack();
+      });
+      this.attackBtnRoot.visible = true;
+    } else {
+      this.attackBtn.eventMode = 'none';
+      this.attackBtn.cursor = 'default';
+      this.attackBtnRoot.visible = false;
+    }
     this.attackBtnIcon.eventMode = 'none';
     this.attackBtnRoot.addChild(this.attackBtn, this.attackBtnIcon);
     this.uiLayer.addChild(this.attackBtnRoot);
@@ -6050,6 +6180,9 @@ export class PlayScene implements Scene {
   }
 
   private layoutAttackButton(): void {
+    if (!ATTACK_VIRTUAL_BUTTON_VISIBLE) {
+      return;
+    }
     const r = ATTACK_BTN_RADIUS_PX;
     this.attackBtn.clear();
     this.attackBtn
@@ -6108,6 +6241,9 @@ export class PlayScene implements Scene {
    * `player.isAttacking()` is true, full opacity otherwise.
    */
   private refreshAttackButtonCooldownVisual(): void {
+    if (!ATTACK_VIRTUAL_BUTTON_VISIBLE) {
+      return;
+    }
     const cooling = this.player.isAttacking();
     this.attackBtnRoot.alpha = cooling ? 0.55 : 1;
   }
@@ -6694,6 +6830,19 @@ export class PlayScene implements Scene {
     }
   }
 
+  /**
+   * Death-line art height when scaled to strip width `stripW` — entire texture visible, uniform scale.
+   */
+  private deathHazardStripHeightForWidth(stripW: number): number {
+    const tex = this.deathHazardTexture;
+    if (!tex) {
+      return DEATH_HAZARD_BAND_PX;
+    }
+    const tw = Math.max(1, tex.width);
+    const th = Math.max(1, tex.height);
+    return Math.max(1, (stripW / tw) * th);
+  }
+
   private drawBottomDeathLine(): void {
     /**
      * `lavaLayer` lives in `world` with `zIndex` above platforms so stairs pass **behind** the hazard art.
@@ -6705,20 +6854,65 @@ export class PlayScene implements Scene {
     const x = this.cameraX - padX;
     const w = vw + padX * 2;
 
+    const linePower = this.linePower;
+    if (linePower) {
+      this.deathZoneFallback.visible = false;
+      linePower.visible = true;
+      this.linePowerBaseY = deathY;
+      // Math.sin ∈ [-1, 1]. +0.4 keeps offset mostly positive: +Y = down — drops more, barely rises.
+      linePower.position.set(
+        this.cameraX - padX,
+        this.linePowerBaseY +
+          (Math.sin(Date.now() * 0.005) + 0.4) * 5 +
+          LINE_POWER_NUDGE_DOWN_PX,
+      );
+      linePower.width = w;
+      linePower.height = this.deathHazardStripHeightForWidth(w);
+      return;
+    }
+
     this.deathZoneFallback.visible = true;
-    const lavaTop = deathY - 32;
+    const lavaTop = deathY - DEATH_HAZARD_BAND_PX;
+    const orangeTop = deathY - DEATH_ORANGE_BAR_HEIGHT_PX;
+    const lavaBandH = Math.max(1, DEATH_HAZARD_BAND_PX - DEATH_ORANGE_BAR_HEIGHT_PX);
+    const stripH = DEATH_ORANGE_BAR_HEIGHT_PX;
     this.deathZoneFallback.clear();
-    this.deathZoneFallback
-      .rect(x, lavaTop, w, 32)
-      .fill({ color: 0xff4b00, alpha: 0.78 });
-    this.deathZoneFallback
-      .rect(x, deathY - DEATH_ORANGE_BAR_HEIGHT_PX, w, DEATH_ORANGE_BAR_HEIGHT_PX)
-      .fill({ color: 0xffa621, alpha: 0.95 });
+    this.deathZoneFallback.rect(x, lavaTop, w, lavaBandH).fill({ color: 0xff4b00, alpha: 0.78 });
+    this.deathZoneFallback.rect(x, orangeTop, w, stripH).fill({ color: 0xffa621, alpha: 0.95 });
   }
 
-  /** Crystal strip removed from repo — keep hook for init ordering; hazard is vector-only. */
+  /** Load death-line image ({@link DEATH_LINE_IMAGE_URL}); on failure keep vector {@link deathZoneFallback}. */
   private async loadDeathZoneStrip(): Promise<void> {
     this.deathZoneFallback.visible = true;
+    try {
+      this.deathHazardTexture = (await Assets.load(DEATH_LINE_IMAGE_URL)) as Texture;
+
+      if (this.deathHazardTexture) {
+        const vw = Math.max(1, this.worldWidthFromScreen());
+        const padSpan = 60;
+        const stripW = vw + padSpan;
+        const stripH = this.deathHazardStripHeightForWidth(stripW);
+        const s = new Sprite(this.deathHazardTexture);
+        s.eventMode = 'none';
+        s.anchor.set(0, 1);
+        s.roundPixels = false;
+        s.zIndex = 2;
+        s.width = stripW;
+        s.height = stripH;
+        this.deathHazardSprite = s;
+        this.linePowerBaseY = this.getDeathPlaneWorldY();
+        this.lavaLayer.addChild(s);
+        this.deathZoneFallback.visible = false;
+      }
+    } catch (e) {
+      console.warn('Failed to load death-line texture, falling back to vector lava', e);
+      this.deathHazardTexture = undefined;
+      if (this.deathHazardSprite) {
+        this.lavaLayer.removeChild(this.deathHazardSprite);
+        this.deathHazardSprite.destroy({ texture: false });
+        this.deathHazardSprite = null;
+      }
+    }
   }
 
   private tickAltitudePresentation(dt: number): void {
