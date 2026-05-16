@@ -145,7 +145,8 @@ type SfxId =
   | 'tongue_hit'
   | 'collect_coin'
   | 'collect_diamond'
-  | 'player_land';
+  | 'player_land'
+  | 'super_jump_woohoo';
 
 /** Remote clips when `public/audio/<name>.*` is missing (see `SFX_LOCAL`). */
 const SFX_REMOTE: Record<SfxId, string> = {
@@ -158,6 +159,8 @@ const SFX_REMOTE: Record<SfxId, string> = {
   collect_diamond: 'https://labs.phaser.io/assets/audio/SoundEffects/pickup.wav',
   player_land:
     'https://assets.mixkit.co/active_storage/sfx/2070/2070-preview.mp3',
+  super_jump_woohoo:
+    'https://assets.mixkit.co/active_storage/sfx/2019/2019-preview.mp3',
 };
 
 /** Game binaries live in `public/assets/` and grouped subfolders. */
@@ -241,6 +244,7 @@ const SFX_LOCAL: Record<SfxId, string> = {
   collect_coin: `${import.meta.env.BASE_URL}audio/collect_coin.mp3`,
   collect_diamond: `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/diamond_collect.mp3`,
   player_land: `${import.meta.env.BASE_URL}audio/player_land.mp3`,
+  super_jump_woohoo: `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/woohoohoo.mp3`,
 };
 
 /**
@@ -639,6 +643,8 @@ const REST_FLOOR_CLOUD_BREATH_HZ = 0.45;
 const REST_FLOOR_SUPPLIES_START_X_PX = 100;
 const REST_FLOOR_SUPPLIES_SCALE_DESKTOP = 1.25;
 const REST_FLOOR_SUPPLIES_SCALE_MOBILE = 1.05;
+/** When false, skip `supplies_objects.png` props (weapon racks) on the 1000m rest floor. */
+const REST_FLOOR_SUPPLIES_ENABLED = false;
 const REST_FLOOR_SUPPLY_PROPS = [
   { x: 0, y: 356, w: 206, h: 50, spacingAfter: 88, scale: 1.848 },
 ] as const;
@@ -1168,10 +1174,10 @@ export class PlayScene implements Scene {
     this.mushroomEnemyLayer.sortableChildren = false;
     this.mushroomDeathFxLayer.zIndex = 4.5;
     this.mushroomDeathFxLayer.sortableChildren = false;
-    /** Stairs drift behind the death-zone art; player / FX / ripples stay in front. */
+    /** Stairs drift behind the death-zone art; ripples + collectibles sit under power line so coins/diamonds don’t paint over it. */
+    this.rippleLayer.zIndex = 22;
+    this.collectiblesGfx.zIndex = 23;
     this.lavaLayer.zIndex = 25;
-    this.rippleLayer.zIndex = 30;
-    this.collectiblesGfx.zIndex = 31;
     this.tongueRoot.zIndex = 32;
     this.fxLayer.zIndex = 33;
     this.player.zIndex = 40;
@@ -4395,6 +4401,7 @@ export class PlayScene implements Scene {
     this.physics.jump(this.player.body);
     this.player.body.vy *= SUPER_JUMP_VY_SCALE;
     this.jumpCount += 1;
+    this.sfx.play('super_jump_woohoo', 0.9);
 
     /**
      * Combo registration must run **before** mega-jump stair tracking: a cold chain calls
@@ -7774,8 +7781,12 @@ export class PlayScene implements Scene {
       console.warn('Failed to load rest floor cloud asset:', REST_FLOOR_CLOUD_URL);
     }
     try {
-      this.restFloorSuppliesTexture = (await Assets.load<Texture>(REST_FLOOR_SUPPLIES_URL)) as Texture;
-      this.createRestFloorSupplyTextures();
+      if (REST_FLOOR_SUPPLIES_ENABLED) {
+        this.restFloorSuppliesTexture = (await Assets.load<Texture>(REST_FLOOR_SUPPLIES_URL)) as Texture;
+        this.createRestFloorSupplyTextures();
+      } else {
+        this.destroyRestFloorSupplySprites();
+      }
     } catch {
       this.restFloorSuppliesTexture = undefined;
       this.restFloorSupplyTextures = [];
@@ -7837,6 +7848,9 @@ export class PlayScene implements Scene {
   }
 
   private maybeSpawnFirstRestFloorProps(platform: Platform): void {
+    if (!REST_FLOOR_SUPPLIES_ENABLED) {
+      return;
+    }
     if (this.getRestFloorMeters(platform) !== REST_FLOOR_HOUSE_METERS) {
       return;
     }
@@ -7844,6 +7858,10 @@ export class PlayScene implements Scene {
   }
 
   private spawnRestFloorSupplies(): void {
+    if (!REST_FLOOR_SUPPLIES_ENABLED) {
+      this.destroyRestFloorSupplySprites();
+      return;
+    }
     if (this.restFloorSupplyTextures.length === 0) {
       return;
     }
@@ -7879,7 +7897,7 @@ export class PlayScene implements Scene {
   }
 
   private layoutRestFloorSupplies(): void {
-    if (this.restFloorSupplySprites.length === 0) {
+    if (!REST_FLOOR_SUPPLIES_ENABLED || this.restFloorSupplySprites.length === 0) {
       return;
     }
 
@@ -7940,6 +7958,17 @@ export class PlayScene implements Scene {
     this.restFloorCloudSprite = undefined;
     this.restFloorCloudRightSprite = undefined;
     this.restFloorSupplySprites = [];
+  }
+
+  /** Remove supply rack sprites only (house/clouds unaffected). */
+  private destroyRestFloorSupplySprites(): void {
+    for (const sprite of this.restFloorSupplySprites) {
+      sprite.parent?.removeChild(sprite);
+      sprite.destroy();
+    }
+    this.restFloorSupplySprites = [];
+    this.restFloorSupplyTextures = [];
+    this.restFloorSuppliesTexture = undefined;
   }
 
   private spawnRestFloorCloud(
