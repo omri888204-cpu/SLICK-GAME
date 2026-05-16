@@ -24,6 +24,8 @@
     "ios:open": "cap open ios"
   },
   "dependencies": {
+    "@capacitor/cli": "^8.3.4",
+    "@capacitor/core": "^8.3.4",
     "@pixi/sound": "^6.0.1",
     "firebase": "^12.13.0",
     "gsap": "^3.15.0",
