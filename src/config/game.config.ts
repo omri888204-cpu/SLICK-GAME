@@ -224,7 +224,7 @@ export const STAIRS = {
 export const COLLECTIBLES = {
   coinPoints: 10,
   diamondPoints: 50,
-  /** Score bonus when a shield is bought from the gold/diamond bank (no world pickup). */
+  /** Unused: world shield orbs no longer spawn; kept for data compatibility. Score bonus was for orb pickup. */
   shieldPickupPoints: 40,
   shieldDurationSec: 5,
   shieldSpawnChance: 0.12,

@@ -639,9 +639,8 @@ const LEVEL_PLATFORM_SPEED_PER_LEVEL = 5;
 const LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL = 0.005;
 const LEVEL_PLATFORM_MIN_BASE_WIDTH = 72;
 const LEVEL_MILESTONE_STEP = 10;
-/** Spend this much from gold/diamond bank to activate one fall-protection shield. */
-const SHIELD_BANK_GOLD = 10;
-const SHIELD_BANK_DIAMOND = 5;
+/** Structural fall shields: fixed stock per run, never above this cap; not granted by gold/diamond/items. */
+const MAX_FALL_SHIELDS = 3;
 /** On fall-save, place the player exactly this many platform gaps above the last recorded platform. */
 const SHIELD_BOUNCE_PLATFORM_RISE_COUNT = 5;
 const SHIELD_SAVE_FLASH_SEC = 0.42;
@@ -1049,9 +1048,11 @@ export class PlayScene implements Scene {
   private jumpArcStartCenterX = 0;
   private jumpArcTargetCenterX = 0;
   /**
-   * Fall-protection shield state. An active shield is bought from the gold/diamond bank and is
-   * consumed only by the death-zone fall save.
+   * Structural fall-save shields (max {@link MAX_FALL_SHIELDS}, not from currency/items): consumed when feet
+   * cross the viewport-bottom death hazard ({@link checkFallGameOver}). Visual FX via {@link performShieldSuperLaunch}.
    */
+  private fallShields = MAX_FALL_SHIELDS;
+  /** Brief FX timer after a fall-save consumes one shield ({@link performShieldSuperLaunch}). */
   private shieldSaveFlashTime = 0;
   /**
    * Last platform the player **stood on** (live object reference — survives stair recycle id churn so
@@ -1387,7 +1388,6 @@ export class PlayScene implements Scene {
     }
     this.tickPlayerAttackHitbox();
     this.refreshAttackButtonCooldownVisual();
-    this.maybePurchaseShieldFromBank();
     this.updateCollectibleHudSmooth(dt);
     /**
      * `comboActive` lights the avatar's combo accent; `beastMode` enables the orange glow rings
@@ -1400,7 +1400,7 @@ export class PlayScene implements Scene {
       this.comboCount >= 2,
       this.grapple,
       comboGlow,
-      this.player.isShielded,
+      this.fallShields > 0,
     );
     this.tickAltitudePresentation(dt);
     this.drawDynamicWorld();
@@ -2207,8 +2207,8 @@ export class PlayScene implements Scene {
     this.jumpArcAssistTime = 0;
     this.jumpArcAssistDuration = 0;
     this.shieldSaveFlashTime = 0;
+    this.fallShields = MAX_FALL_SHIELDS;
     this.lastLandedPlatform = null;
-    this.player.isShielded = false;
     this.clearMushroomDeathEffects();
     this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
     if (this.levelUpFloatText) {
@@ -2253,7 +2253,7 @@ export class PlayScene implements Scene {
       return;
     }
     this.jumpBufferTimeLeft = 0;
-    if (this.consumePlayerShield()) {
+    if (this.consumeFallShield()) {
       this.performShieldSuperLaunch();
       return;
     }
@@ -2551,7 +2551,7 @@ export class PlayScene implements Scene {
     if (deck) {
       this.lastLandedPlatform = deck;
     }
-    this.player.update(0, 0, false, null, false, this.player.isShielded);
+    this.player.update(0, 0, false, null, false, this.fallShields > 0);
   }
 
   private landOn(platform: Platform): void {
@@ -3818,7 +3818,7 @@ export class PlayScene implements Scene {
       style: this.createNeonGoldTextStyle(19, 3),
     });
     this.collectibleHudShieldText = new Text({
-      text: '0',
+      text: `${MAX_FALL_SHIELDS}`,
       style: this.createNeonGoldTextStyle(19, 3),
     });
     this.collectibleHudGoldText.anchor.set(0, 0.5);
@@ -6186,24 +6186,19 @@ export class PlayScene implements Scene {
     }
   }
 
-  private activatePlayerShield(): void {
-    this.player.isShielded = true;
-    this.refreshCollectibleHudText();
-  }
-
   private tickPlayerShield(dt: number): void {
     this.shieldSaveFlashTime = Math.max(0, this.shieldSaveFlashTime - dt);
   }
 
   /**
-   * One-shot fall-save: only {@link checkFallGameOver} may call this, after feet cross the viewport-bottom
-   * death hazard. Does **not** run during stair recycle, tongue, or pickups (see {@link performShieldSuperLaunch}).
+   * One-shot fall-save: only {@link checkFallGameOver} may call this after feet cross the viewport-bottom
+   * death hazard.
    */
-  private consumePlayerShield(): boolean {
-    if (!this.player.isShielded) {
+  private consumeFallShield(): boolean {
+    if (this.fallShields <= 0) {
       return false;
     }
-    this.player.isShielded = false;
+    this.fallShields -= 1;
     this.refreshCollectibleHudText();
     return true;
   }
@@ -6926,9 +6921,9 @@ export class PlayScene implements Scene {
     this.collectibleHudShieldText?.position.set(28, shieldRowY);
   }
 
-  /** HUD count shows the currently active one-use fall shield. */
+  /** HUD: remaining fall shields (never exceeds {@link MAX_FALL_SHIELDS}). */
   private getShieldHudStock(): number {
-    return this.player.isShielded ? 1 : 0;
+    return Math.min(MAX_FALL_SHIELDS, Math.max(0, this.fallShields));
   }
 
   private refreshCollectibleHudText(): void {
@@ -7009,10 +7004,10 @@ export class PlayScene implements Scene {
 
   private pickCollectibleKind(): CollectibleKind {
     const roll = Math.random();
-    if (roll < COLLECTIBLES.shieldSpawnChance) {
-      return 'shield';
-    }
-    if (roll < COLLECTIBLES.shieldSpawnChance + COLLECTIBLES.diamondSpawnChance) {
+    /** Former rolls included {@link COLLECTIBLES.shieldSpawnChance}; shields no longer spawn — rescale diamond threshold. */
+    const diamondThreshold =
+      COLLECTIBLES.diamondSpawnChance / (1 - COLLECTIBLES.shieldSpawnChance);
+    if (roll < diamondThreshold) {
       return 'diamond';
     }
     return 'coin';
@@ -7026,26 +7021,6 @@ export class PlayScene implements Scene {
       return COLLECTIBLES.diamondRadius;
     }
     return COLLECTIBLES.shieldRadius;
-  }
-
-  /** Auto-activate one fall-protection shield when the bank can pay the 10 Gold / 5 Diamond cost. */
-  private maybePurchaseShieldFromBank(): void {
-    if (
-      this.player.isShielded ||
-      this.goldCount < SHIELD_BANK_GOLD ||
-      this.diamondCount < SHIELD_BANK_DIAMOND
-    ) {
-      return;
-    }
-
-    this.goldCount -= SHIELD_BANK_GOLD;
-    this.diamondCount -= SHIELD_BANK_DIAMOND;
-    this.activatePlayerShield();
-    this.sfx.play('collect_diamond', 0.72);
-    this.collectibleHudBump = 1;
-    this.hudGoldShown = this.goldCount;
-    this.hudDiamondShown = this.diamondCount;
-    this.refreshCollectibleHudText();
   }
 
   private spawnCollectibleField(): void {
@@ -7160,18 +7135,6 @@ export class PlayScene implements Scene {
     } else if (c.kind === 'diamond') {
       this.diamondCount += 1;
       this.runDiamondCollected += 1;
-      this.sfx.play('collect_diamond', 0.92);
-      this.spawnDiamondCollectShine(pos.x, pos.y);
-    } else {
-      /** World shield pickup — unrelated to gold/diamond bank auto-shield ({@link maybePurchaseShieldFromBank}). */
-      if (!this.player.isShielded) {
-        this.activatePlayerShield();
-        this.score += COLLECTIBLES.shieldPickupPoints;
-        this.recomputeDerivedTotalScore();
-      } else {
-        this.goldCount += 3;
-        this.runGoldCollected += 3;
-      }
       this.sfx.play('collect_diamond', 0.92);
       this.spawnDiamondCollectShine(pos.x, pos.y);
     }
