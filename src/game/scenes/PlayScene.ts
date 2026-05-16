@@ -162,6 +162,34 @@ const SFX_REMOTE: Record<SfxId, string> = {
 
 /** Game binaries live in `public/assets/` and grouped subfolders. */
 const GAME_ASSETS = `${import.meta.env.BASE_URL}assets`;
+const BG_TESET_DIR_URL = `${GAME_ASSETS}/${encodeURIComponent('backgroud teset')}`;
+const STATIC_BG_TESET3_CANDIDATES = [
+  `${BG_TESET_DIR_URL}/${encodeURIComponent('new background.png')}`,
+  `${BG_TESET_DIR_URL}/${encodeURIComponent('teset 3-Photoroom.png')}`,
+  `${BG_TESET_DIR_URL}/${encodeURIComponent('טסט 3.png')}`,
+] as const;
+const STATIC_BG_TESET2_PHOTOROOM_CANDIDATES = [
+  `${BG_TESET_DIR_URL}/${encodeURIComponent('teset 2-Photoroom.png')}`,
+  `${BG_TESET_DIR_URL}/${encodeURIComponent('טסט 2.png')}`,
+] as const;
+const STATIC_BG_TESET1_PHOTOROOM_CANDIDATES = [
+  `${BG_TESET_DIR_URL}/${encodeURIComponent('teset 1-Photoroom.png')}`,
+  `${BG_TESET_DIR_URL}/${encodeURIComponent('טסט 1.png')}`,
+] as const;
+/** Letterbox fill behind tiles / Photoroom stack. */
+const BG_Z_BACKDROP_FILL = -50;
+/** Photoroom sky layer — Phaser depth −30; `TilingSprite` + `syncTeset3PhotoroomTileScroll`. */
+const BG_Z_TESET3_STATIC = -30;
+/** ~`setScrollFactor(0.1)` — `tilePosition` tracks camera at 10%. */
+const TESET3_PHOTOROOM_SCROLL_FACTOR = 0.1;
+/** Photoroom mid/foreground — Phaser depth −20; `backgroundRoot` + scrollFactor 0 (viewport/HUD–locked). */
+const BG_Z_TESET2_SPRITE = -20;
+/** Photoroom mid/foreground — Phaser depth −10. */
+const BG_Z_TESET1_SPRITE = -10;
+/** Only Photoroom stack + fill — skip altitude tier parallax (set `false` to restore `BACKGROUND_TIERS`). */
+const STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY = true;
+/** Orange strip at viewport bottom — must stay in sync with `drawBottomDeathLine`. */
+const DEATH_ORANGE_BAR_HEIGHT_PX = 9;
 /** Gameplay BGM: random track from `public/assets/game music/` on each fresh run (see `pickRandomGameMusicBgmUrl`). */
 const GAME_MUSIC_DIR_URL = `${GAME_ASSETS}/${encodeURIComponent('game music')}`;
 const GAME_MUSIC_BGM_FILENAMES = [
@@ -706,6 +734,14 @@ export class PlayScene implements Scene {
   private readonly bgOverlayMask = new Graphics();
   /** Back → front: matches the active entry from `BACKGROUND_TIERS`. */
   private bgParallaxLayers: { tile: TilingSprite; speed: number }[] = [];
+  /** Photoroom sky (teset 3) — `TilingSprite` at −30; parallax via `tilePosition`. */
+  private bgStaticTeset3Tile: TilingSprite | null = null;
+  /**
+   * teset 2/1: viewport-locked on `backgroundRoot` (`setScrollFactor(0)`). Positions finalized in
+   * {@link syncPhotoroomTeset12ScreenAnchoredOscillation} so {@link layoutBackground} does not reset Y each frame.
+   */
+  private bgStaticTeset2Sprite: Sprite | null = null;
+  private bgStaticTeset1Sprite: Sprite | null = null;
   private bgOverlayLayers: { tile: TilingSprite; speed: number }[] = [];
   private loadedBackgroundTiers = new Map<BackgroundTierId, LoadedBackgroundTier>();
   private activeBackgroundTierId?: BackgroundTierId;
@@ -988,6 +1024,8 @@ export class PlayScene implements Scene {
   private superTongueBuffTime = 0;
   private jumpBufferTimeLeft = 0;
   private runTime = 0;
+  /** MS accumulator from Pixi ticker — Phaser `update(time)` analogue for Photoroom sine. */
+  private photoroomOscTimeMs = 0;
   private hurryUpTimeLeft = 0;
   private hurryBannerX = 0;
   private diamondShineSparks: DiamondShineSpark[] = [];
@@ -1034,6 +1072,8 @@ export class PlayScene implements Scene {
       this.sfx.load(),
       this.loadDeathZoneStrip(),
       quickMobile ? this.loadBackgroundTextureEssentialForQuickMobile() : this.loadBackgroundTexture(),
+      this.loadStaticTeset3BackgroundLayer(),
+      this.loadPhotoroomStaticMidForegroundSprites(),
       quickMobile ? Promise.resolve() : this.loadMushroomTextures(),
     ]);
 
@@ -1046,6 +1086,7 @@ export class PlayScene implements Scene {
     app.stage.addChild(this.gameShake);
     app.stage.addChild(this.uiLayer);
     this.bgBackdropFill.eventMode = 'none';
+    this.backgroundRoot.sortableChildren = true;
     this.gameShake.addChild(this.backgroundRoot);
     this.gameShake.addChild(this.world);
     this.world.sortableChildren = true;
@@ -1137,6 +1178,7 @@ export class PlayScene implements Scene {
     this.startUserBagRealtimeSubscription();
   }
 
+  /** Pixi passes {@link Ticker}; `time`/`delta` below match Phaser-style `update(time, delta)`. */
   update(ticker: Ticker): void {
     // Use real frame delta on mobile — capping to 1/30s made slow frames *lose* time so drifting
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
@@ -1153,6 +1195,7 @@ export class PlayScene implements Scene {
       return;
     }
     this.runTime += dt;
+    this.photoroomOscTimeMs += Math.max(0, ticker.deltaMS);
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
     this.updateTouchRipples(dt);
     this.updateGrappleCooldownFeedback();
@@ -1368,6 +1411,9 @@ export class PlayScene implements Scene {
     const heightMeters = Math.max(0, Math.floor(this.getHudClimbMeters()), Math.floor(this.getBestLandedClimbMeters()));
     this.scoreboard?.update(dt, this.score, this.jumpCount, heightMeters, this.runTime, this.level);
     this.syncCollectibleHudPosition();
+
+    const time = this.photoroomOscTimeMs;
+    this.syncPhotoroomTeset12ScreenAnchoredOscillation(time);
   }
 
   resize(width: number, height: number): void {
@@ -2136,6 +2182,7 @@ export class PlayScene implements Scene {
     this.superTongueBuffTime = 0;
     this.jumpBufferTimeLeft = 0;
     this.runTime = 0;
+    this.photoroomOscTimeMs = 0;
     this.hurryUpTimeLeft = 0;
     this.paused = false;
     this.pauseOverlay.visible = false;
@@ -2784,6 +2831,7 @@ export class PlayScene implements Scene {
     } else {
       this.backgroundRoot.setChildIndex(this.bgBackdropFill, 0);
     }
+    this.bgBackdropFill.zIndex = BG_Z_BACKDROP_FILL;
   }
 
   private ensureBackgroundOverlayRoot(): void {
@@ -2795,6 +2843,8 @@ export class PlayScene implements Scene {
     if (!this.backgroundRoot.children.includes(this.bgOverlayMask)) {
       this.backgroundRoot.addChild(this.bgOverlayMask);
     }
+    this.bgOverlayRoot.zIndex = 100;
+    this.bgOverlayMask.zIndex = 101;
     this.backgroundRoot.setChildIndex(this.bgOverlayRoot, this.backgroundRoot.children.length - 1);
     this.backgroundRoot.setChildIndex(this.bgOverlayMask, this.backgroundRoot.children.length - 1);
   }
@@ -2824,6 +2874,7 @@ export class PlayScene implements Scene {
       });
       tile.eventMode = 'none';
       tile.roundPixels = false;
+      tile.zIndex = 0;
       target.addChild(tile);
       out.push({ tile, speed });
     }
@@ -2849,6 +2900,9 @@ export class PlayScene implements Scene {
   }
 
   private syncBackgroundTierForCurrentAltitude(vw: number, vh: number): void {
+    if (STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY) {
+      return;
+    }
     const baseTier = this.getLoadedBackgroundTierForMeters(this.getBackgroundTransitionMeters(vh));
     if (baseTier && baseTier.id !== this.activeBackgroundTierId) {
       this.rebuildBackgroundTiles(baseTier, vw, vh);
@@ -2919,11 +2973,15 @@ export class PlayScene implements Scene {
     this.resetBackgroundTextureLoadState();
     const vw = Math.max(1, this.worldWidthFromScreen());
     const vh = Math.max(1, this.worldHeightFromScreen());
-    await this.loadBackgroundTierIntoMap(BACKGROUND_TIERS[0]);
+    if (!STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY) {
+      await this.loadBackgroundTierIntoMap(BACKGROUND_TIERS[0]);
+    }
     this.ensureBackgroundBackdropFill();
-    const initialTier = this.getLoadedBackgroundTierForMeters(0);
-    if (initialTier) {
-      this.rebuildBackgroundTiles(initialTier, vw, vh);
+    if (!STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY) {
+      const initialTier = this.getLoadedBackgroundTierForMeters(0);
+      if (initialTier) {
+        this.rebuildBackgroundTiles(initialTier, vw, vh);
+      }
     }
   }
 
@@ -2931,8 +2989,10 @@ export class PlayScene implements Scene {
    * After the first frame of gameplay: extra BG tiers, decorative platform atlases, mushrooms, DragonBones tongue.
    */
   private async finishDeferredPlaySceneLoadsForMobile(): Promise<void> {
-    for (let i = 1; i < BACKGROUND_TIERS.length; i += 1) {
-      await this.loadBackgroundTierIntoMap(BACKGROUND_TIERS[i]);
+    if (!STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY) {
+      for (let i = 1; i < BACKGROUND_TIERS.length; i += 1) {
+        await this.loadBackgroundTierIntoMap(BACKGROUND_TIERS[i]);
+      }
     }
     this.layoutBackground();
     await this.loadPlatformSpriteDecorAndAltTextures();
@@ -2953,14 +3013,18 @@ export class PlayScene implements Scene {
     const vw = Math.max(1, this.worldWidthFromScreen());
     const vh = Math.max(1, this.worldHeightFromScreen());
 
-    for (const tier of BACKGROUND_TIERS) {
-      await this.loadBackgroundTierIntoMap(tier);
+    if (!STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY) {
+      for (const tier of BACKGROUND_TIERS) {
+        await this.loadBackgroundTierIntoMap(tier);
+      }
     }
 
     this.ensureBackgroundBackdropFill();
-    const initialTier = this.getLoadedBackgroundTierForMeters(0);
-    if (initialTier) {
-      this.rebuildBackgroundTiles(initialTier, vw, vh);
+    if (!STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY) {
+      const initialTier = this.getLoadedBackgroundTierForMeters(0);
+      if (initialTier) {
+        this.rebuildBackgroundTiles(initialTier, vw, vh);
+      }
     }
   }
 
@@ -2993,6 +3057,145 @@ export class PlayScene implements Scene {
       tile.height = vh;
       tile.tilePosition.set(-this.cameraX * speed, -this.cameraY * speed);
     }
+
+    /** teset 3 — bottom aligns with top of orange death strip (tiles scroll slowly). teset 2/1: see {@link syncPhotoroomTeset12ScreenAnchoredOscillation}. */
+    const orangeBarTopY = vh - DEATH_ORANGE_BAR_HEIGHT_PX;
+    const hAboveOrange = Math.max(1, orangeBarTopY);
+
+    const layPhotoroomAboveOrangeDeathLine = (node: Sprite | TilingSprite | null): void => {
+      if (!node) {
+        return;
+      }
+      node.anchor.set(0.5, 1);
+      node.position.set(vw * 0.5, orangeBarTopY);
+      node.width = vw;
+      node.height = hAboveOrange;
+    };
+    layPhotoroomAboveOrangeDeathLine(this.bgStaticTeset3Tile);
+    // teset 2/1: positioned after {@link layoutBackground} in {@link syncPhotoroomTeset12ScreenAnchoredOscillation}
+    // so Y is not reset here every frame (would kill sine oscillation on layer 2).
+
+    this.syncTeset3PhotoroomTileScroll();
+  }
+
+  /**
+   * Phaser-style Photoroom placement: layer 1 locked to viewport center Y; layer 2 sine around that anchor.
+   * `time` = accumulated ticker ms (never undefined). Runs last in {@link update} so nothing overrides Y after.
+   */
+  private syncPhotoroomTeset12ScreenAnchoredOscillation(time: number): void {
+    const teset1Photoroom = this.bgStaticTeset1Sprite;
+    const teset2Photoroom = this.bgStaticTeset2Sprite;
+    const vw = this.worldWidthFromScreen();
+    const vh = this.worldHeightFromScreen();
+    const centerY = vh * 0.5;
+    const orangeBarTopY = vh - DEATH_ORANGE_BAR_HEIGHT_PX;
+    const hAboveOrange = Math.max(1, orangeBarTopY);
+
+    if (teset1Photoroom) {
+      teset1Photoroom.anchor.set(0.5, 0.5);
+      teset1Photoroom.position.set(vw * 0.5, centerY);
+      teset1Photoroom.width = vw;
+      teset1Photoroom.height = hAboveOrange;
+    }
+
+    if (teset2Photoroom) {
+      const slowSpeed = time * 0.001;
+      const microRange = 8;
+      teset2Photoroom.anchor.set(0.5, 0.5);
+      teset2Photoroom.position.set(
+        vw * 0.5,
+        centerY + Math.sin(slowSpeed) * microRange,
+      );
+      teset2Photoroom.width = vw;
+      teset2Photoroom.height = hAboveOrange;
+    }
+  }
+
+  private syncTeset3PhotoroomTileScroll(): void {
+    const tile = this.bgStaticTeset3Tile;
+    if (!tile) {
+      return;
+    }
+    tile.tilePosition.set(
+      -this.cameraX * TESET3_PHOTOROOM_SCROLL_FACTOR,
+      -this.cameraY * TESET3_PHOTOROOM_SCROLL_FACTOR,
+    );
+  }
+
+  private async loadStaticTeset3BackgroundLayer(): Promise<void> {
+    const vw = Math.max(1, this.worldWidthFromScreen());
+    const vh = Math.max(1, this.worldHeightFromScreen());
+    try {
+      const tex = await this.loadTextureFromCandidates(STATIC_BG_TESET3_CANDIDATES);
+      const hAboveOrange = Math.max(1, vh - DEATH_ORANGE_BAR_HEIGHT_PX);
+      const orangeBarTopY = vh - DEATH_ORANGE_BAR_HEIGHT_PX;
+      this.prepareTextureForInfiniteTile(tex);
+      const tile = new TilingSprite({
+        texture: tex,
+        width: vw,
+        height: hAboveOrange,
+      });
+      tile.eventMode = 'none';
+      tile.roundPixels = false;
+      tile.zIndex = BG_Z_TESET3_STATIC;
+      tile.anchor.set(0.5, 1);
+      tile.position.set(vw * 0.5, orangeBarTopY);
+      tile.tilePosition.set(0, 0);
+      this.bgStaticTeset3Tile = tile;
+      this.attachStaticTeset3TileBehindParallax();
+    } catch {
+      this.bgStaticTeset3Tile = null;
+    }
+  }
+
+  private attachStaticTeset3TileBehindParallax(): void {
+    const tile = this.bgStaticTeset3Tile;
+    if (!tile || this.backgroundRoot.children.includes(tile)) {
+      return;
+    }
+    this.ensureBackgroundBackdropFill();
+    const fillIdx = this.backgroundRoot.children.indexOf(this.bgBackdropFill);
+    const at = fillIdx >= 0 ? fillIdx + 1 : 0;
+    this.backgroundRoot.addChildAt(tile, Math.min(at, this.backgroundRoot.children.length));
+  }
+
+  private async loadPhotoroomStaticMidForegroundSprites(): Promise<void> {
+    const vw = Math.max(1, this.worldWidthFromScreen());
+    const vh = Math.max(1, this.worldHeightFromScreen());
+
+    const loadOne = async (
+      candidates: readonly string[],
+      zIndex: number,
+    ): Promise<Sprite | null> => {
+      try {
+        const tex = await this.loadTextureFromCandidates(candidates);
+        const hAboveOrange = Math.max(1, vh - DEATH_ORANGE_BAR_HEIGHT_PX);
+        const orangeBarTopY = vh - DEATH_ORANGE_BAR_HEIGHT_PX;
+        const sp = new Sprite(tex);
+        sp.eventMode = 'none';
+        sp.roundPixels = false;
+        sp.anchor.set(0.5, 1);
+        sp.zIndex = zIndex;
+        sp.position.set(vw * 0.5, orangeBarTopY);
+        sp.width = vw;
+        sp.height = hAboveOrange;
+        sp.visible = true;
+        this.ensureBackgroundBackdropFill();
+        if (!this.backgroundRoot.children.includes(sp)) {
+          this.backgroundRoot.addChild(sp);
+        }
+        return sp;
+      } catch {
+        return null;
+      }
+    };
+
+    const [s2, s1] = await Promise.all([
+      loadOne(STATIC_BG_TESET2_PHOTOROOM_CANDIDATES, BG_Z_TESET2_SPRITE),
+      loadOne(STATIC_BG_TESET1_PHOTOROOM_CANDIDATES, BG_Z_TESET1_SPRITE),
+    ]);
+    this.bgStaticTeset2Sprite = s2;
+    this.bgStaticTeset1Sprite = s1;
   }
 
   private updateScreenShake(dt: number): void {
@@ -3525,6 +3728,7 @@ export class PlayScene implements Scene {
 
   private drawStaticWorld(): void {
     this.layoutBackground();
+    this.syncPhotoroomTeset12ScreenAnchoredOscillation(this.photoroomOscTimeMs);
   }
 
   private drawDynamicWorld(): void {
@@ -6427,7 +6631,7 @@ export class PlayScene implements Scene {
       .rect(x, lavaTop, w, 32)
       .fill({ color: 0xff4b00, alpha: 0.78 });
     this.deathZoneFallback
-      .rect(x, deathY - 9, w, 9)
+      .rect(x, deathY - DEATH_ORANGE_BAR_HEIGHT_PX, w, DEATH_ORANGE_BAR_HEIGHT_PX)
       .fill({ color: 0xffa621, alpha: 0.95 });
   }
 
