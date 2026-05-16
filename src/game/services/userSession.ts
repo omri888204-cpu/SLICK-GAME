@@ -1,3 +1,5 @@
+import type { PlayerSkinName } from '../constants/playerSkin';
+import { normalizeSelectedCharacterSkin } from '../constants/playerSkin';
 import type { RemoteUserLedger } from './rtdbUsers';
 
 export type PersonalBestSnap = {
@@ -11,6 +13,8 @@ export type PersonalBestSnap = {
 export type GameUserSession = {
   nickname: string;
   selectedCharacterId: string;
+  /** Mirrors `/users/{uid}/profile/selected_character`. */
+  selected_character: PlayerSkinName;
   personalBest: PersonalBestSnap;
 };
 
@@ -34,6 +38,7 @@ export function mergeUserLedgerIntoSession(ledger: RemoteUserLedger): GameUserSe
   const session: GameUserSession = {
     nickname: ledger.profile.nickname.trim().slice(0, 20) || 'Player',
     selectedCharacterId: ledger.profile.selectedCharacterId ?? 'chromatic',
+    selected_character: normalizeSelectedCharacterSkin(ledger.profile.selected_character),
     personalBest: {
       maxHeightMeters: Math.max(0, Math.floor(st.maxHeight ?? 0)),
       bestCombo: Math.max(0, Math.floor(st.bestCombo ?? 0)),
@@ -43,6 +48,17 @@ export function mergeUserLedgerIntoSession(ledger: RemoteUserLedger): GameUserSe
   };
   setGameUserSession(session);
   return session;
+}
+
+export function patchSessionSelectedCharacter(skin: PlayerSkinName): void {
+  const s = getGameUserSession();
+  if (!s) {
+    return;
+  }
+  setGameUserSession({
+    ...s,
+    selected_character: skin,
+  });
 }
 
 export function patchSessionPersonalBest(

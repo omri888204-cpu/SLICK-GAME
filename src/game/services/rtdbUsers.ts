@@ -23,6 +23,7 @@
 
 import type { User } from 'firebase/auth';
 import { get, increment, onValue, ref, set, update } from 'firebase/database';
+import type { PlayerSkinName } from '../constants/playerSkin';
 import { rtdb } from '../../firebase.js';
 
 export const USERS_PATH = 'users';
@@ -32,6 +33,8 @@ export type UserProfileNode = {
   email: string;
   registrationComplete?: boolean;
   selectedCharacterId?: string;
+  /** Playable runner skin: `NINJA_SLICK` (see {@link ../constants/playerSkin}). */
+  selected_character?: string;
   createdAt?: number;
 };
 
@@ -210,6 +213,10 @@ export async function finalizeCharacterSelection(
     selectedCharacterId,
     registrationComplete: true,
   });
+}
+
+export async function persistSelectedCharacter(uid: string, skin: PlayerSkinName): Promise<void> {
+  await update(userProfileRef(uid), { selected_character: skin });
 }
 
 /** Merge upwards; stores under `/users/{uid}/stats`. */

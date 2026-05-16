@@ -1,0 +1,457 @@
+/**
+ * Main menu — static artboard (`assets/ui/main_menu.png` or `Player staff/main menu.png`)
+ * + data labels + invisible hit regions.
+ * `--mm-w` / `--mm-h` set from loaded image intrinsic size (MenuScene).
+ */
+
+.mm-root {
+  position: absolute;
+  inset: 0;
+  z-index: 24;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: clamp(6px, 1.5vmin, 14px);
+  pointer-events: none;
+  overflow: auto;
+}
+
+.mm-root *,
+.mm-root *::before,
+.mm-root *::after {
+  box-sizing: border-box;
+}
+
+.mm-stage {
+  position: relative;
+  flex-shrink: 0;
+  --mm-w: 1380;
+  --mm-h: 752;
+  width: min(calc((100vh - 28px) * var(--mm-w) / var(--mm-h)), calc(100vw - 28px));
+  aspect-ratio: calc(var(--mm-w) / var(--mm-h));
+  pointer-events: auto;
+  container-type: inline-size;
+  container-name: mm-stage;
+}
+
+.mm-bg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  vertical-align: top;
+  border-radius: 0;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.mm-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* --- Center stats (over painted green placeholders: nickname / height / total pts) --- */
+.mm-stats-block {
+  position: absolute;
+  left: 50%;
+  top: 51.5%;
+  transform: translateX(-50%);
+  width: 46%;
+  text-align: center;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    Arial,
+    sans-serif;
+  font-weight: 600;
+  color: #6cff9f;
+  text-shadow:
+    0 0 8px rgba(0, 40, 20, 0.85),
+    0 1px 2px rgba(0, 0, 0, 0.9);
+  line-height: 1.5;
+  letter-spacing: 0.03em;
+  pointer-events: none;
+}
+
+.mm-stat-line {
+  margin: 0;
+  padding: 0;
+  font-size: clamp(11px, 2.05cqw, 15px);
+  min-height: 1.45em;
+}
+
+.mm-stat-line--nick {
+  margin-bottom: 0.15em;
+}
+
+.mm-stat-line--height {
+  margin-bottom: 0.2em;
+}
+
+.mm-stat-pts-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  column-gap: 0.55em;
+  row-gap: 0.15em;
+  margin: 0;
+  padding-top: 0.2em;
+  font-size: clamp(11px, 2cqw, 15px);
+}
+
+.mm-stat-pts-label {
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.mm-stat-pts-val {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* --- Main menu inventory: invisible 5×5 mesh — % sizing only (avoids broken cqmin → tiny icons) --- */
+.mm-loot-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  direction: ltr;
+  --mm-loot-gold: none;
+  --mm-loot-diamond: none;
+  --mm-loot-mushroom: none;
+  --mm-inv-cols: 5;
+  --mm-inv-rows: 5;
+  /* Tune to `Player staff/main menu.png` cyan grid (also --mm-inv-col-gap / row-gap) */
+  --mm-inv-left: 3.95%;
+  --mm-inv-top: 20.7%;
+  --mm-inv-w: 23%;
+  --mm-inv-h: 49.5%;
+  --mm-inv-col-gap: 1.15%;
+  --mm-inv-row-gap: 0.95%;
+}
+
+.mm-inv-grid {
+  position: absolute;
+  left: var(--mm-inv-left);
+  top: var(--mm-inv-top);
+  width: var(--mm-inv-w);
+  height: var(--mm-inv-h);
+  display: grid;
+  grid-template-columns: repeat(var(--mm-inv-cols), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--mm-inv-rows), minmax(0, 1fr));
+  column-gap: var(--mm-inv-col-gap);
+  row-gap: var(--mm-inv-row-gap);
+  pointer-events: none;
+}
+
+.mm-inv-slot {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  pointer-events: auto;
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+.mm-loot-slot {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  transform: none;
+  pointer-events: none;
+  border-radius: 13%;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.mm-loot-slot.mm-loot-slot--dragging {
+  cursor: grabbing !important;
+  filter: drop-shadow(0 16px 28px rgba(0, 0, 0, 0.72));
+}
+
+.mm-loot-slot.mm-loot-slot--dragging .mm-loot-slot-grip {
+  cursor: grabbing !important;
+}
+
+.mm-loot-slot-frame {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  box-sizing: border-box;
+  pointer-events: none;
+  /* Layout anchor only — invisible over menu art */
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.mm-loot-slot-grip {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  box-sizing: border-box;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+  background: transparent;
+}
+
+.mm-loot-slot-content {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 1% 1.5%;
+  pointer-events: none;
+}
+
+.mm-loot-icon {
+  position: absolute;
+  left: 50%;
+  top: 48%;
+  transform: translate(-50%, -52%);
+  box-sizing: border-box;
+  width: 98%;
+  max-width: 100%;
+  max-height: 90%;
+  aspect-ratio: 1;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  pointer-events: none;
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-position: center center;
+  image-rendering: auto;
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.5));
+}
+
+.mm-loot-icon--gold {
+  background-image: var(--mm-loot-gold);
+}
+
+.mm-loot-icon--diamond {
+  background-image: var(--mm-loot-diamond);
+}
+
+.mm-loot-icon--mushroom {
+  background-image: var(--mm-loot-mushroom);
+}
+
+.mm-loot-val {
+  position: absolute;
+  left: 50%;
+  bottom: 1%;
+  transform: translateX(-50%);
+  width: calc(100% - 6px);
+  max-width: 100%;
+  margin: 0;
+  padding: 0 2px;
+  pointer-events: none;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
+  font-weight: 600;
+  font-size: clamp(8px, 2.45vmin, 15px);
+  letter-spacing: 0.03em;
+  line-height: 1.05;
+  color: #f2fff4;
+  text-shadow:
+    0 0 6px rgba(0, 0, 0, 0.9),
+    0 0 12px rgba(0, 0, 0, 0.55),
+    0 1px 2px rgba(0, 0, 0, 1);
+  white-space: nowrap;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- Invisible hit regions (match painted buttons) --- */
+.mm-hit {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
+  opacity: 0;
+}
+
+.mm-hit:focus-visible {
+  outline: 2px solid rgba(108, 255, 159, 0.85);
+  outline-offset: 2px;
+  opacity: 1;
+}
+
+.mm-hit--invShop {
+  left: 3%;
+  top: 80.5%;
+  width: 17.5%;
+  height: 7.5%;
+}
+
+.mm-hit--leaderboard {
+  left: 21%;
+  top: 80.5%;
+  width: 17.5%;
+  height: 7.5%;
+}
+
+.mm-hit--customize {
+  left: 40.5%;
+  top: 80.5%;
+  width: 17.5%;
+  height: 7.5%;
+}
+
+.mm-hit--back {
+  left: 69.5%;
+  top: 80.5%;
+  width: 17.5%;
+  height: 7.5%;
+}
+
+/* Wide footer button — art reads “BUY & EQUIP GEAR”; starts climb + passes bag snapshot via session. */
+.mm-hit--start {
+  left: 11%;
+  top: 88.5%;
+  width: 78%;
+  height: 9%;
+}
+
+/* --- Modals --- */
+.mm-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  pointer-events: auto;
+}
+
+.mm-modal {
+  max-width: min(420px, 100%);
+  width: 100%;
+  padding: 20px;
+  border-radius: 14px;
+  background: rgba(14, 22, 18, 0.96);
+  border: 1px solid rgba(108, 255, 159, 0.55);
+  color: #e8fff0;
+}
+
+.mm-modal h3 {
+  margin: 0 0 12px;
+  font-family: system-ui, 'Segoe UI', sans-serif;
+  font-weight: 700;
+  color: #6cff9f;
+  letter-spacing: 0.06em;
+}
+
+.mm-modal pre,
+.mm-modal .mm-lb-row {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mm-modal-actions {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.mm-btn {
+  cursor: pointer;
+  border-radius: 10px;
+  border: 1px solid rgba(108, 255, 159, 0.65);
+  background: rgba(10, 28, 18, 0.92);
+  color: #c8ffd8;
+  font-family: system-ui, 'Segoe UI', sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  padding: 10px 16px;
+}
+
+.mm-btn:hover {
+  background: rgba(18, 42, 28, 0.95);
+}
+
+.mm-modal--customize .mm-customize-intro {
+  margin: 0 0 14px;
+  line-height: 1.45;
+  color: #c8e8d8;
+  font-family: system-ui, 'Segoe UI', sans-serif;
+  font-size: 13px;
+}
+
+.mm-modal-err {
+  margin: -4px 0 10px;
+  min-height: 1.2em;
+  font-size: 12px;
+  color: #ff9b7a;
+  font-family: system-ui, 'Segoe UI', sans-serif;
+}
+
+.mm-skin-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.mm-skin-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+  gap: 4px;
+  padding: 12px 14px;
+}
+
+.mm-skin-label {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #e8fff0;
+}
+
+.mm-skin-keys {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  opacity: 0.78;
+  line-height: 1.35;
+  color: #9de8bf;
+}
+
+.mm-skin-btn--active {
+  border-color: #9fffbf;
+  background: rgba(24, 64, 40, 0.95);
+  box-shadow: 0 0 0 1px rgba(159, 255, 191, 0.45);
+}

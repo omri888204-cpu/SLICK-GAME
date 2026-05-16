@@ -17,7 +17,11 @@ import {
   syncProfileNicknameFromGoogleAccount,
 } from '../services/rtdbUsers';
 import { mergeUserLedgerIntoSession } from '../services/userSession';
-import { saveNickname, saveSelectedCharacterId } from '../services/playerProfile';
+import {
+  saveNickname,
+  saveSelectedCharacterId,
+  saveSelectedCharacterSkin,
+} from '../services/playerProfile';
 import { createKeyedLogoObjectUrl } from '../utils/logoTexture';
 import slickLogoUrl from '../../assets/ui/slick-logo.png';
 
@@ -73,6 +77,7 @@ export async function runMandatoryLandingGate(root: HTMLElement): Promise<void> 
     const session = mergeUserLedgerIntoSession(ledger);
     saveNickname(session.nickname);
     saveSelectedCharacterId(session.selectedCharacterId);
+    saveSelectedCharacterSkin(session.selected_character);
   };
 
   try {

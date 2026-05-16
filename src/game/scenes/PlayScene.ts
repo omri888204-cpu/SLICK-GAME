@@ -48,7 +48,11 @@ import {
   upsertPersonalBestIfBetter,
 } from '../services/rtdbUsers';
 import { getGameUserSession, patchSessionPersonalBest, clearGameUserSession } from '../services/userSession';
-import { clearSavedPlayerProfile } from '../services/playerProfile';
+import {
+  clearSavedPlayerProfile,
+  getSavedSelectedCharacterSkin,
+} from '../services/playerProfile';
+import { normalizeSelectedCharacterSkin } from '../constants/playerSkin';
 import { auth } from '../../firebase.js';
 import { signOut } from 'firebase/auth';
 import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
@@ -333,54 +337,6 @@ const PLAYER_ATTACK_REACH_PX = 110;
 /** Vertical generosity applied to the attack hitbox (tops/bottoms) — slightly forgiving. */
 const PLAYER_ATTACK_VERT_PAD_PX = 16;
 
-/**
- * Health HUD uses `PLAYER_MAX_HEALTH` → 10 heart segments. Mushrooms no longer reduce HP — contact
- * kills the enemy instead (`updateMushroomEnemies`). Falls into the death plane still use shield / game over.
- */
-const PLAYER_MAX_HEALTH = 120;
-/** Top-left placement for the health HUD (below the header panel). */
-const HEALTH_HUD_X_PX = 18;
-/** Extra X so the bar clears the shield counter column (same row as diamond). */
-const HEALTH_HUD_CLEAR_LEFT_COLUMN_PX = 16;
-const HEALTH_HUD_Y_OFFSET_PX = 6;
-/** Vertical gap between timer text and heart HUD. */
-const HEALTH_BAR_UNDER_TIMER_GAP_PX = 8;
-/** `public/assets/Player staff/heart_counter-Sheet.png` — 192×992, 31 rows × 192×32. */
-const HEART_COUNTER_SHEET_URL = `${GAME_ASSETS}/${encodeURIComponent('Player staff')}/heart_counter-Sheet.png`;
-const HEART_COUNTER_FRAME_W = 192;
-const HEART_COUNTER_FRAME_H = 32;
-const HEART_COUNTER_FRAME_COUNT = 31;
-const HEART_HUD_DISPLAY_WIDTH_PX = 160;
-const HEART_HUD_SCALE = HEART_HUD_DISPLAY_WIDTH_PX / HEART_COUNTER_FRAME_W;
-const HEART_HUD_PULSE_HZ = 2.8;
-const HEART_HUD_HIT_FLASH_SEC = 0.16;
-
-/** Map run HP (0..`PLAYER_MAX_HEALTH`) to the sheet’s 0..10 segment bar so full HP reads as a full meter. */
-function heartHudSegmentsFromPlayerHealth(health: number): number {
-  if (health <= 0) {
-    return 0;
-  }
-  return Math.max(1, Math.min(10, Math.round((health / PLAYER_MAX_HEALTH) * 10)));
-}
-
-function heartHudSteadyFrameIndices(segmentL: number): [number, number] {
-  if (segmentL <= 0) {
-    return [HEART_COUNTER_FRAME_COUNT - 1, HEART_COUNTER_FRAME_COUNT - 1];
-  }
-  if (segmentL >= 10) {
-    return [0, 1];
-  }
-  const start = 3 * (10 - segmentL);
-  return [start, start + 1];
-}
-
-/** “Pink slot” frame when dropping from `fromL` filled segments to `fromL - 1`. */
-function heartHudTransitionFrameIndex(fromL: number): number {
-  if (fromL <= 0 || fromL > 10) {
-    return HEART_COUNTER_FRAME_COUNT - 1;
-  }
-  return 2 + (10 - fromL) * 3;
-}
 /** Rope “bead” bridge look for low altitude (HUD meters). Physics stays the same AABB. */
 const BEAD_BRIDGE_MAX_METERS = 1000;
 /** Approximate stair span for the first phase — used with optional width variation. */
@@ -703,7 +659,7 @@ const PULL_UP_BTN_W = 152;
 const PULL_UP_BTN_H = 44;
 /** Horizontal gap between `SUPER JUMP` (left) and `PULL UP` (right) inside the pair. */
 const SKILL_PAIR_BTN_GAP_PX = 14;
-/** Top-left anchor under main HUD / health stack (unscaled layout coords before `skillPairRoot.scale`). */
+/** Top-left anchor under main HUD / combo + timer stack (unscaled layout coords before `skillPairRoot.scale`). */
 const SKILL_PAIR_HUD_X = 100;
 /** Tight offset below the main header panel bottom (`UI_SAFE_PAD_TOP` + `UI_HEADER_H`). */
 const SKILL_PAIR_BELOW_HEADER_GAP_PX = 4;
@@ -775,24 +731,6 @@ export class PlayScene implements Scene {
   private attackBtnRoot = new Container();
   private attackBtn = new Graphics();
   private attackBtnIcon = new Graphics();
-  /**
-   * Player health (HUD). Mushrooms do not reduce HP. Death plane still ends the run unless shield saves.
-   */
-  private playerHealth = PLAYER_MAX_HEALTH;
-  /**
-   * No heal mechanics exist right now, so HP should never increase during a run.
-   * This guard prevents accidental restores from unrelated state flows.
-   */
-  private playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
-  private healthHudRoot = new Container();
-  private heartCounterTextures: Texture[] = [];
-  private heartHudSprite = new Sprite();
-  /** Filled segment count (0..10) shown after transitions; matches `heartHudSegmentsFromPlayerHealth`. */
-  private heartHudSegmentL = heartHudSegmentsFromPlayerHealth(PLAYER_MAX_HEALTH);
-  private heartHudTransTime = 0;
-  private heartHudTransFromL = heartHudSegmentsFromPlayerHealth(PLAYER_MAX_HEALTH);
-  /** Pulse phase independent of `runTime` (paused runs freeze `runTime`). */
-  private heartHudPulseAcc = 0;
   private paused = false;
   private pauseOverlay = new Container();
   private pauseBackdrop = new Graphics();
@@ -1097,8 +1035,12 @@ export class PlayScene implements Scene {
       this.loadDeathZoneStrip(),
       quickMobile ? this.loadBackgroundTextureEssentialForQuickMobile() : this.loadBackgroundTexture(),
       quickMobile ? Promise.resolve() : this.loadMushroomTextures(),
-      this.loadHeartCounterSheet(),
     ]);
+
+    const skin = normalizeSelectedCharacterSkin(
+      getGameUserSession()?.selected_character ?? getSavedSelectedCharacterSkin(),
+    );
+    this.player.updatePlayerSkin(skin);
 
     this.uiLayer.sortableChildren = true;
     app.stage.addChild(this.gameShake);
@@ -1174,7 +1116,6 @@ export class PlayScene implements Scene {
     this.setupHeaderPauseButton();
     this.setupStatusPanel();
     this.setupAttackButton();
-    this.setupHealthHud();
     this.setupSpeedTierPulseOverlay();
     this.drawTopHeaderPanel();
     this.layoutHeaderPauseButton();
@@ -1200,8 +1141,6 @@ export class PlayScene implements Scene {
     // Use real frame delta on mobile — capping to 1/30s made slow frames *lose* time so drifting
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
-    this.tickHeartHud(dt);
-    this.enforceHealthInvariant();
     if (this.gameOver) {
       this.updateScreenShake(dt);
       this.refreshGameOverScoreText();
@@ -1453,7 +1392,6 @@ export class PlayScene implements Scene {
     this.layoutHeaderPauseButton();
     this.layoutStatusPanel();
     this.layoutAttackButton();
-    this.layoutHealthHud();
     this.layoutPauseOverlay();
     this.layoutLogoutConfirmOverlay();
     this.redrawSpeedPulseOverlay();
@@ -1469,7 +1407,6 @@ export class PlayScene implements Scene {
       this.layoutHeaderPauseButton();
       this.layoutStatusPanel();
       this.layoutAttackButton();
-      this.layoutHealthHud();
       this.layoutPauseOverlay();
       this.layoutLogoutConfirmOverlay();
       this.redrawSpeedPulseOverlay();
@@ -2205,7 +2142,6 @@ export class PlayScene implements Scene {
     this.headerPauseRoot.visible = true;
     this.statusPanelRoot.visible = true;
     this.attackBtnRoot.visible = true;
-    this.healthHudRoot.visible = true;
     this.shakeTime = 0;
     this.shakeOffsetX = 0;
     this.shakeOffsetY = 0;
@@ -2226,14 +2162,6 @@ export class PlayScene implements Scene {
     this.shieldSaveFlashTime = 0;
     this.lastLandedPlatform = null;
     this.player.isShielded = false;
-    this.playerHealth = PLAYER_MAX_HEALTH;
-    this.playerHealthCeilingThisRun = PLAYER_MAX_HEALTH;
-    this.player.alpha = 1;
-    this.heartHudTransTime = 0;
-    this.heartHudPulseAcc = 0;
-    this.heartHudSegmentL = heartHudSegmentsFromPlayerHealth(this.playerHealth);
-    this.heartHudTransFromL = this.heartHudSegmentL;
-    this.refreshHealthHud();
     this.clearMushroomDeathEffects();
     this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
     if (this.levelUpFloatText) {
@@ -2657,10 +2585,14 @@ export class PlayScene implements Scene {
       return;
     }
 
-    this.platforms = [restPlatform];
+    // Keep stairs that were already above the rest tier (already filtered by {@link clearPlatformsBelowRestFloor}).
+    // Rebuilding `[rest]` from scratch used to regenerate x/gaps/stairIds and made the staircase "jump".
     this.collectibles = [];
-    let previousTopY = restY;
-    for (let i = 1; i < STAIRS.poolCount; i += 1) {
+    const maxStairId = Math.max(0, ...this.platforms.map((p) => p.stairId));
+    this.nextStairId = maxStairId;
+
+    let previousTopY = Math.min(...this.platforms.map((p) => p.y));
+    while (this.platforms.length < STAIRS.poolCount) {
       this.nextStairId += 1;
       const y = previousTopY - this.computeStairGapPx(this.nextStairId);
       const platform: Platform = {
@@ -3032,20 +2964,7 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Slices `heart_counter-Sheet.png` into row frames for the top HUD. */
-  private async loadHeartCounterSheet(): Promise<void> {
-    const heartSheet = (await Assets.load(HEART_COUNTER_SHEET_URL)) as Texture;
-    const source = heartSheet.source;
-    this.heartCounterTextures = [];
-    for (let i = 0; i < HEART_COUNTER_FRAME_COUNT; i += 1) {
-      this.heartCounterTextures.push(
-        new Texture({
-          source,
-          frame: new Rectangle(0, i * HEART_COUNTER_FRAME_H, HEART_COUNTER_FRAME_W, HEART_COUNTER_FRAME_H),
-        }),
-      );
-    }
-  }
+
 
   /**
    * Letterbox under tiles + each `TilingSprite` sized to the logical canvas. Parallax: each
@@ -3777,7 +3696,7 @@ export class PlayScene implements Scene {
 
   /**
    * Combo badge → scaled `comboHudRoot`. Skill pair (`SUPER JUMP` + `PULL UP`) is a sibling on
-   * `uiLayer` under the health/header strip (`scrollFactor` 0 equivalent).
+   * `uiLayer` under the timer/header strip (`scrollFactor` 0 equivalent).
    */
   private setupComboHud(): void {
     this.comboHudRoot.eventMode = 'none';
@@ -6063,80 +5982,6 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Top HUD: animated HP counter below the timer / header. */
-  private setupHealthHud(): void {
-    this.healthHudRoot.zIndex = 1006;
-    this.healthHudRoot.sortableChildren = false;
-    this.healthHudRoot.eventMode = 'none';
-    this.heartHudSprite.eventMode = 'none';
-    this.heartHudSprite.roundPixels = RENDER.pixelArt;
-    this.heartHudSprite.texture = this.heartCounterTextures[0] ?? Texture.EMPTY;
-    this.heartHudSprite.scale.set(HEART_HUD_SCALE);
-    this.healthHudRoot.addChild(this.heartHudSprite);
-    this.uiLayer.addChild(this.healthHudRoot);
-    this.layoutHealthHud();
-    this.refreshHealthHud();
-  }
-
-  private layoutHealthHud(): void {
-    if (this.timerHudText) {
-      const timerBottomY = this.timerHudText.position.y + this.timerHudText.height;
-      const stackWidth = HEART_HUD_DISPLAY_WIDTH_PX;
-      const heartX =
-        this.timerHudText.position.x -
-        stackWidth * 0.5 +
-        HEALTH_HUD_CLEAR_LEFT_COLUMN_PX;
-      const barY = timerBottomY + HEALTH_BAR_UNDER_TIMER_GAP_PX;
-      this.healthHudRoot.position.set(heartX, barY);
-      return;
-    }
-    const fallbackY = UI_SAFE_PAD_TOP + UI_HEADER_H + HEALTH_HUD_Y_OFFSET_PX;
-    this.healthHudRoot.position.set(
-      HEALTH_HUD_X_PX + HEALTH_HUD_CLEAR_LEFT_COLUMN_PX,
-      fallbackY,
-    );
-  }
-
-  /** Sync segment level / hit-flash when `playerHealth` changes; frame cycling runs in `tickHeartHud`. */
-  private refreshHealthHud(): void {
-    const newL = heartHudSegmentsFromPlayerHealth(this.playerHealth);
-    const prevL = this.heartHudSegmentL;
-    if (this.heartCounterTextures.length > 0 && newL < prevL && prevL > 0) {
-      this.heartHudTransTime = HEART_HUD_HIT_FLASH_SEC;
-      this.heartHudTransFromL = prevL;
-    }
-    this.heartHudSegmentL = newL;
-  }
-
-  private tickHeartHud(dt: number): void {
-    this.heartHudPulseAcc += dt;
-    const pulse = Math.floor(this.heartHudPulseAcc * HEART_HUD_PULSE_HZ * 2) % 2;
-
-    if (this.heartCounterTextures.length === 0) {
-      return;
-    }
-    if (this.heartHudTransTime > 0) {
-      this.heartHudTransTime = Math.max(0, this.heartHudTransTime - dt);
-      const idx = heartHudTransitionFrameIndex(this.heartHudTransFromL);
-      this.heartHudSprite.texture = this.heartCounterTextures[idx];
-      return;
-    }
-    const pair = heartHudSteadyFrameIndices(this.heartHudSegmentL);
-    const idx = pulse === 0 ? pair[0] : pair[1];
-    this.heartHudSprite.texture = this.heartCounterTextures[idx];
-  }
-
-  /**
-   * Defensive clamp: in the current design HP may go down from damage but should not
-   * increase until `resetRun()` starts a fresh attempt.
-   */
-  private enforceHealthInvariant(): void {
-    if (this.playerHealth > this.playerHealthCeilingThisRun) {
-      this.playerHealth = this.playerHealthCeilingThisRun;
-      this.refreshHealthHud();
-    }
-  }
-
   private activatePlayerShield(): void {
     this.player.isShielded = true;
     this.refreshCollectibleHudText();
@@ -6331,7 +6176,6 @@ export class PlayScene implements Scene {
     this.headerPauseRoot.visible = false;
     this.statusPanelRoot.visible = false;
     this.attackBtnRoot.visible = false;
-    this.healthHudRoot.visible = false;
     this.finalMetersAtDeath = Math.max(
       0,
       Math.floor(this.getHudClimbMeters()),

@@ -1,4 +1,10 @@
 import { Assets, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
+import {
+  characterSpritesheetPlayableUrl,
+  DEFAULT_PLAYER_SKIN,
+  PLAYER_SKIN,
+  type PlayerSkinName,
+} from '../constants/playerSkin';
 import { ALIVE, GRAPPLE, RENDER, WALK } from '../../config/game.config';
 import type { ActiveGrapple, Direction } from '../types';
 import type { PlayerBody } from '../systems/Physics';
@@ -19,7 +25,6 @@ export enum PlayerState {
  * 48×48 frames but the asset itself uses 100×40 cells; what matters for animation is
  * that the row mapping below matches their intent (idle = row 0, run = row 1, jump = row 2).
  */
-const SPRITESHEET_URL = `${import.meta.env.BASE_URL}assets/${encodeURIComponent('Player staff')}/character_spritesheet.png`;
 const FRAME_W = 100;
 const FRAME_H = 40;
 const IDLE_ROW = 0;
@@ -30,6 +35,8 @@ const IDLE_FRAMES = 6;
 const RUN_FRAMES = 8;
 const JUMP_FRAMES = 8;
 const ATTACK_FRAMES = 8;
+
+const BASE_AVATAR_Y_NINJA = -26;
 
 /**
  * Attack swing length (seconds). Drives both the animation playback rate and the
@@ -48,17 +55,6 @@ export const PLAYER_ATTACK_HIT_WINDOW_END = 0.78;
 /** Display scale of each cell. Character art occupies ~25×28 inside the cell, so a 3.588× scale
  * renders the visible figure (~15% larger than prior 3.12×). */
 const SPRITE_SCALE = 3.588;
-const SPRITE_DISPLAY_WIDTH = FRAME_W * SPRITE_SCALE;
-
-/**
- * Vertical offset of the avatar rig relative to the body center.
- *
- * The character art sits inside the 40-px cell at source rows 5..33, so its feet are
- * `(33 - 20) * SPRITE_SCALE ≈ 40.6` px below the sprite center. With `groundedSink = 4`,
- * an idle player's rig lands at `BASE_AVATAR_Y + groundedSink ≈ -22`, putting the feet
- * at ~`19` px below body center — exactly the hitbox bottom (body.height / 2).
- */
-const BASE_AVATAR_Y = -26;
 
 const PLAYER_SCALE = 0.45785088;
 const PLAYER_BODY_WIDTH = 70 * PLAYER_SCALE;
@@ -72,6 +68,33 @@ type CharacterTextures = {
   jump: Texture[];
   attack: Texture[];
 };
+
+type SkinRenderBundle = {
+  textures: CharacterTextures;
+  spriteDisplayWidth: number;
+  baseAvatarY: number;
+};
+
+function sliceNinjaTextures(source: Texture['source']): CharacterTextures {
+  const sliceRow = (row: number, count: number): Texture[] => {
+    const frames: Texture[] = [];
+    for (let i = 0; i < count; i += 1) {
+      frames.push(
+        new Texture({
+          source,
+          frame: new Rectangle(i * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H),
+        }),
+      );
+    }
+    return frames;
+  };
+  return {
+    idle: sliceRow(IDLE_ROW, IDLE_FRAMES),
+    run: sliceRow(RUN_ROW, RUN_FRAMES),
+    jump: sliceRow(JUMP_ROW, JUMP_FRAMES),
+    attack: sliceRow(ATTACK_ROW, ATTACK_FRAMES),
+  };
+}
 
 export class Player extends Container {
   readonly body: PlayerBody = {
@@ -88,6 +111,9 @@ export class Player extends Container {
   direction: Direction = 1;
   isShielded = false;
 
+  /** Active playable skin id (Firebase `selected_character`). */
+  skinName: PlayerSkinName = DEFAULT_PLAYER_SKIN;
+
   private glow = new Graphics();
   private feet = new Graphics();
   /** Holds pose (pos/rot/skew); children get uniform parent space for reliable overlay math. */
@@ -95,6 +121,9 @@ export class Player extends Container {
   private bodySprite?: Sprite;
   private silhouette?: Sprite;
   private textures?: CharacterTextures;
+  private skinBundles?: Record<PlayerSkinName, SkinRenderBundle>;
+  private spriteDisplayWidth = FRAME_W * SPRITE_SCALE;
+  private baseAvatarY = BASE_AVATAR_Y_NINJA;
   private distanceTraveled = 0;
   private idleTime = 0;
   private airTime = 0;
@@ -134,40 +163,67 @@ export class Player extends Container {
     return Math.min(1, grapple.extendT / extendSec);
   }
 
+  /** Swap playable spritesheet and remap idle / run / jump / attack strips. */
+  updatePlayerSkin(skinName: PlayerSkinName): void {
+    const b = this.skinBundles?.[skinName];
+    if (!b) {
+      return;
+    }
+
+    this.skinName = skinName;
+    this.textures = b.textures;
+    this.spriteDisplayWidth = b.spriteDisplayWidth;
+    this.baseAvatarY = b.baseAvatarY;
+
+    const frame0 = b.textures.idle[0] ?? Texture.EMPTY;
+
+    const snapPx = RENDER.pixelArt;
+
+    if (this.bodySprite && this.avatarRig) {
+      this.bodySprite.texture = frame0;
+      this.bodySprite.width = this.spriteDisplayWidth;
+      this.bodySprite.scale.y = this.bodySprite.scale.x;
+      this.bodySprite.roundPixels = snapPx;
+    }
+
+    if (this.silhouette) {
+      this.silhouette.texture = frame0;
+      this.silhouette.width = this.spriteDisplayWidth + 5;
+      this.silhouette.scale.y = this.silhouette.scale.x;
+      this.silhouette.roundPixels = snapPx;
+      this.silhouette.position.set(0, this.baseAvatarY);
+    }
+
+    if (this.avatarRig) {
+      this.avatarRig.position.set(0, this.baseAvatarY);
+    }
+  }
+
   async load(): Promise<void> {
-    const sheet = (await Assets.load(SPRITESHEET_URL)) as Texture;
-    const source = sheet.source;
+    const ninjaUrl = characterSpritesheetPlayableUrl();
+    const ninjaSheet = (await Assets.load(ninjaUrl)) as Texture;
 
-    const sliceRow = (row: number, count: number): Texture[] => {
-      const frames: Texture[] = [];
-      for (let i = 0; i < count; i += 1) {
-        frames.push(
-          new Texture({
-            source,
-            frame: new Rectangle(i * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H),
-          }),
-        );
-      }
-      return frames;
+    const ninjaTextures = sliceNinjaTextures(ninjaSheet.source);
+    const ninjaDisplayW = FRAME_W * SPRITE_SCALE;
+
+    this.skinBundles = {
+      [PLAYER_SKIN.NINJA_SLICK]: {
+        textures: ninjaTextures,
+        spriteDisplayWidth: ninjaDisplayW,
+        baseAvatarY: BASE_AVATAR_Y_NINJA,
+      },
     };
 
-    this.textures = {
-      idle: sliceRow(IDLE_ROW, IDLE_FRAMES),
-      run: sliceRow(RUN_ROW, RUN_FRAMES),
-      jump: sliceRow(JUMP_ROW, JUMP_FRAMES),
-      attack: sliceRow(ATTACK_ROW, ATTACK_FRAMES),
-    };
-
-    const initialFrame = this.textures.idle[0];
+    const initialFrame = ninjaTextures.idle[0] ?? Texture.EMPTY;
 
     this.silhouette = new Sprite(initialFrame);
     this.silhouette.roundPixels = RENDER.pixelArt;
     this.silhouette.anchor.set(0.5);
     this.silhouette.tint = 0xf4ead2;
     this.silhouette.alpha = 0.22;
-    this.silhouette.width = SPRITE_DISPLAY_WIDTH + 5;
+    this.silhouette.width = ninjaDisplayW + 5;
     this.silhouette.scale.y = this.silhouette.scale.x;
-    this.silhouette.position.set(0, BASE_AVATAR_Y);
+    this.silhouette.position.set(0, BASE_AVATAR_Y_NINJA);
 
     this.avatarRig = new Container();
     this.avatarRig.sortableChildren = true;
@@ -175,15 +231,17 @@ export class Player extends Container {
     this.bodySprite = new Sprite(initialFrame);
     this.bodySprite.roundPixels = RENDER.pixelArt;
     this.bodySprite.anchor.set(0.5);
-    this.bodySprite.width = SPRITE_DISPLAY_WIDTH;
+    this.bodySprite.width = ninjaDisplayW;
     this.bodySprite.scale.y = this.bodySprite.scale.x;
     this.bodySprite.position.set(0, 0);
 
-    this.avatarRig.position.set(0, BASE_AVATAR_Y);
+    this.avatarRig.position.set(0, BASE_AVATAR_Y_NINJA);
     this.avatarRig.addChild(this.bodySprite);
 
     this.addChildAt(this.silhouette, 1);
     this.addChildAt(this.avatarRig, 2);
+
+    this.updatePlayerSkin(DEFAULT_PLAYER_SKIN);
   }
 
   update(
@@ -369,7 +427,7 @@ export class Player extends Container {
       idleBreath * ALIVE.idleBreathScale * 0.5 * idleBlend;
     const jumpPulse =
       Math.sin((1 - this.jumpPulseMs / ALIVE.jumpPulseMs) * Math.PI) * 8;
-    const width = SPRITE_DISPLAY_WIDTH + jumpPulse;
+    const width = this.spriteDisplayWidth + jumpPulse;
     const jumpAnticipation = this.getPulse(ALIVE.jumpAnticipationMs, this.jumpAnticipationMs);
     const landingPulse = this.getPulse(ALIVE.landingPulseMs, this.landingPulseMs);
     const grappleLaunch = this.getPulse(320, this.grappleLaunchMs);
@@ -413,7 +471,7 @@ export class Player extends Container {
     this.bodySprite.scale.y = magX * stretch;
     this.avatarRig.position.set(
       walkSway,
-      BASE_AVATAR_Y + groundedSink + walkBob + idleOffset * idleBlend,
+      this.baseAvatarY + groundedSink + walkBob + idleOffset * idleBlend,
     );
     this.avatarRig.rotation =
       walkPhase * WALK.tiltAmplitude * this.walkBlend +
@@ -470,7 +528,7 @@ export class Player extends Container {
     if (superJumpPop > 0 && !shieldActive) {
       const ring = 0.42 + 0.58 * superJumpPop;
       this.glow
-        .ellipse(0, BASE_AVATAR_Y - 10, 44 * ring, 34 * ring)
+        .ellipse(0, this.baseAvatarY - 10, 44 * ring, 34 * ring)
         .stroke({ width: 2.4, color: 0x88fff2, alpha: 0.38 * superJumpPop });
     }
   }

@@ -2,15 +2,18 @@ import { signOut } from 'firebase/auth';
 import { Application, Assets, Container, Graphics, Text, type Ticker } from 'pixi.js';
 import slickLogoUrl from '../../assets/ui/slick-logo.png';
 import { auth } from '../../firebase.js';
-import { clearSavedPlayerProfile, getSavedNickname } from '../services/playerProfile';
-import { getGameUserSession, clearGameUserSession } from '../services/userSession';
+import {
+  clearSavedPlayerProfile,
+  getSavedNickname,
+} from '../services/playerProfile';
 import { SlickLogoImage } from '../ui/SlickLogoImage';
 import { loadLogoTextureTransparent } from '../utils/logoTexture';
 import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
+import { getGameUserSession, clearGameUserSession } from '../services/userSession';
 import type { Scene } from './Scene';
 
 /**
- * Main menu after auth: logo, session summary (nickname + personal best), PLAY, log out.
+ * Main menu after auth: stats card + PLAY over the Pixi stage.
  */
 export class MenuScene implements Scene {
   readonly name = 'menu';
@@ -99,20 +102,25 @@ export class MenuScene implements Scene {
     const bestPts = session?.personalBest.totalPoints ?? 0;
 
     const overlay = document.createElement('div');
-    overlay.style.position = 'absolute';
-    overlay.style.inset = '0';
-    overlay.style.display = 'flex';
-    overlay.style.alignItems = 'center';
-    overlay.style.justifyContent = 'center';
-    overlay.style.pointerEvents = 'none';
-    overlay.style.zIndex = '20';
+    overlay.className = 'lobby-shell';
+    overlay.style.cssText =
+      'position:absolute;inset:0;display:flex;flex-direction:column;pointer-events:none;z-index:20;';
+
+    const filler = document.createElement('div');
+    filler.style.flex = '1';
+    filler.style.width = '100%';
+    filler.style.minHeight = '0';
+
+    const cardAnchor = document.createElement('div');
+    cardAnchor.style.cssText =
+      'pointer-events:none;width:100%;display:flex;justify-content:center;padding-bottom:16px;';
 
     const card = document.createElement('div');
     card.style.pointerEvents = 'auto';
     card.style.width = 'min(480px, 92vw)';
     card.style.padding = '20px';
     card.style.borderRadius = '18px';
-    card.style.background = 'rgba(46, 0, 75, 0.55)';
+    card.style.background = 'rgba(14, 8, 32, 0.72)';
     card.style.backdropFilter = isQuickStartMobileDevice() ? 'none' : 'blur(12px)';
     card.style.border = '1px solid rgba(57, 255, 20, 0.65)';
     card.style.boxShadow = '0 0 18px rgba(57,255,20,0.25)';
@@ -182,7 +190,9 @@ export class MenuScene implements Scene {
     });
 
     card.append(welcome, stats, button, logout);
-    overlay.appendChild(card);
+    cardAnchor.appendChild(card);
+    overlay.appendChild(filler);
+    overlay.appendChild(cardAnchor);
     host.appendChild(overlay);
 
     this.lobbyOverlay = overlay;
