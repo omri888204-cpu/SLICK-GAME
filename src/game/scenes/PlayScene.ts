@@ -629,6 +629,11 @@ const REST_FLOOR_TILE_PX = 64;
  * Same geometry drives {@link drawWorldEdgeRestWalls}, {@link clampPlayerToCameraViewport}, and fascia assist in {@link Physics}.
  */
 const WORLD_EDGE_REST_WALL_PX = REST_FLOOR_TILE_PX >> 1;
+/**
+ * Shift both fascia slab **left edges** toward playfield center (world px). Left strip moves +X, right strip −X;
+ * clamps/physics/overlap follow {@link getViewportEdgeWallSlabsWorld}.
+ */
+const VIEWPORT_FASCIA_INWARD_NUDGE_WORLD_PX = 24;
 const REST_FLOOR_HOUSE_METERS = 1000;
 const REST_FLOOR_HOUSE_DEPTH = 100;
 /** Place the house at this fraction of the visible screen width so it stays on-screen on any aspect ratio. */
@@ -2016,6 +2021,7 @@ export class PlayScene implements Scene {
 
   /**
    * Viewport-pinned vertical fascia strips — **same** extents as {@link drawWorldEdgeRestWalls} and fascia physics.
+   * Positions are nudged inward by {@link VIEWPORT_FASCIA_INWARD_NUDGE_WORLD_PX}.
    */
   private getViewportEdgeWallSlabsWorld():
     | { slabW: number; leftSlabLeftX: number; rightSlabLeftX: number }
@@ -2031,7 +2037,13 @@ export class PlayScene implements Scene {
     if (rightX <= leftX + w) {
       return null;
     }
-    return { slabW: w, leftSlabLeftX: leftX, rightSlabLeftX: rightX };
+    const nudge = VIEWPORT_FASCIA_INWARD_NUDGE_WORLD_PX;
+    const leftN = Math.max(0, leftX + nudge);
+    const rightN = Math.min(ww - w, rightX - nudge);
+    if (rightN <= leftN + w) {
+      return null;
+    }
+    return { slabW: w, leftSlabLeftX: leftN, rightSlabLeftX: rightN };
   }
 
   private getPlatformResponsiveWidthMul(): number {
