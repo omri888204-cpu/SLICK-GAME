@@ -1,7 +1,14 @@
 /**
  * PixiJS rendering / ticker tuning (maps Phaser-style “forceSingleUpdate” / “pixelArt” ideas to Pixi v8).
  * @see Game.ts — applies ticker + default texture sampling after `Application.init`.
+ *
+ * {@link PLAY_SCENE} — values that must stay in sync with {@link PlayScene} layout (stair deck world size).
  */
+export const PLAY_SCENE = {
+  /** Visual/body scale for infinite stair platforms — matches `PLATFORM_SCALE` in `PlayScene`. */
+  stairPlatformScale: 2.1,
+} as const;
+
 export const RENDER = {
   /**
    * When true, clamp the app ticker to `maxTickerFps` so high-refresh mobile displays don’t run
@@ -104,6 +111,29 @@ export const PHYSICS = {
   speedJumpBonus: 0.75,
   /** Horizontal bounce when hitting left/right world bounds (custom physics, not Phaser). */
   worldWallRestitution: 0,
+  /**
+   * Decorative viewport fascia (y-down coords): max downward vy while brushing a slab (`applyViewportFasciaAssist`).
+   * Higher = faster, freer wall slide (less “braking” vs gravity).
+   */
+  viewportFasciaFallVyCap: 320,
+  /** Stick beyond this ± threshold steers away from the contacted fascia — skips assist instantly. */
+  viewportFasciaAxisDeadzone: 0.12,
+  /** Exponential scaling (1/s) for velocity pushing *into* the slab (`0` = cap-only “slide”). */
+  viewportFasciaIntoWallVxDampPerSec: 0,
+  /** Separate from world bounds — soft bounce while camera viewport clamps player X ({@link PlayScene}). */
+  viewportClampWallRestitution: 0.2,
+  /** Subpixel slack so fascia assist still engages when the viewport clamp leaves the AABB flush with a slab inner edge. */
+  viewportFasciaOverlapEpsPx: 0.75,
+  /**
+   * Viewport fascia elevator: max slide duration & per-wall cooldown (`gameTimeMs` in {@link update}).
+   */
+  wallSlideElevatorSpeedPxPerSec: 1370,
+  /** Ms while overlapping the slab before forced detach + downward impulse (see `wallSlideCutoffDropVy`). */
+  wallSlideMaxDurationMs: 750,
+  /** Ms after the max-duration slide before the same fascia (left/right/both) can be grabbed again. */
+  wallSlideCooldownMs: 2000,
+  /** Downward vy (y-down coords) applied when max slide time elapses — heavy drop off the wall. */
+  wallSlideCutoffDropVy: 760,
 };
 
 /** Tongue grapple: Spider-Man style swing/pull from mouth to anchor. */
@@ -219,6 +249,13 @@ export const STAIRS = {
   compactPlatformArtAfterMeters: 1000,
   compactPlatformArtScale: 0.72,
 };
+
+/**
+ * Stair deck thickness in world px — `{@link STAIRS.platformHeight}` × `{@link PLAY_SCENE.stairPlatformScale}`.
+ * Same as `PlayScene` scaled platform body height (`platform.height`).
+ */
+export const PLATFORM_HEIGHT_WORLD_PX =
+  STAIRS.platformHeight * PLAY_SCENE.stairPlatformScale;
 
 /** Pickups: placement on platform tops, motion, collect VFX. */
 export const COLLECTIBLES = {

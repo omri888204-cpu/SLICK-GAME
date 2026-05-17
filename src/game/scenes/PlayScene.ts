@@ -18,6 +18,8 @@ import { PixiFactory, type PixiArmatureDisplay } from 'pixi-dragonbones-runtime'
 import {
   COLLECTIBLES,
   GRAPPLE,
+  PHYSICS,
+  PLAY_SCENE,
   RENDER,
   SCORE_UI,
   STAIRS,
@@ -494,7 +496,7 @@ const DARK_BG_MAX_CHANNEL = 42;
 const COLLECTIBLE_LINES_HALF_GAP_PX = 13;
 /** Vertical offset from the diamond HUD icon row to the shield row (same column as diamond). */
 const COLLECTIBLE_SHIELD_ICON_BELOW_DIAMOND_PX = 22;
-const PLATFORM_SCALE = 2.1;
+const PLATFORM_SCALE = PLAY_SCENE.stairPlatformScale;
 /** Horizontal repeat width of one grass/dirt block inside `slime-platform.png` (atlas is tiled). */
 const SLIME_PLATFORM_TILE_PX = 46;
 const PLATFORM_EDGE_PADDING_PX = 8;
@@ -612,7 +614,7 @@ const WORLD_REBASE_LOW_WATER_Y = -340_000;
 /** Cap transient VFX allocations after each 1000m milestone sweep ({@link maybeRunPeriodicPoolMaintenance}). */
 const MAX_LEVEL_UP_PARTICLES_AFTER_CLEANUP = 48;
 const MAX_COMBO_SUPER_JUMP_PARTICLES_AFTER_CLEANUP = 40;
-/** Screen-space inset (px) from each side; converted to world px via zoom for spawn + player clamp. */
+/** Screen-space inset (px) from each visible side — platform spawn, HUD band, and {@link clampPlayerToCameraViewport}. */
 const VIEWPORT_SAFE_MARGIN_SCREEN_PX = 40;
 /** When true, stairs spawn in a band around the player (world X) so they stay on-screen on mobile. */
 const MOBILE_NARROW_UI_MAX_W = 520;
@@ -622,6 +624,11 @@ const REST_FLOOR_INTERVAL_METERS = 1000;
 const REST_FLOOR_MONSTER_CLEAR_METERS = 100;
 const REST_FLOOR_RESUME_ABOVE_PX = 50;
 const REST_FLOOR_TILE_PX = 64;
+/**
+ * Fascia spanning screen edges — **half** a rest-floor tile (matches {@link drawRestFloorPlatform} grid).
+ * Same geometry drives {@link drawWorldEdgeRestWalls}, {@link clampPlayerToCameraViewport}, and fascia assist in {@link Physics}.
+ */
+const WORLD_EDGE_REST_WALL_PX = REST_FLOOR_TILE_PX >> 1;
 const REST_FLOOR_HOUSE_METERS = 1000;
 const REST_FLOOR_HOUSE_DEPTH = 100;
 /** Place the house at this fraction of the visible screen width so it stays on-screen on any aspect ratio. */
@@ -752,6 +759,12 @@ export class PlayScene implements Scene {
   private app?: Application;
   private input?: InputManager;
   private physics = new Physics();
+  /**
+   * Viewport fascia has no Phaser Arcade collider — overlap is custom AABB in {@link Physics}.
+   * This mirrors `collider.active`: when `false`, fascia assist is not passed to physics (breaks slide re-latch).
+   */
+  readonly wallCollider: { active: boolean } = { active: true };
+  private wallColliderRestoreTimeout: ReturnType<typeof setTimeout> | null = null;
   private world = new Container();
   /**
    * Camera-locked backdrop (sibling of `world` inside `gameShake`): multi-layer `bg_7` art,
@@ -1369,13 +1382,49 @@ export class PlayScene implements Scene {
     const wasGrounded = this.player.body.grounded;
     const preBodyX = this.player.body.x;
     const prePhysicsFeetY = this.player.body.y + this.player.body.height;
+
+    /** Align body X to viewport fascia band before overlap + physics (matches {@link drawWorldEdgeRestWalls}). */
+    this.clampPlayerToCameraViewport();
+
+    const fascia = this.getViewportEdgeWallSlabsWorld();
+    const fasciaAssistSpec =
+      fascia &&
+      !pulling &&
+      this.wallCollider.active &&
+      this.player.hasTouchedPlatformSinceLastSlide
+        ? {
+            slabW: fascia.slabW,
+            leftSlabLeftX: fascia.leftSlabLeftX,
+            rightSlabLeftX: fascia.rightSlabLeftX,
+            horizontalAxis: ax,
+          }
+        : undefined;
+    const fasciaOverlapClear =
+      !fasciaAssistSpec ||
+      Physics.viewportFasciaBodyOverlapSide(this.player.body, fasciaAssistSpec) === 'none';
+
     const result = this.physics.update(
       this.player.body,
       this.platforms,
       this.worldWidth,
       dt,
       gravityScale,
+      fasciaAssistSpec
+        ? {
+            viewportFasciaAssist: fasciaAssistSpec,
+            fasciaOverlapClear,
+            gameTimeMs: this.runTime * 1000,
+          }
+        : { fasciaOverlapClear, gameTimeMs: this.runTime * 1000 },
     );
+
+    if (result.fasciaSlideHardBreak) {
+      this.onViewportFasciaSlideHardBreakForInfiniteSlideBypass();
+    }
+
+    if (result.fasciaWallSlideLatched) {
+      this.player.hasTouchedPlatformSinceLastSlide = false;
+    }
 
     if (this.superJumpStairTrackActive) {
       const postFeetY = this.player.body.y + this.player.body.height;
@@ -1393,6 +1442,7 @@ export class PlayScene implements Scene {
     }
 
     if (result.landedPlatform) {
+      this.player.hasTouchedPlatformSinceLastSlide = true;
       this.currentGroundPlatform = result.landedPlatform;
       this.player.onLand(result.impactVy);
       if (!wasGrounded) {
@@ -1530,6 +1580,7 @@ export class PlayScene implements Scene {
   }
 
   destroy(): void {
+    this.clearWallColliderRestoreTimeout();
     this.app?.stage.off('pointermove', this.handleStatusPanelBagPointerMove);
     this.app?.stage.off('pointerup', this.handleStatusPanelBagPointerUp);
     this.app?.stage.off('pointerupoutside', this.handleStatusPanelBagPointerUp);
@@ -1958,12 +2009,31 @@ export class PlayScene implements Scene {
     return STAIR_GAP_MIN_PX + unit * (STAIR_GAP_MAX_PX - STAIR_GAP_MIN_PX);
   }
 
-  /** Left/right screen margin expressed in world pixels (matches visible “safe zone”). */
+  /** Left/right screen margin expressed in world pixels — platform spawn + HUD + viewport player X clamp. */
   private getViewportSafeMarginWorld(): number {
     return VIEWPORT_SAFE_MARGIN_SCREEN_PX / this.getCameraZoom();
   }
 
-  /** Slightly narrower platforms on small screens so they don’t fill the whole view. */
+  /**
+   * Viewport-pinned vertical fascia strips — **same** extents as {@link drawWorldEdgeRestWalls} and fascia physics.
+   */
+  private getViewportEdgeWallSlabsWorld():
+    | { slabW: number; leftSlabLeftX: number; rightSlabLeftX: number }
+    | null {
+    const ww = Math.max(1, this.worldWidth);
+    const w = Math.min(WORLD_EDGE_REST_WALL_PX, Math.floor(ww * 0.3));
+    if (w < 8) {
+      return null;
+    }
+    const vw = Math.max(1, this.worldWidthFromScreen());
+    const leftX = Math.max(0, Math.min(this.cameraX, ww - w));
+    const rightX = Math.max(leftX + w, Math.min(this.cameraX + vw - w, ww - w));
+    if (rightX <= leftX + w) {
+      return null;
+    }
+    return { slabW: w, leftSlabLeftX: leftX, rightSlabLeftX: rightX };
+  }
+
   private getPlatformResponsiveWidthMul(): number {
     if (this.width <= 380) {
       return 0.78;
@@ -2058,30 +2128,71 @@ export class PlayScene implements Scene {
     return minX + unit * (maxX - minX);
   }
 
-  /** Keep chameleon inside the visible viewport (with safe margins), not only full world width. */
+  private clearWallColliderRestoreTimeout(): void {
+    if (this.wallColliderRestoreTimeout !== null) {
+      clearTimeout(this.wallColliderRestoreTimeout);
+      this.wallColliderRestoreTimeout = null;
+    }
+  }
+
+  /**
+   * No Phaser collider exists for viewport fascia — toggling {@link wallCollider}.active gates fascia assist.
+   * Mirrors “disable overlap” for {@link PHYSICS.wallSlideCooldownMs} to stop immediate re-latch after a max-duration slide.
+   */
+  private onViewportFasciaSlideHardBreakForInfiniteSlideBypass(): void {
+    this.wallCollider.active = false;
+    this.player.body.vy = PHYSICS.wallSlideCutoffDropVy;
+    this.clearWallColliderRestoreTimeout();
+    this.wallColliderRestoreTimeout = setTimeout(() => {
+      this.wallColliderRestoreTimeout = null;
+      if (this.wallCollider) {
+        this.wallCollider.active = true;
+      }
+    }, PHYSICS.wallSlideCooldownMs);
+  }
+
+  /**
+   * Keep the avatar inside the camera band. When fascia exists, clamps to the **inner** playfield span between
+   * the drawn strips (same geometry as {@link drawWorldEdgeRestWalls}), not the larger margin-only band.
+   */
   private clampPlayerToCameraViewport(): void {
     const body = this.player.body;
     const marginW = this.getViewportSafeMarginWorld();
+    const fascia = this.getViewportEdgeWallSlabsWorld();
     const vw = this.worldWidthFromScreen();
-    const viewLeft = this.cameraX + marginW;
-    const viewRight = this.cameraX + vw - marginW - body.width;
     const worldMin = 0;
     const worldMax = this.worldWidth - body.width;
-    const left = Math.max(worldMin, viewLeft);
-    const right = Math.min(worldMax, viewRight);
+
+    let left: number;
+    let right: number;
+    if (fascia && fascia.slabW >= 8) {
+      const w = fascia.slabW;
+      const innerLeft = fascia.leftSlabLeftX + w;
+      const innerRightPlayfieldEnd = fascia.rightSlabLeftX;
+      left = Math.max(worldMin, innerLeft);
+      right = Math.min(worldMax, innerRightPlayfieldEnd - body.width);
+    } else {
+      const viewLeft = this.cameraX + marginW;
+      const viewRight = this.cameraX + vw - marginW - body.width;
+      left = Math.max(worldMin, viewLeft);
+      right = Math.min(worldMax, viewRight);
+    }
+    const rest = PHYSICS.viewportClampWallRestitution;
+
     if (right < left) {
       body.x = Math.max(worldMin, Math.min(this.cameraX + vw * 0.5 - body.width * 0.5, worldMax));
       return;
     }
+
     if (body.x < left) {
       body.x = left;
       if (body.vx < 0) {
-        body.vx = 0;
+        body.vx = -body.vx * rest;
       }
     } else if (body.x > right) {
       body.x = right;
       if (body.vx > 0) {
-        body.vx = 0;
+        body.vx = -body.vx * rest;
       }
     }
   }
@@ -2268,6 +2379,10 @@ export class PlayScene implements Scene {
     this.windSpawnAcc = 0;
     this.jumpArcAssistTime = 0;
     this.jumpArcAssistDuration = 0;
+    this.clearWallColliderRestoreTimeout();
+    this.wallCollider.active = true;
+    this.physics.resetWallSlideSession();
+    this.physics.clearFasciaWallCooldowns();
     this.shieldSaveFlashTime = 0;
     this.fallShields = MAX_FALL_SHIELDS;
     this.lastLandedPlatform = null;
@@ -2603,6 +2718,7 @@ export class PlayScene implements Scene {
     this.player.body.vx = 0;
     this.player.body.vy = 0;
     this.player.body.grounded = true;
+    this.player.hasTouchedPlatformSinceLastSlide = true;
     this.grapple = null;
     this.grappleCooldown = 0;
     this.grappleReleaseDampingLeft = 0;
@@ -3969,6 +4085,7 @@ export class PlayScene implements Scene {
 
     this.drawWindParticles();
     this.drawBottomDeathLine();
+    this.drawWorldEdgeRestWalls();
 
     for (const platform of this.platforms) {
       this.drawCrystalPlatform(platform);
@@ -7713,6 +7830,71 @@ export class PlayScene implements Scene {
       });
     }
     return points;
+  }
+
+  /**
+   * Twin vertical fascia — rest-floor palette, viewport-pinned. Same X extents as fascia physics + viewport clamp.
+   */
+  private drawWorldEdgeRestWalls(): void {
+    const fascia = this.getViewportEdgeWallSlabsWorld();
+    if (!fascia) {
+      return;
+    }
+    const w = fascia.slabW;
+    const leftX = fascia.leftSlabLeftX;
+    const rightX = fascia.rightSlabLeftX;
+
+    const verticalPad = 4200;
+    const yTop = this.cameraY - verticalPad;
+    const stripH = verticalPad * 2 + Math.max(this.worldHeightFromScreen(), 1);
+
+    const baseFill = 0x1a1630;
+    const trim = 0xb8f7ff;
+    const rim = 0xc8ffff;
+    const brickA = 0x302a58;
+    const brickB = 0x262044;
+    const groove = 0x80f7ff;
+
+    const rimH = Math.max(6, Math.round(REST_FLOOR_TILE_PX * 0.125));
+
+    const drawFilledStripe = (x: number): void => {
+      this.platformLayer.rect(x, yTop, w, stripH).fill({ color: baseFill, alpha: 1 }).stroke({
+        color: trim,
+        width: Math.min(2.5, w * 0.1),
+        alpha: 0.94,
+      });
+    };
+
+    const bandH = Math.max(8, REST_FLOOR_TILE_PX * 0.32);
+    const bandStripe = (x: number): void => {
+      for (let y = yTop, i = 0; y < yTop + stripH - 1; y += bandH, i += 1) {
+        const h = Math.min(bandH, yTop + stripH - y);
+        const c = i % 2 === 0 ? brickA : brickB;
+        this.platformLayer.rect(x, y, w, h).fill({ color: c, alpha: 1 });
+      }
+    };
+
+    const verticalGrooves = (x: number): void => {
+      const lineW = 2;
+      const step = REST_FLOOR_TILE_PX >> 3;
+      for (let gx = x + Math.max(step * 0.35, lineW); gx < x + w - lineW * 1.75; gx += step) {
+        this.platformLayer.rect(Math.round(gx), yTop, lineW, stripH).fill({ color: groove, alpha: 0.2 });
+      }
+    };
+
+    const topRim = (x: number): void => {
+      this.platformLayer.rect(x, yTop - rimH, w, rimH).fill({ color: rim, alpha: 1 });
+    };
+
+    drawFilledStripe(leftX);
+    bandStripe(leftX);
+    verticalGrooves(leftX);
+    topRim(leftX);
+
+    drawFilledStripe(rightX);
+    bandStripe(rightX);
+    verticalGrooves(rightX);
+    topRim(rightX);
   }
 
   private drawCrystalPlatform(platform: Platform): void {

@@ -107,6 +107,11 @@ export class Player extends Container {
     grounded: false,
   };
 
+  /**
+   * Wall slide can only latch when `true`; set `false` when a slide starts, `true` after landing on a platform.
+   */
+  hasTouchedPlatformSinceLastSlide = true;
+
   state = PlayerState.Idle;
   direction: Direction = 1;
   isShielded = false;
@@ -277,9 +282,15 @@ export class Player extends Container {
       }
     }
 
-    if (axis < -0.55 || this.body.vx < -20) {
+    // Prefer deliberate stick tilt over instantaneous vx. Viewport fascia clamp briefly inverts vx on wall
+    // contact (restitution) while the player still holds toward the wall — using vx alone caused a visible flip.
+    if (axis < -0.55) {
       this.direction = -1;
-    } else if (axis > 0.55 || this.body.vx > 20) {
+    } else if (axis > 0.55) {
+      this.direction = 1;
+    } else if (this.body.vx < -20) {
+      this.direction = -1;
+    } else if (this.body.vx > 20) {
       this.direction = 1;
     }
 
