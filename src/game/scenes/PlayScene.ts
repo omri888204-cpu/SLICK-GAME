@@ -171,8 +171,8 @@ const SFX_REMOTE: Record<SfxId, string> = {
 /** Game binaries live in `public/assets/` and grouped subfolders. */
 const GAME_ASSETS = `${import.meta.env.BASE_URL}assets`;
 const BG_TESET_DIR_URL = `${GAME_ASSETS}/${encodeURIComponent('backgroud teset')}`;
-/** Bottom death hazard — full `line power.png` scaled to viewport width (see {@link drawBottomDeathLine}). */
-const DEATH_LINE_IMAGE_URL = `${BG_TESET_DIR_URL}/${encodeURIComponent('line power.png')}`;
+/** Bottom death hazard — full `lava 2.png` scaled to viewport width (see {@link drawBottomDeathLine}). */
+const DEATH_LINE_IMAGE_URL = `${BG_TESET_DIR_URL}/${encodeURIComponent('lava 2.png')}`;
 const STATIC_BG_TESET3_CANDIDATES = [
   `${BG_TESET_DIR_URL}/${encodeURIComponent('new background.png')}`,
   `${BG_TESET_DIR_URL}/${encodeURIComponent('teset 3-Photoroom.png')}`,
@@ -218,8 +218,54 @@ const STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY = true;
 const DEATH_ORANGE_BAR_HEIGHT_PX = 18;
 /** Full viewport-bottom hazard band height (matches legacy vector lava block). */
 const DEATH_HAZARD_BAND_PX = 32;
-/** Tiny +Y nudge so line-power art meets gums / baseline without a hairline gap. */
-const LINE_POWER_NUDGE_DOWN_PX = 3;
+/**
+ * `lava 2.png` — compact strip at rest (teeth + gum); full content frame when rising/holding/descending.
+ */
+const DEATH_LAVA2_STRIP_FRAME = { x: 0, y: 392, width: 572, height: 188 } as const;
+const DEATH_LAVA2_FULL_FRAME = { x: 0, y: 392, width: 572, height: 632 } as const;
+/**
+ * Invisible disqualify row in `lava 2.png` frame space (teeth → molten lava seam).
+ * Mapped to world Y via {@link getLava2DisqualifyLineWorldY} — same rule as legacy death line (feet cross).
+ */
+/** Teeth → molten lava seam in strip/full frame space (row scan on `lava 2.png`). */
+const DEATH_LAVA2_STRIP_DISQUALIFY_LOCAL_Y = 110;
+const DEATH_LAVA2_FULL_DISQUALIFY_LOCAL_Y = 110;
+/** Physics AABB sits above visible feet — extend for depth sort vs lava pool. */
+const PLAYER_LAVA_DEPTH_FEET_PAD_PX = 52;
+const PLAYER_LAVA_DEPTH_HEAD_PAD_PX = 24;
+/** +Y nudge so lava/teeth art meets the viewport baseline without a hairline gap. */
+const LINE_POWER_NUDGE_DOWN_PX = 60;
+/** Lava strip rise/fall cycle (6500m): rest → rise → hold → descend. */
+const DEATH_LAVA_LIFT_CYCLE_METERS = 6500;
+/** Landed meters gate — crossing starts the timed rise (not climb speed). */
+const DEATH_LAVA_LIFT_RISE_START_METERS = 3500;
+/** Landed meters — hold at marked height until {@link DEATH_LAVA_LIFT_HOLD_END_METERS}. */
+const DEATH_LAVA_LIFT_RISE_END_METERS = 4000;
+const DEATH_LAVA_LIFT_HOLD_END_METERS = 6000;
+/** Shorter than rise — fast elevator-style return to rest (6000 → this). */
+const DEATH_LAVA_LIFT_DESCEND_END_METERS = 6250;
+/** Teeth top cap at max lift — viewport fraction from camera top (red-line ref ~67%). */
+const DEATH_LAVA_LIFT_TARGET_TEETH_TOP_RATIO = 0.67;
+/**
+ * Steady tap-fill duration after the 3500m gate — skills / air altitude never affect rise speed.
+ * Player may pass 4000m before the fill completes.
+ */
+const DEATH_LAVA_LIFT_RISE_DURATION_SEC = 12;
+/** Display smoothing on descent only (rise snaps to timer target). */
+const DEATH_LAVA_LIFT_DESCEND_SMOOTH_RATE = 9.5;
+
+/** Accel → cruise → decel — elevator-style ease for lava descent. */
+function easeInOutElevator01(t: number): number {
+  const x = Math.max(0, Math.min(1, t));
+  return x < 0.5 ? 4 * x * x * x : 1 - (-2 * x + 2) ** 3 / 2;
+}
+const PLAYER_WORLD_Z_INDEX = 40;
+/** Below teeth (23) while sinking; molten pool (45) paints on top. */
+const PLAYER_BEHIND_LAVA_Z_INDEX = 22;
+const LAVA_TEETH_LAYER_Z_INDEX = 23;
+const LAVA_LAYER_Z_INDEX = 25;
+/** Always above player (40) so molten pool covers the avatar on overlap. */
+const LAVA_POOL_LAYER_Z_INDEX = 45;
 /** Gameplay BGM: random track from `public/assets/game music/` on each fresh run (see `pickRandomGameMusicBgmUrl`). */
 const GAME_MUSIC_DIR_URL = `${GAME_ASSETS}/${encodeURIComponent('game music')}`;
 const GAME_MUSIC_BGM_FILENAMES = [
@@ -236,6 +282,8 @@ const GAME_MUSIC_BGM_TRACKS: readonly string[] = GAME_MUSIC_BGM_FILENAMES.map(
 );
 /** If the curated list is empty (should not happen), fall back to legacy loop under `assets/music/`. */
 const BGM_FALLBACK_URL = `${GAME_ASSETS}/music/${encodeURIComponent('Dream Sakura_Loop.ogg')}`;
+/** Lava-rise tension loop — `public/assets/sound effect/stress mode.m4a` (3500→6000 landed m). */
+const STRESS_MODE_BGM_URL = `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/${encodeURIComponent('stress mode.m4a')}`;
 const REST_FLOOR_HOUSE_CANDIDATES = [
   `${GAME_ASSETS}/house/isohome.png.png`,
   `${GAME_ASSETS}/house/${encodeURIComponent('House 1.png')}`,
@@ -699,7 +747,7 @@ const REST_FLOOR_MONSTER_CLEAR_METERS = 100;
 const REST_FLOOR_RESUME_ABOVE_PX = 50;
 const REST_FLOOR_TILE_PX = 64;
 /**
- * Fascia spanning screen edges — ~1¼× אריח הרסט (שרשראות בצדי המסך וכו').
+ * Fascia spanning screen edges — ~1¼× אריח הרסט (עצמות בצדי המסך וכו').
  * Same geometry drives {@link drawWorldEdgeRestWalls}, {@link clampPlayerToCameraViewport}, and fascia assist in {@link Physics}.
  */
 const WORLD_EDGE_REST_WALL_PX = Math.round(REST_FLOOR_TILE_PX * 1.25);
@@ -710,11 +758,19 @@ const WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX = 4200;
  * clamps/physics/overlap follow {@link getViewportEdgeWallSlabsWorld}.
  */
 const VIEWPORT_FASCIA_INWARD_NUDGE_WORLD_PX = 24;
-/** כפל קנה‑אחיד לטקסטורת השרשרת בלבד; רוחב הפס ההצגה = פס הקוליזיה (ללא שינוי פיזיקה). */
-const WORLD_EDGE_BONE_TILE_SCALE_MUL = 1.32;
-/** Fascia cladding — `chain 1` / `chain 2` ב־`public/assets/objects/`. */
-const WORLD_EDGE_WALL_BONE_LEFT_URL = `${GAME_ASSETS}/objects/${encodeURIComponent('chain 1.png')}`;
-const WORLD_EDGE_WALL_BONE_RIGHT_URL = `${GAME_ASSETS}/objects/${encodeURIComponent('chain 2.png')}`;
+/** Fascia cladding — `bone 1` / `bone 2` (rest) and `chain 1` / `chain 2` (slide) ב־`public/assets/objects/`. */
+const WORLD_EDGE_WALL_BONE_LEFT_URL = `${GAME_ASSETS}/objects/${encodeURIComponent('bone 1.png')}`;
+const WORLD_EDGE_WALL_BONE_RIGHT_URL = `${GAME_ASSETS}/objects/${encodeURIComponent('bone 2.png')}`;
+const WORLD_EDGE_WALL_CHAIN_LEFT_URL = `${GAME_ASSETS}/objects/${encodeURIComponent('chain 1.png')}`;
+const WORLD_EDGE_WALL_CHAIN_RIGHT_URL = `${GAME_ASSETS}/objects/${encodeURIComponent('chain 2.png')}`;
+/** כפל קנה‑אחיד לטקסטורת העצם (שלב rest) — רוחב הפס = קוליזיה, רק הטקסטורה גדלה. */
+const WORLD_EDGE_BONE_TILE_SCALE_MUL = 1.4;
+/** כפל קנה‑אחיד לטקסטורת השרשרת בלבד (שלב slide). */
+const WORLD_EDGE_CHAIN_TILE_SCALE_MUL = 1.32;
+/** מחזור מרחק HUD — slide פעיל ב־4000–6000 מ׳ בתוך כל מחזור. */
+const SLIDE_PHASE_CYCLE_METERS = 6000;
+const SLIDE_PHASE_START_METERS = 4000;
+const SLIDE_PHASE_END_METERS = 6000;
 const REST_FLOOR_HOUSE_METERS = 1000;
 const REST_FLOOR_HOUSE_DEPTH = 100;
 /** Place the house at this fraction of the visible screen width so it stays on-screen on any aspect ratio. */
@@ -953,15 +1009,17 @@ export class PlayScene implements Scene {
   private activeOverlayBackgroundTierId?: BackgroundTierId;
   private jelly = new Graphics();
   private fxLayer = new Graphics();
-  /** Viewport fascia — `chain 1` שמאל / `chain 2` ימין. */
+  /** Viewport fascia — `bone 1`/`bone 2` (rest), `chain 1`/`chain 2` (slide 4000–6000m). */
   private viewportFasciaBoneLayer = new Container();
   private viewportFasciaBoneTexLeft?: Texture;
   private viewportFasciaBoneTexRight?: Texture;
+  private viewportFasciaChainTexLeft?: Texture;
+  private viewportFasciaChainTexRight?: Texture;
   private viewportFasciaBoneTileLeft: TilingSprite | null = null;
   private viewportFasciaBoneTileRight: TilingSprite | null = null;
   /**
-   * When {@link isSlidePhase} is false: chain/brick fascia uses this world-Y top reference for tiling/stripes only
-   * so vertical banding does not drift with camera scroll. Reset on {@link resetRun}; resynced when leaving slide phase.
+   * When {@link isSlidePhase} is false (0–4000m and 6000m+ in each cycle): bone fascia uses this world-Y
+   * anchor for tiling so vertical banding stays fixed while the camera scrolls.
    */
   private fasciaRestWallStripePhaseAnchorWorldYTop = 0;
   /** Wall-slide friction smoke — normal blend, sits under additive sparks. */
@@ -979,14 +1037,23 @@ export class PlayScene implements Scene {
   private collectiblesGfx = new Graphics();
   /** Bottom hazard strip (vector lava fallback; crystal/ice asset removed). */
   private lavaLayer = new Container();
+  private lavaTeethLayer = new Container();
+  private lavaPoolLayer = new Container();
   private deathZoneFallback = new Graphics();
   /** Preloaded death-line art ({@link DEATH_LINE_IMAGE_URL}); vector lava if missing. */
-  private deathHazardTexture?: Texture;
-  /** Full-width death strip sprite (`line power`); vector {@link deathZoneFallback} if load fails. */
-  private deathHazardSprite: Sprite | null = null;
-  /** Alias for {@link deathHazardSprite} — line power artwork at viewport bottom. */
+  private deathHazardTextureStrip?: Texture;
+  private deathHazardTextureFull?: Texture;
+  private deathHazardTeethTextureStrip?: Texture;
+  private deathHazardPoolTextureStrip?: Texture;
+  private deathHazardTeethTextureFull?: Texture;
+  private deathHazardPoolTextureFull?: Texture;
+  /** Strip/full seam row in art pixels — {@link getLava2DisqualifyLineWorldY}. */
+  private deathLava2StripDisqualifyLocalY = DEATH_LAVA2_STRIP_DISQUALIFY_LOCAL_Y;
+  private deathLava2FullDisqualifyLocalY = DEATH_LAVA2_FULL_DISQUALIFY_LOCAL_Y;
+  private deathHazardTeethSprite: Sprite | null = null;
+  private deathHazardPoolSprite: Sprite | null = null;
   private get linePower(): Sprite | null {
-    return this.deathHazardSprite;
+    return this.deathHazardPoolSprite;
   }
   /** World-space line-power strip anchor Y when bob offset is zero (see {@link drawBottomDeathLine}). */
   private linePowerBaseY = 0;
@@ -1181,6 +1248,14 @@ export class PlayScene implements Scene {
    * {@link Physics} read this on the following frame after it is updated.
    */
   isSlidePhase = false;
+  /** Smoothed 0–1 lava lift — rise driven by timer; descent lerps for elevator feel. */
+  private deathLavaLiftDisplayFactor = 0;
+  /** Elapsed rise seconds in the current 6500m cycle (3500m gate → full). */
+  private deathLavaRiseElapsedSec = 0;
+  /** Tracks cycle wrap so rise timer resets with landed meters modulo. */
+  private deathLavaLiftCycleIndex = -1;
+  /** Latched while falling into lava — keeps avatar behind until back above the teeth. */
+  private playerFallingBehindLava = false;
   private sfx = new PlaySceneSfx(() => this.isSlidePhase);
   private platformTexture?: Texture;
   private platformTextureSlime?: Texture;
@@ -1295,6 +1370,9 @@ export class PlayScene implements Scene {
   private bgm?: HTMLAudioElement;
   /** Last picked `game music` URL — avoids playing the same track twice in a row when possible. */
   private lastGameMusicBgmUrl: string | null = null;
+  private bgmTrackKind: 'game' | 'stress' = 'game';
+  /** Normal BGM to resume after the 3500–6000 m stress window. */
+  private savedGameBgmUrl: string | null = null;
   private level = 1;
   private levelUpBannerTime = 0;
   private levelUpParticles: LevelUpParticle[] = [];
@@ -1327,6 +1405,8 @@ export class PlayScene implements Scene {
     this.lavaLayer.addChild(this.deathZoneFallback);
     this.lavaLayer.sortableChildren = true;
     this.deathZoneFallback.zIndex = 0;
+    this.lavaTeethLayer.sortableChildren = true;
+    this.lavaPoolLayer.sortableChildren = true;
     const quickMobile = isQuickStartMobileDevice();
     await Promise.all([
       quickMobile ? this.loadPlatformSpriteCore() : this.loadPlatformSprite(),
@@ -1361,6 +1441,7 @@ export class PlayScene implements Scene {
       this.restFloorPropLayer,
       this.mushroomEnemyLayer,
       this.mushroomDeathFxLayer,
+      this.lavaTeethLayer,
       this.lavaLayer,
       this.rippleLayer,
       this.collectiblesGfx,
@@ -1369,6 +1450,7 @@ export class PlayScene implements Scene {
       this.wallSparkSmokeGfx,
       this.wallSparkParticleRoot,
       this.player,
+      this.lavaPoolLayer,
     );
     this.jelly.zIndex = 0;
     this.platformSpriteLayer.zIndex = 2;
@@ -1386,7 +1468,9 @@ export class PlayScene implements Scene {
     /** Stairs drift behind the death-zone art; ripples + collectibles sit under power line so coins/diamonds don’t paint over it. */
     this.rippleLayer.zIndex = 22;
     this.collectiblesGfx.zIndex = 23;
-    this.lavaLayer.zIndex = 25;
+    this.lavaTeethLayer.zIndex = LAVA_TEETH_LAYER_Z_INDEX;
+    this.lavaLayer.zIndex = LAVA_LAYER_Z_INDEX;
+    this.lavaPoolLayer.zIndex = LAVA_POOL_LAYER_Z_INDEX;
     this.tongueRoot.zIndex = 32;
     this.fxLayer.zIndex = 33;
     this.wallSparkSmokeGfx.zIndex = 34;
@@ -1395,7 +1479,7 @@ export class PlayScene implements Scene {
     this.wallSparkParticleRoot.zIndex = 41;
     this.wallSparkParticleRoot.blendMode = 'add';
     this.wallSparkParticleRoot.eventMode = 'none';
-    this.player.zIndex = 40;
+    this.player.zIndex = PLAYER_WORLD_Z_INDEX;
     this.levelUpFloatText = new Text({
       text: 'LEVEL UP!',
       style: new TextStyle({
@@ -1760,14 +1844,18 @@ export class PlayScene implements Scene {
       this.fallShields > 0,
     );
     this.tickAltitudePresentation(dt);
+    this.tickDeathLavaLift(dt);
+    this.tickStressModeBgm();
+    this.syncPlayerDepthRelativeToLava();
     this.drawDynamicWorld();
     this.updateSpeedTierUiFlash(dt);
     this.updateScreenShake(dt);
     this.recomputeDerivedTotalScore();
     this.updateLevelProgress();
     const visualDistance = this.getHudScoreboardDisplayMeters();
-    const cycleProgress = Math.floor(visualDistance) % 5000;
-    const slidePhaseNext = cycleProgress >= 4000 && cycleProgress < 5000;
+    const cycleProgress = Math.floor(visualDistance) % SLIDE_PHASE_CYCLE_METERS;
+    const slidePhaseNext =
+      cycleProgress >= SLIDE_PHASE_START_METERS && cycleProgress < SLIDE_PHASE_END_METERS;
     if (this.isSlidePhase && !slidePhaseNext) {
       this.fasciaRestWallStripePhaseAnchorWorldYTop =
         this.cameraY - WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX;
@@ -2720,6 +2808,11 @@ export class PlayScene implements Scene {
 
   private resetRun(opts?: { pickNewBgm?: boolean }): void {
     this.gameOver = false;
+    this.player.zIndex = PLAYER_WORLD_Z_INDEX;
+    this.deathLavaLiftDisplayFactor = 0;
+    this.deathLavaRiseElapsedSec = 0;
+    this.deathLavaLiftCycleIndex = -1;
+    this.playerFallingBehindLava = false;
     this.finalMetersAtDeath = 0;
     this.peakClimbMetersThisRun = 0;
     this.peakComboThisRun = 0;
@@ -2908,9 +3001,260 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Single source of truth for the bottom of the camera view in world space (death check + hazard art). */
+  /** Feet cross this Y → game over ({@link checkFallGameOver}); follows `lava 2` disqualify seam. */
   private getDeathPlaneWorldY(): number {
-    return this.cameraY + this.worldHeightFromScreen();
+    return this.getLava2DisqualifyLineWorldY();
+  }
+
+  private getLava2DisqualifyLineLocalY(texture: Texture): number {
+    return texture === this.deathHazardTextureFull
+      ? this.deathLava2FullDisqualifyLocalY
+      : this.deathLava2StripDisqualifyLocalY;
+  }
+
+  private getLava2SplitTextures(layout: {
+    texture: Texture;
+  }): { teeth: Texture; pool: Texture } | null {
+    const isFull = layout.texture === this.deathHazardTextureFull;
+    const teeth = isFull ? this.deathHazardTeethTextureFull : this.deathHazardTeethTextureStrip;
+    const pool = isFull ? this.deathHazardPoolTextureFull : this.deathHazardPoolTextureStrip;
+    if (!teeth || !pool) {
+      return null;
+    }
+    return { teeth, pool };
+  }
+
+  private getLava2SplitDisplayHeights(
+    layout: { texture: Texture; height: number },
+  ): { teethH: number; poolH: number } {
+    const texH = Math.max(1, layout.texture.height);
+    const splitLocalY = this.getLava2DisqualifyLineLocalY(layout.texture);
+    const poolH = layout.height * ((texH - splitLocalY) / texH);
+    return { teethH: layout.height - poolH, poolH };
+  }
+
+  private createLava2PartTexture(
+    source: Texture['source'],
+    frame: { x: number; y: number; width: number; height: number },
+    splitLocalY: number,
+    part: 'teeth' | 'pool',
+  ): Texture {
+    const y = part === 'teeth' ? frame.y : frame.y + splitLocalY;
+    const height = part === 'teeth' ? splitLocalY : frame.height - splitLocalY;
+    return new Texture({
+      source,
+      frame: new Rectangle(frame.x, y, frame.width, height),
+    });
+  }
+
+  /**
+   * World Y of the invisible disqualify row baked into `lava 2.png` — scales/moves with drawn hazard art.
+   */
+  private getLava2DisqualifyLineWorldY(): number {
+    const layout = this.getDeathLavaArtLayout();
+    if (!layout) {
+      return this.cameraY + this.worldHeightFromScreen();
+    }
+    const spriteBottom =
+      layout.bottomWorldY + this.getLava2DrawBobOffsetY() + LINE_POWER_NUDGE_DOWN_PX;
+    const texH = Math.max(1, layout.texture.height);
+    const localY = Math.max(0, Math.min(texH - 1, this.getLava2DisqualifyLineLocalY(layout.texture)));
+    const offsetFromTop = (localY / texH) * layout.height;
+    return spriteBottom - layout.height + offsetFromTop;
+  }
+
+  /** Strip at rest; full `lava 2` rises on landed meters only — viewport-fixed, not jump physics. */
+  private getDeathLavaArtLayout(): {
+    texture: Texture;
+    height: number;
+    bottomWorldY: number;
+  } | null {
+    const stripTex = this.deathHazardTextureStrip;
+    const fullTex = this.deathHazardTextureFull;
+    if (!stripTex) {
+      return null;
+    }
+    const padSpan = 60;
+    const stripW = Math.max(1, this.worldWidthFromScreen()) + padSpan;
+    const vh = Math.max(1, this.worldHeightFromScreen());
+    const viewportBottom = this.cameraY + vh;
+    const factor = this.getDeathLavaLiftFactor();
+    const stripH = this.deathHazardStripHeightForWidth(stripW, stripTex);
+    const fullH = fullTex
+      ? this.deathHazardStripHeightForWidth(stripW, fullTex)
+      : stripH;
+
+    if (factor <= 0 || !fullTex) {
+      return { texture: stripTex, height: stripH, bottomWorldY: viewportBottom };
+    }
+
+    const restTeethTopY = viewportBottom - stripH;
+    const targetTeethTopY = this.cameraY + vh * DEATH_LAVA_LIFT_TARGET_TEETH_TOP_RATIO;
+    const teethTopY = restTeethTopY + (targetTeethTopY - restTeethTopY) * factor;
+    return {
+      texture: fullTex,
+      height: fullH,
+      bottomWorldY: teethTopY + fullH,
+    };
+  }
+
+  /**
+   * Lava phase gates — {@link getBestLandedClimbMeters} only (never HUD air / super-jump altitude).
+   */
+  private getDeathLavaLiftMetersProgress(): number {
+    const climbM = Math.max(0, this.getBestLandedClimbMeters());
+    const cycleM = climbM % DEATH_LAVA_LIFT_CYCLE_METERS;
+    return cycleM < 0 ? cycleM + DEATH_LAVA_LIFT_CYCLE_METERS : cycleM;
+  }
+
+  /**
+   * Rise = steady tap-fill timer from 3500m gate (4000–6000m hold once full).
+   * Descent = landed-meter elevator segment 6000→6250.
+   */
+  private tickDeathLavaLift(dt: number): void {
+    const landedM = Math.max(0, this.getBestLandedClimbMeters());
+    const m = this.getDeathLavaLiftMetersProgress();
+    const cycleIndex = Math.floor(landedM / DEATH_LAVA_LIFT_CYCLE_METERS);
+    if (cycleIndex !== this.deathLavaLiftCycleIndex) {
+      this.deathLavaLiftCycleIndex = cycleIndex;
+      this.deathLavaRiseElapsedSec = 0;
+    }
+
+    let target: number;
+    const descending = m >= DEATH_LAVA_LIFT_HOLD_END_METERS && m < DEATH_LAVA_LIFT_DESCEND_END_METERS;
+
+    if (m < DEATH_LAVA_LIFT_RISE_START_METERS) {
+      target = 0;
+      this.deathLavaRiseElapsedSec = 0;
+    } else if (descending) {
+      const t = (m - DEATH_LAVA_LIFT_HOLD_END_METERS) /
+        (DEATH_LAVA_LIFT_DESCEND_END_METERS - DEATH_LAVA_LIFT_HOLD_END_METERS);
+      target = 1 - easeInOutElevator01(t);
+    } else if (m >= DEATH_LAVA_LIFT_DESCEND_END_METERS) {
+      target = 0;
+      this.deathLavaRiseElapsedSec = 0;
+    } else {
+      // 3500–6000: linear tap-fill — climb speed / skills cannot accelerate this.
+      this.deathLavaRiseElapsedSec += dt;
+      target = Math.min(1, this.deathLavaRiseElapsedSec / DEATH_LAVA_LIFT_RISE_DURATION_SEC);
+    }
+
+    if (m >= DEATH_LAVA_LIFT_RISE_START_METERS && m < DEATH_LAVA_LIFT_HOLD_END_METERS) {
+      this.deathLavaLiftDisplayFactor = target;
+      return;
+    }
+
+    const alpha = 1 - Math.exp(-DEATH_LAVA_LIFT_DESCEND_SMOOTH_RATE * dt);
+    this.deathLavaLiftDisplayFactor += (target - this.deathLavaLiftDisplayFactor) * alpha;
+    if (Math.abs(target - this.deathLavaLiftDisplayFactor) < 0.0008) {
+      this.deathLavaLiftDisplayFactor = target;
+    }
+  }
+
+  /** Smoothed lift factor used by hazard art. */
+  private getDeathLavaLiftFactor(): number {
+    return this.deathLavaLiftDisplayFactor;
+  }
+
+  private getLava2DrawBobOffsetY(): number {
+    return (Math.sin(Date.now() * 0.005) + 0.4) * 5;
+  }
+
+  /** World AABB of drawn `lava 2` (matches {@link drawBottomDeathLine} + anchor 0,1). */
+  private getLava2VisualWorldBounds(): {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  } {
+    const padX = 30;
+    const left = this.cameraX - padX;
+    const width = Math.max(1, this.worldWidthFromScreen()) + padX * 2;
+    const layout = this.getDeathLavaArtLayout();
+    const bottom = layout
+      ? layout.bottomWorldY + this.getLava2DrawBobOffsetY() + LINE_POWER_NUDGE_DOWN_PX
+      : this.cameraY + this.worldHeightFromScreen() + LINE_POWER_NUDGE_DOWN_PX;
+    const height = layout?.height ?? DEATH_HAZARD_BAND_PX;
+    return { left, top: bottom - height, right: left + width, bottom };
+  }
+
+  /** Orange molten pool band only — depth sort uses this, not the teeth/disqualify seam. */
+  private getLava2PoolWorldBounds(): {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  } {
+    const padX = 30;
+    const left = this.cameraX - padX;
+    const width = Math.max(1, this.worldWidthFromScreen()) + padX * 2;
+    const layout = this.getDeathLavaArtLayout();
+    const bob = this.getLava2DrawBobOffsetY();
+    const nudge = LINE_POWER_NUDGE_DOWN_PX;
+    const bottom = layout
+      ? layout.bottomWorldY + bob + nudge
+      : this.cameraY + this.worldHeightFromScreen() + nudge;
+    const poolH = layout
+      ? this.getLava2SplitDisplayHeights(layout).poolH
+      : DEATH_ORANGE_BAR_HEIGHT_PX;
+    return { left, top: bottom - poolH, right: left + width, bottom };
+  }
+
+  /** Sprite extends below physics feet — use for lava depth sort. */
+  private getPlayerLavaDepthBounds(): {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  } {
+    const b = this.player.body;
+    const cx = b.x + b.width * 0.5;
+    const halfW = Math.max(b.width, 38) * 0.55;
+    return {
+      left: cx - halfW,
+      right: cx + halfW,
+      top: b.y - PLAYER_LAVA_DEPTH_HEAD_PAD_PX,
+      bottom: b.y + b.height + PLAYER_LAVA_DEPTH_FEET_PAD_PX,
+    };
+  }
+
+  /** Molten pool overlap — avatar below teeth (23); pool layer (45) covers on top. */
+  private shouldPlayerRenderBehindLava(): boolean {
+    const b = this.player.body;
+    const pool = this.getLava2PoolWorldBounds();
+    const p = this.getPlayerLavaDepthBounds();
+    const horizOverlap = !(p.right < pool.left || p.left > pool.right);
+
+    if (b.vy < -70) {
+      if (p.bottom <= pool.top - 10) {
+        this.playerFallingBehindLava = false;
+      }
+      return false;
+    }
+
+    const inPool =
+      horizOverlap && p.bottom > pool.top - 2 && p.top < pool.bottom;
+
+    if (inPool) {
+      this.playerFallingBehindLava = true;
+      return true;
+    }
+
+    if (this.playerFallingBehindLava && horizOverlap && p.bottom > pool.top - 8) {
+      return true;
+    }
+
+    if (p.bottom <= pool.top - 12) {
+      this.playerFallingBehindLava = false;
+    }
+    return false;
+  }
+
+  private syncPlayerDepthRelativeToLava(): void {
+    this.player.zIndex = this.shouldPlayerRenderBehindLava()
+      ? PLAYER_BEHIND_LAVA_Z_INDEX
+      : PLAYER_WORLD_Z_INDEX;
+    this.world.sortChildren();
   }
 
   /** Floating origin: keep stair / body Y in a moderate range so far climbs stay stable in JS + Pixi. */
@@ -4037,15 +4381,52 @@ export class PlayScene implements Scene {
     return choice;
   }
 
-  private startBackgroundMusic(): void {
+  /** Same landed-meter window as lava rise/hold ({@link tickDeathLavaLift}). */
+  private shouldPlayStressModeBgm(): boolean {
+    const m = Math.max(0, this.getBestLandedClimbMeters());
+    return m >= DEATH_LAVA_LIFT_RISE_START_METERS && m < DEATH_LAVA_LIFT_HOLD_END_METERS;
+  }
+
+  private tickStressModeBgm(): void {
+    if (this.gameOver || !this.bgm) {
+      return;
+    }
+    const wantStress = this.shouldPlayStressModeBgm();
+    if (wantStress && this.bgmTrackKind !== 'stress') {
+      this.savedGameBgmUrl = this.bgm.src || this.lastGameMusicBgmUrl;
+      this.playBackgroundMusicTrack(STRESS_MODE_BGM_URL, 'stress');
+      return;
+    }
+    if (!wantStress && this.bgmTrackKind === 'stress') {
+      const resume =
+        this.savedGameBgmUrl && this.savedGameBgmUrl !== STRESS_MODE_BGM_URL
+          ? this.savedGameBgmUrl
+          : this.pickRandomGameMusicBgmUrl();
+      this.savedGameBgmUrl = null;
+      this.playBackgroundMusicTrack(resume, 'game');
+    }
+  }
+
+  private playBackgroundMusicTrack(url: string, kind: 'game' | 'stress'): void {
     this.stopBackgroundMusic();
-    const bgm = new Audio(this.pickRandomGameMusicBgmUrl());
+    const bgm = new Audio(url);
     bgm.loop = true;
     bgm.volume = 0.2;
     this.bgm = bgm;
+    this.bgmTrackKind = kind;
+    if (kind === 'game') {
+      this.lastGameMusicBgmUrl = url;
+    }
     void bgm.play().catch(() => {
       /* autoplay: may need user gesture */
     });
+  }
+
+  private startBackgroundMusic(): void {
+    this.bgmTrackKind = 'game';
+    this.savedGameBgmUrl = null;
+    this.playBackgroundMusicTrack(this.pickRandomGameMusicBgmUrl(), 'game');
+    this.tickStressModeBgm();
   }
 
   private stopBackgroundMusic(): void {
@@ -4055,6 +4436,8 @@ export class PlayScene implements Scene {
       this.bgm.load();
     }
     this.bgm = undefined;
+    this.bgmTrackKind = 'game';
+    this.savedGameBgmUrl = null;
   }
 
   private async tryLoadTongueArmature(): Promise<void> {
@@ -7395,44 +7778,59 @@ export class PlayScene implements Scene {
   /**
    * Death-line art height when scaled to strip width `stripW` — entire texture visible, uniform scale.
    */
-  private deathHazardStripHeightForWidth(stripW: number): number {
-    const tex = this.deathHazardTexture;
-    if (!tex) {
+  private deathHazardStripHeightForWidth(stripW: number, tex?: Texture): number {
+    const t = tex ?? this.deathHazardTextureStrip;
+    if (!t) {
       return DEATH_HAZARD_BAND_PX;
     }
-    const tw = Math.max(1, tex.width);
-    const th = Math.max(1, tex.height);
+    const tw = Math.max(1, t.width);
+    const th = Math.max(1, t.height);
     return Math.max(1, (stripW / tw) * th);
   }
 
   private drawBottomDeathLine(): void {
-    /**
-     * `lavaLayer` lives in `world` with `zIndex` above platforms so stairs pass **behind** the hazard art.
-     * Death line = `getDeathPlaneWorldY()`.
-     */
-    const deathY = this.getDeathPlaneWorldY();
+    const layout = this.getDeathLavaArtLayout();
     const vw = this.worldWidthFromScreen();
     const padX = 30;
     const x = this.cameraX - padX;
     const w = vw + padX * 2;
+    const bob = this.getLava2DrawBobOffsetY();
+    const nudge = LINE_POWER_NUDGE_DOWN_PX;
 
-    const linePower = this.linePower;
-    if (linePower) {
+    const teethSprite = this.deathHazardTeethSprite;
+    const poolSprite = this.deathHazardPoolSprite;
+    const split = layout ? this.getLava2SplitTextures(layout) : null;
+
+    if (teethSprite && poolSprite && layout && split) {
+      const { teethH, poolH } = this.getLava2SplitDisplayHeights(layout);
+      const bottom = layout.bottomWorldY + bob + nudge;
+      const lineY = this.getLava2DisqualifyLineWorldY();
+
       this.deathZoneFallback.visible = false;
-      linePower.visible = true;
-      this.linePowerBaseY = deathY;
-      // Math.sin ∈ [-1, 1]. +0.4 keeps offset mostly positive: +Y = down — drops more, barely rises.
-      linePower.position.set(
-        this.cameraX - padX,
-        this.linePowerBaseY +
-          (Math.sin(Date.now() * 0.005) + 0.4) * 5 +
-          LINE_POWER_NUDGE_DOWN_PX,
-      );
-      linePower.width = w;
-      linePower.height = this.deathHazardStripHeightForWidth(w);
+      teethSprite.visible = true;
+      poolSprite.visible = true;
+      this.linePowerBaseY = layout.bottomWorldY;
+
+      teethSprite.texture = split.teeth;
+      teethSprite.position.set(x, lineY);
+      teethSprite.width = w;
+      teethSprite.height = teethH;
+
+      poolSprite.texture = split.pool;
+      poolSprite.position.set(x, bottom);
+      poolSprite.width = w;
+      poolSprite.height = poolH;
       return;
     }
 
+    if (teethSprite) {
+      teethSprite.visible = false;
+    }
+    if (poolSprite) {
+      poolSprite.visible = false;
+    }
+
+    const deathY = this.getLava2DisqualifyLineWorldY();
     this.deathZoneFallback.visible = true;
     const lavaTop = deathY - DEATH_HAZARD_BAND_PX;
     const orangeTop = deathY - DEATH_ORANGE_BAR_HEIGHT_PX;
@@ -7443,22 +7841,46 @@ export class PlayScene implements Scene {
     this.deathZoneFallback.rect(x, orangeTop, w, stripH).fill({ color: 0xffa621, alpha: 0.95 });
   }
 
-  /** Load fascia chain art (`chain 1` left, `chain 2` right); on failure procedural walls stay in use. */
+  /** Load fascia wall art — bones for rest, chains for slide; procedural fallback if both sets missing. */
   private async loadViewportFasciaBoneTextures(): Promise<void> {
-    try {
-      const [texLeft, texRight] = await Promise.all([
-        Assets.load(WORLD_EDGE_WALL_BONE_LEFT_URL),
-        Assets.load(WORLD_EDGE_WALL_BONE_RIGHT_URL),
-      ]);
-      this.viewportFasciaBoneTexLeft = texLeft as Texture;
-      this.viewportFasciaBoneTexRight = texRight as Texture;
-    } catch {
+    const [boneLeft, boneRight, chainLeft, chainRight] = await Promise.allSettled([
+      Assets.load(WORLD_EDGE_WALL_BONE_LEFT_URL),
+      Assets.load(WORLD_EDGE_WALL_BONE_RIGHT_URL),
+      Assets.load(WORLD_EDGE_WALL_CHAIN_LEFT_URL),
+      Assets.load(WORLD_EDGE_WALL_CHAIN_RIGHT_URL),
+    ]);
+    if (boneLeft.status === 'fulfilled') {
+      this.viewportFasciaBoneTexLeft = boneLeft.value as Texture;
+    } else {
       this.viewportFasciaBoneTexLeft = undefined;
+    }
+    if (boneRight.status === 'fulfilled') {
+      this.viewportFasciaBoneTexRight = boneRight.value as Texture;
+    } else {
       this.viewportFasciaBoneTexRight = undefined;
+    }
+    if (chainLeft.status === 'fulfilled') {
+      this.viewportFasciaChainTexLeft = chainLeft.value as Texture;
+    } else {
+      this.viewportFasciaChainTexLeft = undefined;
+    }
+    if (chainRight.status === 'fulfilled') {
+      this.viewportFasciaChainTexRight = chainRight.value as Texture;
+    } else {
+      this.viewportFasciaChainTexRight = undefined;
+    }
+    if (!this.viewportFasciaBoneTexLeft || !this.viewportFasciaBoneTexRight) {
       console.warn(
-        '[PlayScene] Fascia chain textures missing — viewport walls use procedural fill:',
+        '[PlayScene] Fascia bone textures missing:',
         WORLD_EDGE_WALL_BONE_LEFT_URL,
         WORLD_EDGE_WALL_BONE_RIGHT_URL,
+      );
+    }
+    if (!this.viewportFasciaChainTexLeft || !this.viewportFasciaChainTexRight) {
+      console.warn(
+        '[PlayScene] Fascia chain textures missing:',
+        WORLD_EDGE_WALL_CHAIN_LEFT_URL,
+        WORLD_EDGE_WALL_CHAIN_RIGHT_URL,
       );
     }
   }
@@ -7467,33 +7889,100 @@ export class PlayScene implements Scene {
   private async loadDeathZoneStrip(): Promise<void> {
     this.deathZoneFallback.visible = true;
     try {
-      this.deathHazardTexture = (await Assets.load(DEATH_LINE_IMAGE_URL)) as Texture;
+      const fullTex = (await Assets.load(DEATH_LINE_IMAGE_URL)) as Texture;
+      const source = fullTex.source;
+      this.deathHazardTextureStrip = new Texture({
+        source,
+        frame: new Rectangle(
+          DEATH_LAVA2_STRIP_FRAME.x,
+          DEATH_LAVA2_STRIP_FRAME.y,
+          DEATH_LAVA2_STRIP_FRAME.width,
+          DEATH_LAVA2_STRIP_FRAME.height,
+        ),
+      });
+      this.deathHazardTextureFull = new Texture({
+        source,
+        frame: new Rectangle(
+          DEATH_LAVA2_FULL_FRAME.x,
+          DEATH_LAVA2_FULL_FRAME.y,
+          DEATH_LAVA2_FULL_FRAME.width,
+          DEATH_LAVA2_FULL_FRAME.height,
+        ),
+      });
+      this.deathHazardTeethTextureStrip = this.createLava2PartTexture(
+        source,
+        DEATH_LAVA2_STRIP_FRAME,
+        DEATH_LAVA2_STRIP_DISQUALIFY_LOCAL_Y,
+        'teeth',
+      );
+      this.deathHazardPoolTextureStrip = this.createLava2PartTexture(
+        source,
+        DEATH_LAVA2_STRIP_FRAME,
+        DEATH_LAVA2_STRIP_DISQUALIFY_LOCAL_Y,
+        'pool',
+      );
+      this.deathHazardTeethTextureFull = this.createLava2PartTexture(
+        source,
+        DEATH_LAVA2_FULL_FRAME,
+        DEATH_LAVA2_FULL_DISQUALIFY_LOCAL_Y,
+        'teeth',
+      );
+      this.deathHazardPoolTextureFull = this.createLava2PartTexture(
+        source,
+        DEATH_LAVA2_FULL_FRAME,
+        DEATH_LAVA2_FULL_DISQUALIFY_LOCAL_Y,
+        'pool',
+      );
 
-      if (this.deathHazardTexture) {
-        const vw = Math.max(1, this.worldWidthFromScreen());
-        const padSpan = 60;
-        const stripW = vw + padSpan;
-        const stripH = this.deathHazardStripHeightForWidth(stripW);
-        const s = new Sprite(this.deathHazardTexture);
-        s.eventMode = 'none';
-        s.anchor.set(0, 1);
-        s.roundPixels = false;
-        s.zIndex = 2;
-        s.width = stripW;
-        s.height = stripH;
-        this.deathHazardSprite = s;
-        this.linePowerBaseY = this.getDeathPlaneWorldY();
-        this.lavaLayer.addChild(s);
+      const vw = Math.max(1, this.worldWidthFromScreen());
+      const padSpan = 60;
+      const stripW = vw + padSpan;
+      const stripPoolTex = this.deathHazardPoolTextureStrip;
+      if (stripPoolTex) {
+        const poolH = this.deathHazardStripHeightForWidth(stripW, stripPoolTex);
+        const teethH = this.deathHazardStripHeightForWidth(
+          stripW,
+          this.deathHazardTeethTextureStrip ?? stripPoolTex,
+        );
+
+        const teeth = new Sprite(this.deathHazardTeethTextureStrip ?? stripPoolTex);
+        teeth.eventMode = 'none';
+        teeth.anchor.set(0, 1);
+        teeth.roundPixels = false;
+        teeth.width = stripW;
+        teeth.height = teethH;
+        this.deathHazardTeethSprite = teeth;
+        this.lavaTeethLayer.addChild(teeth);
+
+        const pool = new Sprite(stripPoolTex);
+        pool.eventMode = 'none';
+        pool.anchor.set(0, 1);
+        pool.roundPixels = false;
+        pool.width = stripW;
+        pool.height = poolH;
+        this.deathHazardPoolSprite = pool;
+        this.lavaPoolLayer.addChild(pool);
+
+        this.linePowerBaseY = this.cameraY + this.worldHeightFromScreen();
         this.deathZoneFallback.visible = false;
       }
     } catch (e) {
       console.warn('Failed to load death-line texture, falling back to vector lava', e);
-      this.deathHazardTexture = undefined;
-      if (this.deathHazardSprite) {
-        this.lavaLayer.removeChild(this.deathHazardSprite);
-        this.deathHazardSprite.destroy({ texture: false });
-        this.deathHazardSprite = null;
+      this.deathHazardTextureStrip = undefined;
+      this.deathHazardTextureFull = undefined;
+      this.deathHazardTeethTextureStrip = undefined;
+      this.deathHazardPoolTextureStrip = undefined;
+      this.deathHazardTeethTextureFull = undefined;
+      this.deathHazardPoolTextureFull = undefined;
+      for (const sprite of [this.deathHazardTeethSprite, this.deathHazardPoolSprite]) {
+        if (!sprite) {
+          continue;
+        }
+        sprite.parent?.removeChild(sprite);
+        sprite.destroy({ texture: false });
       }
+      this.deathHazardTeethSprite = null;
+      this.deathHazardPoolSprite = null;
     }
   }
 
@@ -8618,7 +9107,6 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** טקסטורת השרשרת: קנה גדול יותר + נעילת שלב טיל מאפסת סדקים אנכיים ({@link WORLD_EDGE_BONE_TILE_SCALE_MUL}). */
   private syncViewportFasciaBoneStripTile(
     tile: TilingSprite | null,
     tex: Texture,
@@ -8626,6 +9114,7 @@ export class PlayScene implements Scene {
     yTop: number,
     slabW: number,
     stripH: number,
+    tileScaleMul = 1,
   ): TilingSprite {
     let t = tile;
     if (!t) {
@@ -8645,21 +9134,19 @@ export class PlayScene implements Scene {
     t.height = hPx;
     const tw = Math.max(1e-6, tex.source.width);
     const th = Math.max(1e-6, tex.source.height);
-    const baseScale = wPx / tw;
-    const s = baseScale * WORLD_EDGE_BONE_TILE_SCALE_MUL;
-    const period = th * s;
+    const s = (wPx / tw) * tileScaleMul;
     t.tileScale.set(s, s);
+    const period = th * s;
     const stripePhaseYTop =
       !this.isSlidePhase ? this.fasciaRestWallStripePhaseAnchorWorldYTop : yTop;
-    const ty = ((-stripePhaseYTop % period) + period) % period;
+    const ty = ((-stripePhaseYTop * s % period) + period) % period;
     t.tilePosition.set(0, -ty);
     return t;
   }
 
   /**
    * Twin vertical fascia — same X extents as fascia physics + viewport clamp.
-   * Vertical chain/brick stripe phase scrolls only while {@link isSlidePhase}: otherwise it stays keyed to a fixed world anchor (rest phase).
-   * Uses `chain 1.png` left / `chain 2.png` right when loaded; tiles vertically inside each slab column.
+   * Rest (0–4000m, 6000m+): frozen `bone 1`/`bone 2`. Slide (4000–6000m): scrolling `chain 1`/`chain 2`.
    */
   private drawWorldEdgeRestWalls(): void {
     const fascia = this.getViewportEdgeWallSlabsWorld();
@@ -8675,11 +9162,21 @@ export class PlayScene implements Scene {
     const yTop = this.cameraY - verticalPad;
     const stripH = verticalPad * 2 + Math.max(this.worldHeightFromScreen(), 1);
 
-    const tl = this.viewportFasciaBoneTexLeft;
-    const tr = this.viewportFasciaBoneTexRight;
-    const bonesReady = !!(tl && tr);
+    const useChains = this.isSlidePhase;
+    const tl = useChains
+      ? (this.viewportFasciaChainTexLeft ?? this.viewportFasciaBoneTexLeft)
+      : this.viewportFasciaBoneTexLeft;
+    const tr = useChains
+      ? (this.viewportFasciaChainTexRight ?? this.viewportFasciaBoneTexRight)
+      : this.viewportFasciaBoneTexRight;
+    const showingChains =
+      useChains && !!(this.viewportFasciaChainTexLeft && this.viewportFasciaChainTexRight);
+    const tileScaleMul = showingChains
+      ? WORLD_EDGE_CHAIN_TILE_SCALE_MUL
+      : WORLD_EDGE_BONE_TILE_SCALE_MUL;
+    const wallsReady = !!(tl && tr);
 
-    if (bonesReady && tl && tr) {
+    if (wallsReady && tl && tr) {
       this.viewportFasciaBoneTileLeft = this.syncViewportFasciaBoneStripTile(
         this.viewportFasciaBoneTileLeft,
         tl,
@@ -8687,6 +9184,7 @@ export class PlayScene implements Scene {
         yTop,
         w,
         stripH,
+        tileScaleMul,
       );
       this.viewportFasciaBoneTileRight = this.syncViewportFasciaBoneStripTile(
         this.viewportFasciaBoneTileRight,
@@ -8695,6 +9193,7 @@ export class PlayScene implements Scene {
         yTop,
         w,
         stripH,
+        tileScaleMul,
       );
     } else {
       this.hideViewportFasciaBoneTiles();
@@ -8702,7 +9201,7 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** Vector fascia (when chain PNGs are unavailable). */
+  /** Vector fascia (when bone/chain PNGs are unavailable). */
   private drawViewportFasciaWallsProcedural(
     fascia: { slabW: number; leftSlabLeftX: number; rightSlabLeftX: number },
     yTop: number,
@@ -8712,7 +9211,7 @@ export class PlayScene implements Scene {
     const leftX = fascia.leftSlabLeftX;
     const rightX = fascia.rightSlabLeftX;
 
-    /** Match chain tiling: procedural brick phase scrolls only during {@link isSlidePhase}. */
+    /** Match bone tiling: procedural brick phase scrolls only during {@link isSlidePhase}. */
     const stripeAnchorWorldY = !this.isSlidePhase ? this.fasciaRestWallStripePhaseAnchorWorldYTop : yTop;
 
     const baseFill = 0x1a1630;
