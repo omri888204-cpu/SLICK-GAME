@@ -82,10 +82,36 @@ export class Physics {
     this.activeSlidingWall = null;
   }
 
+  /**
+   * Per-frame kick direction away from the latched fascia wall (viewport slide only).
+   * `fasciaBoth` returns `null` — caller falls back to {@link viewportFasciaBodyOverlapSide}.
+   */
+  getActiveViewportWallSlideKickSide(): 'left' | 'right' | null {
+    const k = this.activeSlidingWall;
+    if (k === 'fasciaLeft') {
+      return 'left';
+    }
+    if (k === 'fasciaRight') {
+      return 'right';
+    }
+    return null;
+  }
+
   /** New run / scene restart: allow all fascia walls again. */
   clearFasciaWallCooldowns(): void {
     this.wallCooldowns.clear();
   }
+
+  /**
+   * True while fascia elevator latch is active with slab overlap — used for friction spark FX in {@link PlayScene}.
+   */
+  isViewportWallElevatorSparkActive(
+    body: PlayerBody,
+    spec: { slabW: number; leftSlabLeftX: number; rightSlabLeftX: number },
+  ): boolean {
+    return this.isSliding && Physics.viewportFasciaHasSlabOverlap(body, spec);
+  }
+
   /**
    * Which fascia slab region(s) the body overlaps — used for detach kick direction.
    */
@@ -229,10 +255,16 @@ export class Physics {
       fasciaOverlapClear?: boolean;
       /** Monotonic ms time (e.g. `runTime * 1000`) for wall cooldowns and max slide cutoff. */
       gameTimeMs?: number;
+      /**
+       * When `false`, a **new** viewport fascia elevator latch is blocked (spam / airborne chain rules).
+       * An already active slide session is unchanged until overlap clears or detach. Omit defaults to allowing latch.
+       */
+      allowViewportFasciaElevatorLatch?: boolean;
     },
   ): PhysicsResult {
     const spec = opts?.viewportFasciaAssist;
     const fasciaClear = opts?.fasciaOverlapClear === true;
+    const allowElevatorLatch = opts?.allowViewportFasciaElevatorLatch !== false;
     const nowMs =
       opts?.gameTimeMs ??
       (typeof performance !== 'undefined' ? performance.now() : 0);
@@ -274,7 +306,7 @@ export class Physics {
       wallKey &&
       !wallOnCooldown
     ) {
-      if (!this.isSliding) {
+      if (!this.isSliding && allowElevatorLatch) {
         fasciaWallSlideLatched = true;
         this.isSliding = true;
         this.activeSlidingWall = wallKey;

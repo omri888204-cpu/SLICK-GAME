@@ -148,7 +148,8 @@ type SfxId =
   | 'collect_coin'
   | 'collect_diamond'
   | 'player_land'
-  | 'super_jump_woohoo';
+  | 'super_jump_woohoo'
+  | 'wall_slide';
 
 /** Remote clips when `public/audio/<name>.*` is missing (see `SFX_LOCAL`). */
 const SFX_REMOTE: Record<SfxId, string> = {
@@ -163,6 +164,8 @@ const SFX_REMOTE: Record<SfxId, string> = {
     'https://assets.mixkit.co/active_storage/sfx/2070/2070-preview.mp3',
   super_jump_woohoo:
     'https://assets.mixkit.co/active_storage/sfx/2019/2019-preview.mp3',
+  wall_slide:
+    'https://assets.mixkit.co/active_storage/sfx/705/705-preview.mp3',
 };
 
 /** Game binaries live in `public/assets/` and grouped subfolders. */
@@ -247,6 +250,8 @@ const SFX_LOCAL: Record<SfxId, string> = {
   collect_diamond: `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/diamond_collect.mp3`,
   player_land: `${import.meta.env.BASE_URL}audio/player_land.mp3`,
   super_jump_woohoo: `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/woohoohoo.mp3`,
+  /** לולאת גלידה — `public/assets/sound effect/slide 2.m4a` */
+  wall_slide: `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/${encodeURIComponent('slide 2.m4a')}`,
 };
 
 /**
@@ -425,11 +430,16 @@ const TONGUE_DB_BASE_SCALE = 1;
 class PlaySceneSfx {
   private readonly prototypes = new Map<SfxId, HTMLAudioElement>();
   private master = 0.42;
+  /** Dedicated loop clip — analogous to Phaser `sound.add('slide', { loop: true, volume: 0.5 })`. */
+  private wallSlideLoop: HTMLAudioElement | null = null;
+  /** Boost vs one-shots × {@link master} — capped inside {@link refreshWallSlideLoopVolume}. */
+  private static readonly WALL_SLIDE_LOOP_LOUDNESS = 2.45;
 
   async load(): Promise<void> {
     await Promise.all(
       (Object.keys(SFX_REMOTE) as SfxId[]).map((id) => this.loadOne(id)),
     );
+    this.initWallSlideLoopFromPrototype();
   }
 
   private loadOne(id: SfxId): Promise<void> {
@@ -478,7 +488,66 @@ class PlaySceneSfx {
     });
   }
 
+  private initWallSlideLoopFromPrototype(): void {
+    const proto = this.prototypes.get('wall_slide');
+    const src = proto?.currentSrc || proto?.src;
+    if (!src || this.wallSlideLoop != null) {
+      return;
+    }
+    const a = new Audio(src);
+    a.preload = 'auto';
+    a.loop = true;
+    this.refreshWallSlideLoopVolume(a);
+    this.wallSlideLoop = a;
+  }
+
+  private refreshWallSlideLoopVolume(a: HTMLAudioElement): void {
+    const m = Math.max(this.master, 0.34);
+    a.volume = Math.min(
+      1,
+      PlaySceneSfx.WALL_SLIDE_LOOP_LOUDNESS * m,
+    );
+  }
+
+  /**
+   * Call every frame while sliding — retries `play()` after autoplay blocks and keeps volume current.
+   */
+  ensureWallSlideLoopPlaying(): void {
+    if (this.wallSlideLoop == null) {
+      this.initWallSlideLoopFromPrototype();
+    }
+    if (this.wallSlideLoop == null) {
+      return;
+    }
+    this.refreshWallSlideLoopVolume(this.wallSlideLoop);
+    if (this.wallSlideLoop.paused) {
+      void this.wallSlideLoop.play().catch(() => {
+        /* autoplay / decode */
+      });
+    }
+  }
+
+  /** @deprecated Prefer {@link ensureWallSlideLoopPlaying} each tick while streaming. */
+  beginWallSlideLoop(): void {
+    this.ensureWallSlideLoopPlaying();
+  }
+
+  /** Hard stop — cutoff / detach / pause / teardown. */
+  endWallSlideLoop(): void {
+    if (!this.wallSlideLoop) {
+      return;
+    }
+    this.wallSlideLoop.pause();
+    this.wallSlideLoop.currentTime = 0;
+  }
+
   dispose(): void {
+    this.endWallSlideLoop();
+    if (this.wallSlideLoop) {
+      this.wallSlideLoop.removeAttribute('src');
+      this.wallSlideLoop.load();
+      this.wallSlideLoop = null;
+    }
     for (const a of this.prototypes.values()) {
       a.pause();
       a.removeAttribute('src');
@@ -625,15 +694,20 @@ const REST_FLOOR_MONSTER_CLEAR_METERS = 100;
 const REST_FLOOR_RESUME_ABOVE_PX = 50;
 const REST_FLOOR_TILE_PX = 64;
 /**
- * Fascia spanning screen edges — **half** a rest-floor tile (matches {@link drawRestFloorPlatform} grid).
+ * Fascia spanning screen edges — ~1¼× אריח הרסט (שרשראות בצדי המסך וכו').
  * Same geometry drives {@link drawWorldEdgeRestWalls}, {@link clampPlayerToCameraViewport}, and fascia assist in {@link Physics}.
  */
-const WORLD_EDGE_REST_WALL_PX = REST_FLOOR_TILE_PX >> 1;
+const WORLD_EDGE_REST_WALL_PX = Math.round(REST_FLOOR_TILE_PX * 1.25);
 /**
  * Shift both fascia slab **left edges** toward playfield center (world px). Left strip moves +X, right strip −X;
  * clamps/physics/overlap follow {@link getViewportEdgeWallSlabsWorld}.
  */
 const VIEWPORT_FASCIA_INWARD_NUDGE_WORLD_PX = 24;
+/** כפל קנה‑אחיד לטקסטורת השרשרת בלבד; רוחב הפס ההצגה = פס הקוליזיה (ללא שינוי פיזיקה). */
+const WORLD_EDGE_BONE_TILE_SCALE_MUL = 1.32;
+/** Fascia cladding — `chain 1` / `chain 2` ב־`public/assets/objects/`. */
+const WORLD_EDGE_WALL_BONE_LEFT_URL = `${GAME_ASSETS}/objects/${encodeURIComponent('chain 1.png')}`;
+const WORLD_EDGE_WALL_BONE_RIGHT_URL = `${GAME_ASSETS}/objects/${encodeURIComponent('chain 2.png')}`;
 const REST_FLOOR_HOUSE_METERS = 1000;
 const REST_FLOOR_HOUSE_DEPTH = 100;
 /** Place the house at this fraction of the visible screen width so it stays on-screen on any aspect ratio. */
@@ -699,9 +773,15 @@ const JUMP_BUFFER_SEC = 0.1;
  *   - During SUPER JUMP ascent, each distinct stair top crossed under the player (horizontal overlap)
  *     adds another combo step ({@link applySuperJumpAscendingStairCombo}); landing re-syncs the climb
  *     anchor (`comboLastJumpY`) so the next grounded jump chains normally.
+ *   - Viewport fascia wall-slide elevator: while a chain is active, combo steps tick at a fixed cadence
+ *     ({@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC}, {@link tickViewportFasciaSlideAscendingCombo}).
  */
 const COMBO_CHAIN_WINDOW_SEC = 5;
 const COMBO_MIN_CLIMB_PX = 6;
+/** Horizontal push away from the fascia when consuming a buffered jump mid–wall-slide (world vx, px/s scale). */
+const FACIA_WALL_SLIDE_BUFFER_JUMP_KICK_VX = 320;
+/** Seconds between fascia slide combo steps while on the elevator (steady pace vs raw climb speed). */
+const FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC = 0.48;
 /** Manual SUPER JUMP only (`SUPER_JUMP_VY_SCALE`× upward vs normal jump formula). */
 const SUPER_JUMP_VY_SCALE = 2;
 const SUPER_JUMP_SPARK_COUNT = 14;
@@ -748,6 +828,37 @@ const LS_TOUCH_GLOBAL_STEERING = 'sky_climber_touch_global_steering';
 
 /** Blend toward this cool color on background as altitude speed mult rises (0..1). */
 const ALTITUDE_WIND_MAX_PARTICLES = 48;
+/** Wall-slide sparks — ADD sprites ({@link PlayScene.wallSparkParticleRoot}); ~{@link WALL_SPARK_SPAWN_PER_SEC}/s during elevator slide. */
+const WALL_SPARK_MAX_PARTICLES = 720;
+/** Continuous stream while elevator spark overlap is physically active (~400/sec). */
+const WALL_SPARK_SPAWN_PER_SEC = 400;
+/** Latch-touch ignite debt — Phaser-style `particleEmitter.start()` same frame ignition. */
+const WALL_SPARK_LATCH_TOUCH_DEBT = 40;
+const WALL_SPARK_GRAVITY_Y = 500;
+const WALL_SPARK_SCALE_START = 3.25;
+const WALL_SPARK_SCALE_END = 0.18;
+/** Gold-yellow + bright orange only. */
+const WALL_SPARK_TINT_PALETTE = [0xffcc00, 0xff6600] as const;
+/** Smoke disabled — keep trail clean (see {@link PlayScene.drawWallSlideSmokeParticles}). */
+const WALL_SLIDE_SMOKE_MAX_PARTICLES = 42;
+const WALL_SLIDE_SMOKE_SPAWN_PER_SEC = 0;
+
+/**
+ * 7×7 with solid 3×3 white core (`heavy-spark`) — visible under ADD + above player at fascia seam.
+ */
+function createWallSparkSharpDotTexture(): Texture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 7;
+  canvas.height = 7;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('heavy-spark: CanvasRenderingContext2D unavailable');
+  }
+  ctx.clearRect(0, 0, 7, 7);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(2, 2, 3, 3);
+  return Texture.from(canvas);
+}
 type WindParticle = {
   x: number;
   y: number;
@@ -756,6 +867,29 @@ type WindParticle = {
   age: number;
   life: number;
   len: number;
+};
+
+type WallSparkFxParticle = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  age: number;
+  life: number;
+  /** One of {@link WALL_SPARK_TINT_PALETTE} applied via {@link Sprite.tint}. */
+  tint: number;
+  sprite: Sprite;
+};
+
+type WallSlideSmokeFxParticle = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  age: number;
+  life: number;
+  radius: number;
+  color: number;
 };
 
 export class PlayScene implements Scene {
@@ -812,6 +946,20 @@ export class PlayScene implements Scene {
   private activeOverlayBackgroundTierId?: BackgroundTierId;
   private jelly = new Graphics();
   private fxLayer = new Graphics();
+  /** Viewport fascia — `chain 1` שמאל / `chain 2` ימין. */
+  private viewportFasciaBoneLayer = new Container();
+  private viewportFasciaBoneTexLeft?: Texture;
+  private viewportFasciaBoneTexRight?: Texture;
+  private viewportFasciaBoneTileLeft: TilingSprite | null = null;
+  private viewportFasciaBoneTileRight: TilingSprite | null = null;
+  /** Wall-slide friction smoke — normal blend, sits under additive sparks. */
+  private wallSparkSmokeGfx = new Graphics();
+  /**
+   * Wall-slide sparks — pooled {@link Sprite}s using programmatic **`heavy-spark`** texture (3×3 white).
+   */
+  private wallSparkParticleRoot = new Container();
+  private wallSparkHeavySparkTex: Texture | null = null;
+  private wallSparkSpritePool: Sprite[] = [];
   private platformSpriteLayer = new Container();
   private platformLayer = new Graphics();
   private restFloorPropLayer = new Container();
@@ -928,6 +1076,19 @@ export class PlayScene implements Scene {
   private climbBaselineY = 0;
   private windParticles: WindParticle[] = [];
   private windSpawnAcc = 0;
+  private wallSparkParticles: WallSparkFxParticle[] = [];
+  /** Fractional spawn budget during active fascia elevator sparks (see {@link WALL_SPARK_SPAWN_PER_SEC}). */
+  private wallSparkSlideSpawnAccumulator = 0;
+  /**
+   * Latch-touch debt queued by analogue {@link PlayScene.sparkEmitterAnalogueWallSlideStart} —
+   * consumed instantly same tick inside {@link updateWallSparkParticles}.
+   */
+  private wallSparkSlideLatchIgniteDebt = 0;
+  /** Prior tick: fascia elevator sparks were emitting (detach / hard-stop → analogue `emitter.stop()` for particles). */
+  private wallSparkSlideElevatorPhysActiveMemo = false;
+  /** Prior tick: looping wall-slide SFX was active (falling edge → {@link PlaySceneSfx.endWallSlideLoop}). */
+  private wallSlideFasciaSfxStreamingMemo = false;
+  private wallSlideSmokeParticles: WallSlideSmokeFxParticle[] = [];
   private climbHudText?: Text;
   /** New jump-counter HUD line beneath the climb readout. Driven by `this.jumpCount`. */
   private jumpsHudText?: Text;
@@ -1071,6 +1232,11 @@ export class PlayScene implements Scene {
   private superJumpStairTrackActive = false;
   /** Stair ids already counted for this mega jump arc (includes launch stair — skipped for increments). */
   private readonly superJumpCrossedStairIds = new Set<number>();
+  /**
+   * Next {@link runTime} at which a fascia elevator slide may add a combo step
+   * ({@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC} cadence). `null` when not tracking.
+   */
+  private fasciaSlideComboNextStepAtRunTime: number | null = null;
   /** Visual badge in the upper-left; created in `setupComboHud`. */
   private comboBadge?: ComboBadge;
   /** Wraps combo badge only; scaled — stays screen-fixed (parent `uiLayer`, never `world`). */
@@ -1148,6 +1314,7 @@ export class PlayScene implements Scene {
       quickMobile ? this.loadPlatformSpriteCore() : this.loadPlatformSprite(),
       this.player.load(),
       this.sfx.load(),
+      this.loadViewportFasciaBoneTextures(),
       this.loadDeathZoneStrip(),
       quickMobile ? this.loadBackgroundTextureEssentialForQuickMobile() : this.loadBackgroundTexture(),
       this.loadStaticTeset3BackgroundLayer(),
@@ -1172,6 +1339,7 @@ export class PlayScene implements Scene {
       this.jelly,
       this.platformSpriteLayer,
       this.platformLayer,
+      this.viewportFasciaBoneLayer,
       this.restFloorPropLayer,
       this.mushroomEnemyLayer,
       this.mushroomDeathFxLayer,
@@ -1180,11 +1348,16 @@ export class PlayScene implements Scene {
       this.collectiblesGfx,
       this.tongueRoot,
       this.fxLayer,
+      this.wallSparkSmokeGfx,
+      this.wallSparkParticleRoot,
       this.player,
     );
     this.jelly.zIndex = 0;
     this.platformSpriteLayer.zIndex = 2;
     this.platformLayer.zIndex = 3;
+    this.viewportFasciaBoneLayer.zIndex = 3;
+    this.viewportFasciaBoneLayer.eventMode = 'none';
+    this.viewportFasciaBoneLayer.sortableChildren = false;
     this.restFloorPropLayer.zIndex = REST_FLOOR_HOUSE_DEPTH;
     this.restFloorPropLayer.sortableChildren = true;
     /** Above platforms, below FX/player so jumps visually pass in front of enemies. */
@@ -1198,6 +1371,12 @@ export class PlayScene implements Scene {
     this.lavaLayer.zIndex = 25;
     this.tongueRoot.zIndex = 32;
     this.fxLayer.zIndex = 33;
+    this.wallSparkSmokeGfx.zIndex = 34;
+    this.wallSparkSmokeGfx.eventMode = 'none';
+    /** Above player (40): otherwise sparks at the fascia seam render behind the silhouette. */
+    this.wallSparkParticleRoot.zIndex = 41;
+    this.wallSparkParticleRoot.blendMode = 'add';
+    this.wallSparkParticleRoot.eventMode = 'none';
     this.player.zIndex = 40;
     this.levelUpFloatText = new Text({
       text: 'LEVEL UP!',
@@ -1284,7 +1463,6 @@ export class PlayScene implements Scene {
     this.input?.smoothTouchJoystickAxis(dt, this.player.body.grounded);
     this.tickPlayerShield(dt);
     this.tickJumpBuffer(dt);
-    this.tickComboHud(dt);
     this.updateRestFloorHoldState();
 
     const pullVyCap = GRAPPLE_VERTICAL_BOOST_VY;
@@ -1393,10 +1571,7 @@ export class PlayScene implements Scene {
 
     const fascia = this.getViewportEdgeWallSlabsWorld();
     const fasciaAssistSpec =
-      fascia &&
-      !pulling &&
-      this.wallCollider.active &&
-      this.player.hasTouchedPlatformSinceLastSlide
+      fascia && !pulling && this.wallCollider.active
         ? {
             slabW: fascia.slabW,
             leftSlabLeftX: fascia.leftSlabLeftX,
@@ -1419,6 +1594,8 @@ export class PlayScene implements Scene {
             viewportFasciaAssist: fasciaAssistSpec,
             fasciaOverlapClear,
             gameTimeMs: this.runTime * 1000,
+            allowViewportFasciaElevatorLatch:
+              this.player.hasTouchedPlatformSinceLastSlide,
           }
         : { fasciaOverlapClear, gameTimeMs: this.runTime * 1000 },
     );
@@ -1427,9 +1604,26 @@ export class PlayScene implements Scene {
       this.onViewportFasciaSlideHardBreakForInfiniteSlideBypass();
     }
 
+    if (result.fasciaWallSlideLatched && fasciaAssistSpec != null) {
+      this.sparkEmitterAnalogueWallSlideStart();
+    }
+
     if (result.fasciaWallSlideLatched) {
       this.player.hasTouchedPlatformSinceLastSlide = false;
     }
+
+    /** לולאת `slide`: כל פריים כשפרצי הגחיר על קיר הפאשיה פעילים (זהה לזרימת החיכוך). */
+    const wallSlideStreamForSfx =
+      fasciaAssistSpec != null &&
+      this.shouldEmitWallSlideFasciaFrictionStream(fasciaAssistSpec);
+    if (wallSlideStreamForSfx) {
+      this.sfx.ensureWallSlideLoopPlaying();
+    } else if (this.wallSlideFasciaSfxStreamingMemo) {
+      this.sfx.endWallSlideLoop();
+    }
+    this.wallSlideFasciaSfxStreamingMemo = wallSlideStreamForSfx;
+
+    this.updateWallSparkParticles(dt, fasciaAssistSpec);
 
     if (this.superJumpStairTrackActive) {
       const postFeetY = this.player.body.y + this.player.body.height;
@@ -1479,6 +1673,27 @@ export class PlayScene implements Scene {
     } else if (!this.player.body.grounded) {
       this.currentGroundPlatform = null;
     }
+
+    /** Combo steps while riding the fascia elevator — fixed interval (see {@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC}). */
+    this.tickViewportFasciaSlideAscendingCombo(fasciaAssistSpec);
+
+    /** Air jump off viewport fascia elevator — consumes buffered jump + counts combo (can't use grounded-only takeoff). */
+    this.maybeConsumeFasciaWallSlideBufferedJumpAfterPhysics(fasciaAssistSpec, !!result.landedPlatform);
+
+    const wallElevatorKeepsComboChainClock =
+      fasciaAssistSpec != null &&
+      this.physics.isViewportWallElevatorSparkActive(this.player.body, fasciaAssistSpec);
+    /**
+     * While friction SFX fires or the physics elevator latch is active, freeze the combo chain window
+     * (covers mismatches between SFX predicates and latch).
+     */
+    if (
+      this.comboCount > 0 &&
+      (wallSlideStreamForSfx || wallElevatorKeepsComboChainClock)
+    ) {
+      this.comboLastJumpTime = this.runTime;
+    }
+    this.tickComboHud(dt);
 
     this.maybeTriggerFarSkyTextureMilestones();
 
@@ -1725,6 +1940,75 @@ export class PlayScene implements Scene {
     }
   }
 
+  /**
+   * After physics: if the jump buffer is still held and the player rides the fascia elevator, treat it
+   * as a real jump (counts toward {@link jumpCount} / combo), like a coyote jump off the wall.
+   */
+  private maybeConsumeFasciaWallSlideBufferedJumpAfterPhysics(
+    fasciaAssistSpec:
+      | {
+          slabW: number;
+          leftSlabLeftX: number;
+          rightSlabLeftX: number;
+          horizontalAxis: number;
+        }
+      | undefined,
+    landedThisFrame: boolean,
+  ): void {
+    if (
+      landedThisFrame ||
+      this.jumpBufferTimeLeft <= 0 ||
+      this.grapple ||
+      this.player.body.grounded ||
+      !fasciaAssistSpec
+    ) {
+      return;
+    }
+    if (
+      !this.physics.isViewportWallElevatorSparkActive(this.player.body, fasciaAssistSpec)
+    ) {
+      return;
+    }
+    this.maybeEndFloor0IntroCameraFreeze();
+    this.physics.jump(this.player.body);
+    this.physics.resetWallSlideSession();
+    this.player.hasTouchedPlatformSinceLastSlide = false;
+
+    let wall: 'left' | 'right' | null = this.physics.getActiveViewportWallSlideKickSide();
+    if (wall == null) {
+      const o = Physics.viewportFasciaBodyOverlapSide(this.player.body, fasciaAssistSpec);
+      if (o === 'left') {
+        wall = 'left';
+      } else if (o === 'right') {
+        wall = 'right';
+      } else if (o === 'both') {
+        const cx = this.player.body.x + this.player.body.width * 0.5;
+        const axis = fasciaAssistSpec.horizontalAxis;
+        const vw = Math.max(1, this.worldWidthFromScreen());
+        const midCam = this.cameraX + vw * 0.5;
+        wall =
+          axis < -0.08 ? 'left' : axis > 0.08 ? 'right' : cx < midCam ? 'left' : 'right';
+      }
+    }
+    const body = this.player.body;
+    if (wall === 'left') {
+      body.vx = Math.max(body.vx, FACIA_WALL_SLIDE_BUFFER_JUMP_KICK_VX);
+    } else if (wall === 'right') {
+      body.vx = Math.min(body.vx, -FACIA_WALL_SLIDE_BUFFER_JUMP_KICK_VX);
+    }
+
+    this.jumpCount += 1;
+    this.registerComboJump();
+    this.maybeIncrementPullUpJumpCounter();
+    this.player.onJump();
+    this.jumpBufferTimeLeft = 0;
+    if (this.wallSlideFasciaSfxStreamingMemo) {
+      this.sfx.endWallSlideLoop();
+    }
+    this.wallSlideFasciaSfxStreamingMemo = false;
+    this.sparkEmitterAnalogueWallSlideStop();
+  }
+
   private triggerJumpAction(fromRightSwipe = false): boolean {
     if (!this.player.body.grounded || !!this.grapple) {
       return false;
@@ -1862,6 +2146,56 @@ export class PlayScene implements Scene {
       this.comboSynth?.resume();
       this.comboSynth?.play(wordTier);
     }
+  }
+
+  /** One combo step from riding the viewport fascia elevator (paced by {@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC}). */
+  private incrementComboForViewportFasciaSlideAscend(): void {
+    this.comboCount += 1;
+    this.comboLastJumpY = this.player.body.y;
+    this.comboLastJumpTime = this.runTime;
+    if (this.comboCount >= 2) {
+      const wordTier = comboStreakToWordTier(this.comboCount);
+      this.comboBadge?.bumpTo(this.comboCount);
+      this.comboSynth?.resume();
+      this.comboSynth?.play(wordTier);
+    }
+  }
+
+  /**
+   * Awards combo on the fascia elevator at a steady time cadence ({@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC})
+   * while {@link comboCount} is positive. Clears scheduling when leaving the elevator.
+   */
+  private tickViewportFasciaSlideAscendingCombo(
+    fasciaAssistSpec:
+      | {
+          slabW: number;
+          leftSlabLeftX: number;
+          rightSlabLeftX: number;
+          horizontalAxis: number;
+        }
+      | undefined,
+  ): void {
+    const elevatorActive =
+      fasciaAssistSpec != null &&
+      this.physics.isViewportWallElevatorSparkActive(this.player.body, fasciaAssistSpec);
+
+    if (!elevatorActive || this.comboCount <= 0) {
+      this.fasciaSlideComboNextStepAtRunTime = null;
+      return;
+    }
+
+    if (this.fasciaSlideComboNextStepAtRunTime === null) {
+      /** First latch this session: eligible immediately, then spaced by the interval from each award. */
+      this.fasciaSlideComboNextStepAtRunTime = this.runTime;
+    }
+
+    if (this.runTime < this.fasciaSlideComboNextStepAtRunTime) {
+      return;
+    }
+
+    this.incrementComboForViewportFasciaSlideAscend();
+    this.fasciaSlideComboNextStepAtRunTime =
+      this.runTime + FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC;
   }
 
   /** Grounded jumps toward unlocking `SUPER JUMP` + `PULL UP`; skips while the skill pair offer is active. */
@@ -2361,6 +2695,7 @@ export class PlayScene implements Scene {
     this.megaJumpReanchorComboOnLanding = false;
     this.superJumpStairTrackActive = false;
     this.superJumpCrossedStairIds.clear();
+    this.fasciaSlideComboNextStepAtRunTime = null;
     this.comboBadge?.resetState();
     this.pullUpJumpsAccum = 0;
     this.setSkillPairAvailable(false);
@@ -2389,6 +2724,12 @@ export class PlayScene implements Scene {
     this.player.rotation = 0;
     this.windParticles = [];
     this.windSpawnAcc = 0;
+    this.sparkEmitterAnalogueWallSlideStop();
+    this.sfx.endWallSlideLoop();
+    this.wallSlideFasciaSfxStreamingMemo = false;
+    this.wallSparkSlideElevatorPhysActiveMemo = false;
+    this.wallSlideSmokeParticles = [];
+    this.wallSparkSmokeGfx.clear();
     this.jumpArcAssistTime = 0;
     this.jumpArcAssistDuration = 0;
     this.clearWallColliderRestoreTimeout();
@@ -4081,6 +4422,7 @@ export class PlayScene implements Scene {
     this.collectiblesGfx.clear();
     this.tongueVector.clear();
     this.fxLayer.clear();
+    this.wallSparkSmokeGfx.clear();
     this.updateRestFloorCloudBreathing();
 
     if (this.tongueArmature && this.tongueDbReady) {
@@ -4096,6 +4438,8 @@ export class PlayScene implements Scene {
     }
 
     this.drawWindParticles();
+    this.drawWallSlideSmokeParticles();
+    this.drawWallSparkParticles();
     this.drawBottomDeathLine();
     this.drawWorldEdgeRestWalls();
 
@@ -4358,6 +4702,9 @@ export class PlayScene implements Scene {
   /**
    * Tick combo expiry (no-jump window) + advance badge animations. Drives skill pair pulse / chain
    * window expiry and post-pull grapple buff timer.
+   *
+   * Invoked from `update()` after physics and landing so fascia wall-slide (friction/SFX predicate or
+   * physics elevator latch) can bump `comboLastJumpTime` before this frame evaluates chain expiry.
    */
   private tickComboHud(dt: number): void {
     const skillChainGrace =
@@ -4432,6 +4779,7 @@ export class PlayScene implements Scene {
       this.superJumpStairTrackActive = false;
       this.superJumpCrossedStairIds.clear();
       this.megaJumpReanchorComboOnLanding = false;
+      this.fasciaSlideComboNextStepAtRunTime = null;
       return;
     }
     this.comboCount = 0;
@@ -4439,6 +4787,7 @@ export class PlayScene implements Scene {
     this.megaJumpReanchorComboOnLanding = false;
     this.superJumpStairTrackActive = false;
     this.superJumpCrossedStairIds.clear();
+    this.fasciaSlideComboNextStepAtRunTime = null;
     this.comboBadge?.expire();
   }
 
@@ -6580,6 +6929,8 @@ export class PlayScene implements Scene {
     this.pauseOverlay.visible = true;
     this.layoutPauseOverlay();
     this.bgm?.pause();
+    this.sfx.endWallSlideLoop();
+    this.wallSlideFasciaSfxStreamingMemo = false;
   }
 
   private resumeFromPause(): void {
@@ -6724,6 +7075,8 @@ export class PlayScene implements Scene {
       return;
     }
     this.gameOver = true;
+    this.sfx.endWallSlideLoop();
+    this.wallSlideFasciaSfxStreamingMemo = false;
     this.peakComboThisRun = Math.max(this.peakComboThisRun, this.comboCount);
     this.speedTierUiFlashTime = 0;
     this.speedPulseGfx.visible = false;
@@ -7017,6 +7370,26 @@ export class PlayScene implements Scene {
     this.deathZoneFallback.rect(x, orangeTop, w, stripH).fill({ color: 0xffa621, alpha: 0.95 });
   }
 
+  /** Load fascia chain art (`chain 1` left, `chain 2` right); on failure procedural walls stay in use. */
+  private async loadViewportFasciaBoneTextures(): Promise<void> {
+    try {
+      const [texLeft, texRight] = await Promise.all([
+        Assets.load(WORLD_EDGE_WALL_BONE_LEFT_URL),
+        Assets.load(WORLD_EDGE_WALL_BONE_RIGHT_URL),
+      ]);
+      this.viewportFasciaBoneTexLeft = texLeft as Texture;
+      this.viewportFasciaBoneTexRight = texRight as Texture;
+    } catch {
+      this.viewportFasciaBoneTexLeft = undefined;
+      this.viewportFasciaBoneTexRight = undefined;
+      console.warn(
+        '[PlayScene] Fascia chain textures missing — viewport walls use procedural fill:',
+        WORLD_EDGE_WALL_BONE_LEFT_URL,
+        WORLD_EDGE_WALL_BONE_RIGHT_URL,
+      );
+    }
+  }
+
   /** Load death-line image ({@link DEATH_LINE_IMAGE_URL}); on failure keep vector {@link deathZoneFallback}. */
   private async loadDeathZoneStrip(): Promise<void> {
     this.deathZoneFallback.visible = true;
@@ -7118,6 +7491,307 @@ export class PlayScene implements Scene {
         color: 0x5a8cbb,
         alpha,
       });
+    }
+  }
+
+  private ensureWallSparkHeavyTexture(): Texture {
+    if (!this.wallSparkHeavySparkTex) {
+      this.wallSparkHeavySparkTex = createWallSparkSharpDotTexture();
+    }
+    return this.wallSparkHeavySparkTex;
+  }
+
+  private acquireWallSparkSprite(): Sprite | null {
+    const tex = this.ensureWallSparkHeavyTexture();
+    if (this.wallSparkSpritePool.length > 0) {
+      const s = this.wallSparkSpritePool.pop()!;
+      s.visible = true;
+      return s;
+    }
+    if (this.wallSparkParticleRoot.children.length >= WALL_SPARK_MAX_PARTICLES) {
+      return null;
+    }
+    const s = new Sprite(tex);
+    s.anchor.set(0.5);
+    this.wallSparkParticleRoot.addChild(s);
+    s.visible = true;
+    return s;
+  }
+
+  private recycleWallSparkSprite(s: Sprite): void {
+    s.visible = false;
+    this.wallSparkSpritePool.push(s);
+  }
+
+  private recycleAllWallSparkFxSprites(): void {
+    for (const p of this.wallSparkParticles) {
+      this.recycleWallSparkSprite(p.sprite);
+    }
+    this.wallSparkParticles = [];
+  }
+
+  /**
+   * Same frame as fascia latch (`Physics` sets `isSliding`): queues ignite debt flushed immediately inside
+   * {@link updateWallSparkParticles}, mirroring `{@link Emitter.start}`.
+   */
+  private sparkEmitterAnalogueWallSlideStart(): void {
+    this.wallSparkSlideLatchIgniteDebt += WALL_SPARK_LATCH_TOUCH_DEBT;
+  }
+
+  /** Hard stop slide spark stream — analogue `{@link Emitter.stop}` when overlap ends or cutoff fires. */
+  private sparkEmitterAnalogueWallSlideStop(): void {
+    this.recycleAllWallSparkFxSprites();
+    this.wallSparkSlideSpawnAccumulator = 0;
+    this.wallSparkSlideLatchIgniteDebt = 0;
+  }
+
+  /**
+   * Narrow cone slightly away from fascia, then gravity pulls sparks down (+Y).
+   */
+  private wallSparkBurstVelocity(wall: 'left' | 'right', speed: number): { vx: number; vy: number } {
+    const rad = Math.PI / 180;
+    if (wall === 'left') {
+      const angleDeg = -28 + Math.random() * 56;
+      const a = angleDeg * rad;
+      return { vx: Math.cos(a) * speed, vy: Math.sin(a) * speed };
+    }
+    const angleDeg = 152 + Math.random() * 56;
+    const a = angleDeg * rad;
+    return { vx: Math.cos(a) * speed, vy: Math.sin(a) * speed };
+  }
+
+  /** True while fascia wall friction stream should render + loop SFX (mid-air fascia brush / elevator). */
+  private shouldEmitWallSlideFasciaFrictionStream(
+    fasciaAssistSpec:
+      | {
+          slabW: number;
+          leftSlabLeftX: number;
+          rightSlabLeftX: number;
+          horizontalAxis: number;
+        }
+      | undefined,
+  ): boolean {
+    const body = this.player.body;
+    const spec = fasciaAssistSpec;
+    if (!spec || body.grounded) {
+      return false;
+    }
+    const fascialOverlap = Physics.viewportFasciaHasSlabOverlap(body, spec);
+    const fasciaAssistFriction = Physics.viewportFasciaAssistWantsAssist(body, spec);
+    const elevatorSparksPhys = this.physics.isViewportWallElevatorSparkActive(body, spec);
+    return fascialOverlap && (elevatorSparksPhys || fasciaAssistFriction);
+  }
+
+  private updateWallSparkParticles(
+    dt: number,
+    fasciaAssistSpec:
+      | {
+          slabW: number;
+          leftSlabLeftX: number;
+          rightSlabLeftX: number;
+          horizontalAxis: number;
+        }
+      | undefined,
+  ): void {
+    const body = this.player.body;
+    const spec = fasciaAssistSpec;
+    const emitElevatorSparkStream = this.shouldEmitWallSlideFasciaFrictionStream(spec);
+
+    // Analogue ParticleEmitter.stop() — instant cutoff on detach, 750 ms expiry, fascia clear, hard break…
+    if (!emitElevatorSparkStream && this.wallSparkSlideElevatorPhysActiveMemo) {
+      this.sparkEmitterAnalogueWallSlideStop();
+    }
+
+    if (emitElevatorSparkStream && spec) {
+      // Emitter anchor / spawn seam follows physics player body (`body.x`,`body.y`), not Pixi `{@link Player}.x`.
+
+      const side = Physics.viewportFasciaBodyOverlapSide(body, spec);
+      const innerLeftX = spec.leftSlabLeftX + spec.slabW;
+      const innerRightX = spec.rightSlabLeftX;
+
+      if (this.wallSparkSlideLatchIgniteDebt > 0) {
+        this.wallSparkSlideSpawnAccumulator += this.wallSparkSlideLatchIgniteDebt;
+        this.wallSparkSlideLatchIgniteDebt = 0;
+      }
+      this.wallSparkSlideSpawnAccumulator += WALL_SPARK_SPAWN_PER_SEC * dt;
+
+      while (
+        this.wallSparkSlideSpawnAccumulator >= 1 &&
+        this.wallSparkParticles.length < WALL_SPARK_MAX_PARTICLES
+      ) {
+        this.wallSparkSlideSpawnAccumulator -= 1;
+
+        const wall: 'left' | 'right' | null =
+          side === 'both'
+            ? Math.random() < 0.5
+              ? 'left'
+              : 'right'
+            : side === 'left'
+              ? 'left'
+              : side === 'right'
+                ? 'right'
+                : null;
+        if (!wall) {
+          break;
+        }
+        const sprite = this.acquireWallSparkSprite();
+        if (!sprite) {
+          break;
+        }
+        const speed = 200 + Math.random() * 200;
+        const ty =
+          body.y + body.height * (0.28 + Math.random() * (0.72 - 0.28));
+        const life = 0.1 + Math.random() * 0.15;
+        const tint =
+          WALL_SPARK_TINT_PALETTE[
+            (Math.random() * WALL_SPARK_TINT_PALETTE.length) | 0
+          ];
+        sprite.tint = tint;
+        sprite.alpha = 1;
+        sprite.scale.set(WALL_SPARK_SCALE_START);
+        const burst = this.wallSparkBurstVelocity(wall, speed);
+        let px: number;
+        if (wall === 'left') {
+          px = (body.x + innerLeftX) * 0.5 + (Math.random() - 0.5) * 1.8;
+        } else {
+          px =
+            (body.x + body.width + innerRightX) * 0.5 +
+            (Math.random() - 0.5) * 1.8;
+        }
+        const py = ty + (Math.random() - 0.5) * 8;
+        this.wallSparkParticles.push({
+          x: px,
+          y: py,
+          vx: burst.vx,
+          vy: burst.vy,
+          age: 0,
+          life,
+          tint,
+          sprite,
+        });
+      }
+
+      let smokeBudget = Math.ceil(WALL_SLIDE_SMOKE_SPAWN_PER_SEC * dt);
+      smokeBudget = Math.max(0, smokeBudget);
+      while (
+        smokeBudget > 0 &&
+        this.wallSlideSmokeParticles.length < WALL_SLIDE_SMOKE_MAX_PARTICLES
+      ) {
+        const wall: 'left' | 'right' | null =
+          side === 'both'
+            ? Math.random() < 0.5
+              ? 'left'
+              : 'right'
+            : side === 'left'
+              ? 'left'
+              : side === 'right'
+                ? 'right'
+                : null;
+        if (!wall) {
+          break;
+        }
+        const ty =
+          body.y + body.height * (0.24 + Math.random() * (0.76 - 0.24));
+        let px: number;
+        let vx: number;
+        const outward = 22 + Math.random() * 48;
+        const vy = -(42 + Math.random() * 72);
+        const grayRoll = Math.random();
+        const color =
+          grayRoll < 0.42
+            ? 0x7a7268
+            : grayRoll < 0.78
+              ? 0x8f4e28
+              : 0x5a3820;
+        if (wall === 'left') {
+          px = (body.x + innerLeftX) * 0.5 + (Math.random() - 0.5) * 6;
+          vx = outward + (Math.random() - 0.5) * 18;
+        } else {
+          px =
+            (body.x + body.width + innerRightX) * 0.5 +
+            (Math.random() - 0.5) * 6;
+          vx = -outward + (Math.random() - 0.5) * 18;
+        }
+        const py = ty + (Math.random() - 0.5) * 18;
+        this.wallSlideSmokeParticles.push({
+          x: px,
+          y: py,
+          vx,
+          vy,
+          age: 0,
+          life: 0.72 + Math.random() * 0.55,
+          radius: 10 + Math.random() * 16,
+          color,
+        });
+        smokeBudget -= 1;
+      }
+    }
+
+    this.wallSparkSlideElevatorPhysActiveMemo = emitElevatorSparkStream;
+
+    const grav = WALL_SPARK_GRAVITY_Y;
+    const sparkDrag = Math.pow(0.992, dt * 60);
+    this.wallSparkParticles = this.wallSparkParticles.filter((p) => {
+      p.age += dt;
+      if (p.age >= p.life) {
+        this.recycleWallSparkSprite(p.sprite);
+        return false;
+      }
+      p.vy += grav * dt;
+      p.vx *= sparkDrag;
+      p.vy *= sparkDrag;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      return true;
+    });
+
+    const smokeGrav = 155;
+    const smokeDrag = Math.pow(0.987, dt * 60);
+    this.wallSlideSmokeParticles = this.wallSlideSmokeParticles.filter((p) => {
+      p.age += dt;
+      if (p.age >= p.life) {
+        return false;
+      }
+      p.vy += smokeGrav * dt;
+      p.vx *= smokeDrag;
+      p.vy *= smokeDrag;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      return true;
+    });
+  }
+
+  private drawWallSlideSmokeParticles(): void {
+    const gfx = this.wallSparkSmokeGfx;
+    for (const p of this.wallSlideSmokeParticles) {
+      const u = Math.min(1, p.age / p.life);
+      const alphaStart = 0.3;
+      const alpha = alphaStart * (1 - u);
+      if (alpha < 0.012) {
+        continue;
+      }
+      const spread = 1 + u * 2.35;
+      const r = Math.max(2.8, p.radius * spread);
+      gfx.circle(p.x, p.y, r).fill({ color: p.color, alpha });
+      gfx.circle(p.x + r * 0.22, p.y - r * 0.18, r * 0.55).fill({
+        color: 0x4a433c,
+        alpha: alpha * 0.45,
+      });
+    }
+  }
+
+  private drawWallSparkParticles(): void {
+    for (const p of this.wallSparkParticles) {
+      const u = Math.min(1, p.age / p.life);
+      const scaleMul =
+        WALL_SPARK_SCALE_START + (WALL_SPARK_SCALE_END - WALL_SPARK_SCALE_START) * u;
+      const s = p.sprite;
+      s.position.set(p.x, p.y);
+      const sc = Math.max(0.001, scaleMul);
+      s.scale.set(sc);
+      s.tint = p.tint;
+      s.alpha = 1;
+      s.visible = scaleMul > 0.015;
     }
   }
 
@@ -7844,12 +8518,59 @@ export class PlayScene implements Scene {
     return points;
   }
 
+  private hideViewportFasciaBoneTiles(): void {
+    if (this.viewportFasciaBoneTileLeft) {
+      this.viewportFasciaBoneTileLeft.visible = false;
+    }
+    if (this.viewportFasciaBoneTileRight) {
+      this.viewportFasciaBoneTileRight.visible = false;
+    }
+  }
+
+  /** טקסטורת השרשרת: קנה גדול יותר + נעילת שלב טיל מאפסת סדקים אנכיים ({@link WORLD_EDGE_BONE_TILE_SCALE_MUL}). */
+  private syncViewportFasciaBoneStripTile(
+    tile: TilingSprite | null,
+    tex: Texture,
+    x: number,
+    yTop: number,
+    slabW: number,
+    stripH: number,
+  ): TilingSprite {
+    let t = tile;
+    if (!t) {
+      t = new TilingSprite({ texture: tex, width: slabW, height: stripH });
+      t.anchor.set(0, 0);
+      t.roundPixels = true;
+      t.eventMode = 'none';
+      this.viewportFasciaBoneLayer.addChild(t);
+    } else if (t.texture !== tex) {
+      t.texture = tex;
+    }
+    t.visible = true;
+    const wPx = Math.max(12, slabW);
+    const hPx = Math.max(1, Math.ceil(stripH));
+    t.position.set(Math.floor(x), Math.floor(yTop));
+    t.width = wPx;
+    t.height = hPx;
+    const tw = Math.max(1e-6, tex.source.width);
+    const th = Math.max(1e-6, tex.source.height);
+    const baseScale = wPx / tw;
+    const s = baseScale * WORLD_EDGE_BONE_TILE_SCALE_MUL;
+    const period = th * s;
+    t.tileScale.set(s, s);
+    const ty = ((-yTop % period) + period) % period;
+    t.tilePosition.set(0, -ty);
+    return t;
+  }
+
   /**
-   * Twin vertical fascia — rest-floor palette, viewport-pinned. Same X extents as fascia physics + viewport clamp.
+   * Twin vertical fascia — same X extents as fascia physics + viewport clamp.
+   * Uses `chain 1.png` left / `chain 2.png` right when loaded; tiles vertically inside each slab column.
    */
   private drawWorldEdgeRestWalls(): void {
     const fascia = this.getViewportEdgeWallSlabsWorld();
     if (!fascia) {
+      this.hideViewportFasciaBoneTiles();
       return;
     }
     const w = fascia.slabW;
@@ -7859,6 +8580,43 @@ export class PlayScene implements Scene {
     const verticalPad = 4200;
     const yTop = this.cameraY - verticalPad;
     const stripH = verticalPad * 2 + Math.max(this.worldHeightFromScreen(), 1);
+
+    const tl = this.viewportFasciaBoneTexLeft;
+    const tr = this.viewportFasciaBoneTexRight;
+    const bonesReady = !!(tl && tr);
+
+    if (bonesReady && tl && tr) {
+      this.viewportFasciaBoneTileLeft = this.syncViewportFasciaBoneStripTile(
+        this.viewportFasciaBoneTileLeft,
+        tl,
+        leftX,
+        yTop,
+        w,
+        stripH,
+      );
+      this.viewportFasciaBoneTileRight = this.syncViewportFasciaBoneStripTile(
+        this.viewportFasciaBoneTileRight,
+        tr,
+        rightX,
+        yTop,
+        w,
+        stripH,
+      );
+    } else {
+      this.hideViewportFasciaBoneTiles();
+      this.drawViewportFasciaWallsProcedural(fascia, yTop, stripH);
+    }
+  }
+
+  /** Vector fascia (when chain PNGs are unavailable). */
+  private drawViewportFasciaWallsProcedural(
+    fascia: { slabW: number; leftSlabLeftX: number; rightSlabLeftX: number },
+    yTop: number,
+    stripH: number,
+  ): void {
+    const w = fascia.slabW;
+    const leftX = fascia.leftSlabLeftX;
+    const rightX = fascia.rightSlabLeftX;
 
     const baseFill = 0x1a1630;
     const trim = 0xb8f7ff;
