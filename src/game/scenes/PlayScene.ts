@@ -428,6 +428,8 @@ const TONGUE_DB_BASE_SCALE = 1;
  * HTMLAudio-based SFX with pooled `cloneNode` playback and local → remote fallback URLs.
  */
 class PlaySceneSfx {
+  constructor(private readonly isSlidePhaseActive: () => boolean) {}
+
   private readonly prototypes = new Map<SfxId, HTMLAudioElement>();
   private master = 0.42;
   /** Dedicated loop clip — analogous to Phaser `sound.add('slide', { loop: true, volume: 0.5 })`. */
@@ -513,6 +515,9 @@ class PlaySceneSfx {
    * Call every frame while sliding — retries `play()` after autoplay blocks and keeps volume current.
    */
   ensureWallSlideLoopPlaying(): void {
+    if (!this.isSlidePhaseActive()) {
+      return;
+    }
     if (this.wallSlideLoop == null) {
       this.initWallSlideLoopFromPrototype();
     }
@@ -698,6 +703,8 @@ const REST_FLOOR_TILE_PX = 64;
  * Same geometry drives {@link drawWorldEdgeRestWalls}, {@link clampPlayerToCameraViewport}, and fascia assist in {@link Physics}.
  */
 const WORLD_EDGE_REST_WALL_PX = Math.round(REST_FLOOR_TILE_PX * 1.25);
+/** Vertical cushion (world px) added above/below the viewport when fascia strips are tiled/drawn. */
+const WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX = 4200;
 /**
  * Shift both fascia slab **left edges** toward playfield center (world px). Left strip moves +X, right strip −X;
  * clamps/physics/overlap follow {@link getViewportEdgeWallSlabsWorld}.
@@ -774,7 +781,7 @@ const JUMP_BUFFER_SEC = 0.1;
  *     adds another combo step ({@link applySuperJumpAscendingStairCombo}); landing re-syncs the climb
  *     anchor (`comboLastJumpY`) so the next grounded jump chains normally.
  *   - Viewport fascia wall-slide elevator: while a chain is active, combo steps tick at a fixed cadence
- *     ({@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC}, {@link tickViewportFasciaSlideAscendingCombo}).
+ *     ({@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC}, same slide predicate as friction SFX in {@link shouldEmitWallSlideFasciaFrictionStream}).
  */
 const COMBO_CHAIN_WINDOW_SEC = 5;
 const COMBO_MIN_CLIMB_PX = 6;
@@ -952,6 +959,11 @@ export class PlayScene implements Scene {
   private viewportFasciaBoneTexRight?: Texture;
   private viewportFasciaBoneTileLeft: TilingSprite | null = null;
   private viewportFasciaBoneTileRight: TilingSprite | null = null;
+  /**
+   * When {@link isSlidePhase} is false: chain/brick fascia uses this world-Y top reference for tiling/stripes only
+   * so vertical banding does not drift with camera scroll. Reset on {@link resetRun}; resynced when leaving slide phase.
+   */
+  private fasciaRestWallStripePhaseAnchorWorldYTop = 0;
   /** Wall-slide friction smoke — normal blend, sits under additive sparks. */
   private wallSparkSmokeGfx = new Graphics();
   /**
@@ -1163,7 +1175,13 @@ export class PlayScene implements Scene {
   private hudDiamondShown = 0;
   /** 1 = full collectible HUD punch, decays each frame. */
   private collectibleHudBump = 0;
-  private sfx = new PlaySceneSfx();
+  /**
+   * Updated at end of each {@link update} from the same integer climb “m” as the scoreboard HUD
+   * (`heightMeters` → {@link HyperScoreboard.update}), so bands match what is displayed. Fascia /
+   * {@link Physics} read this on the following frame after it is updated.
+   */
+  isSlidePhase = false;
+  private sfx = new PlaySceneSfx(() => this.isSlidePhase);
   private platformTexture?: Texture;
   private platformTextureSlime?: Texture;
   private platformTextureVolcano?: Texture;
@@ -1571,7 +1589,7 @@ export class PlayScene implements Scene {
 
     const fascia = this.getViewportEdgeWallSlabsWorld();
     const fasciaAssistSpec =
-      fascia && !pulling && this.wallCollider.active
+      this.isSlidePhase && fascia && !pulling && this.wallCollider.active
         ? {
             slabW: fascia.slabW,
             leftSlabLeftX: fascia.leftSlabLeftX,
@@ -1600,20 +1618,25 @@ export class PlayScene implements Scene {
         : { fasciaOverlapClear, gameTimeMs: this.runTime * 1000 },
     );
 
-    if (result.fasciaSlideHardBreak) {
+    if (this.isSlidePhase && result.fasciaSlideHardBreak) {
       this.onViewportFasciaSlideHardBreakForInfiniteSlideBypass();
     }
 
-    if (result.fasciaWallSlideLatched && fasciaAssistSpec != null) {
+    if (
+      this.isSlidePhase &&
+      result.fasciaWallSlideLatched &&
+      fasciaAssistSpec != null
+    ) {
       this.sparkEmitterAnalogueWallSlideStart();
     }
 
-    if (result.fasciaWallSlideLatched) {
+    if (this.isSlidePhase && result.fasciaWallSlideLatched) {
       this.player.hasTouchedPlatformSinceLastSlide = false;
     }
 
     /** לולאת `slide`: כל פריים כשפרצי הגחיר על קיר הפאשיה פעילים (זהה לזרימת החיכוך). */
     const wallSlideStreamForSfx =
+      this.isSlidePhase &&
       fasciaAssistSpec != null &&
       this.shouldEmitWallSlideFasciaFrictionStream(fasciaAssistSpec);
     if (wallSlideStreamForSfx) {
@@ -1636,6 +1659,7 @@ export class PlayScene implements Scene {
           postFeetY,
           preBodyX,
           postBodyX,
+          fasciaAssistSpec,
         );
       }
     }
@@ -1674,13 +1698,14 @@ export class PlayScene implements Scene {
       this.currentGroundPlatform = null;
     }
 
-    /** Combo steps while riding the fascia elevator — fixed interval (see {@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC}). */
-    this.tickViewportFasciaSlideAscendingCombo(fasciaAssistSpec);
-
-    /** Air jump off viewport fascia elevator — consumes buffered jump + counts combo (can't use grounded-only takeoff). */
+    /** Air jump off fascia before interval tick — avoids paying both {@link incrementComboForViewportFasciaSlideAscend} and {@link registerComboJump} same frame */
     this.maybeConsumeFasciaWallSlideBufferedJumpAfterPhysics(fasciaAssistSpec, !!result.landedPlatform);
 
+    /** Combo steps during wall-slide friction stream — fixed cadence ({@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC}). */
+    this.tickViewportFasciaSlideAscendingCombo(fasciaAssistSpec);
+
     const wallElevatorKeepsComboChainClock =
+      this.isSlidePhase &&
       fasciaAssistSpec != null &&
       this.physics.isViewportWallElevatorSparkActive(this.player.body, fasciaAssistSpec);
     /**
@@ -1688,6 +1713,7 @@ export class PlayScene implements Scene {
      * (covers mismatches between SFX predicates and latch).
      */
     if (
+      this.isSlidePhase &&
       this.comboCount > 0 &&
       (wallSlideStreamForSfx || wallElevatorKeepsComboChainClock)
     ) {
@@ -1739,8 +1765,16 @@ export class PlayScene implements Scene {
     this.updateScreenShake(dt);
     this.recomputeDerivedTotalScore();
     this.updateLevelProgress();
-    const heightMeters = Math.max(0, Math.floor(this.getHudClimbMeters()), Math.floor(this.getBestLandedClimbMeters()));
-    this.scoreboard?.update(dt, this.score, this.jumpCount, heightMeters, this.runTime, this.level);
+    const visualDistance = this.getHudScoreboardDisplayMeters();
+    const cycleProgress = Math.floor(visualDistance) % 5000;
+    const slidePhaseNext = cycleProgress >= 4000 && cycleProgress < 5000;
+    if (this.isSlidePhase && !slidePhaseNext) {
+      this.fasciaRestWallStripePhaseAnchorWorldYTop =
+        this.cameraY - WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX;
+    }
+    this.isSlidePhase = slidePhaseNext;
+    console.log('Current Progress:', cycleProgress, 'Slide Active:', this.isSlidePhase);
+    this.scoreboard?.update(dt, this.score, this.jumpCount, visualDistance, this.runTime, this.level);
     this.syncCollectibleHudPosition();
 
     const time = this.photoroomOscTimeMs;
@@ -1956,6 +1990,7 @@ export class PlayScene implements Scene {
     landedThisFrame: boolean,
   ): void {
     if (
+      !this.isSlidePhase ||
       landedThisFrame ||
       this.jumpBufferTimeLeft <= 0 ||
       this.grapple ||
@@ -2109,7 +2144,27 @@ export class PlayScene implements Scene {
     currFeetY: number,
     prevBodyX: number,
     currBodyX: number,
+    fasciaAssistSpec:
+      | {
+          slabW: number;
+          leftSlabLeftX: number;
+          rightSlabLeftX: number;
+          horizontalAxis: number;
+        }
+      | undefined,
   ): void {
+    /**
+     * While the fascia wall-slide friction stream is active ({@link shouldEmitWallSlideFasciaFrictionStream}),
+     * ascent is mechanically coupled to that surface — awarding both stair-plane steps and timed slide combo
+     * double-pays each moment. Omit stair-plane awards until friction stream ends (free mega arc elsewhere unchanged).
+     */
+    if (
+      this.isSlidePhase &&
+      fasciaAssistSpec != null &&
+      this.shouldEmitWallSlideFasciaFrictionStream(fasciaAssistSpec)
+    ) {
+      return;
+    }
     if (currFeetY >= prevFeetY) {
       return;
     }
@@ -2162,8 +2217,8 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Awards combo on the fascia elevator at a steady time cadence ({@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC})
-   * while {@link comboCount} is positive. Clears scheduling when leaving the elevator.
+   * Awards combo during fascia wall-slide at a steady cadence ({@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC}).
+   * Active when {@link shouldEmitWallSlideFasciaFrictionStream} is true (same notion as slide SFX / sparks), not only physics `isSliding`.
    */
   private tickViewportFasciaSlideAscendingCombo(
     fasciaAssistSpec:
@@ -2175,11 +2230,16 @@ export class PlayScene implements Scene {
         }
       | undefined,
   ): void {
-    const elevatorActive =
+    if (!this.isSlidePhase) {
+      this.fasciaSlideComboNextStepAtRunTime = null;
+      return;
+    }
+    /** Match slide SFX / sparks: latch elevator **or** fascia assist friction with overlap (`isSliding` alone is too narrow). */
+    const slideCountsCombo =
       fasciaAssistSpec != null &&
-      this.physics.isViewportWallElevatorSparkActive(this.player.body, fasciaAssistSpec);
+      this.shouldEmitWallSlideFasciaFrictionStream(fasciaAssistSpec);
 
-    if (!elevatorActive || this.comboCount <= 0) {
+    if (!slideCountsCombo || this.comboCount <= 0) {
       this.fasciaSlideComboNextStepAtRunTime = null;
       return;
     }
@@ -2486,6 +2546,9 @@ export class PlayScene implements Scene {
    * Mirrors “disable overlap” for {@link PHYSICS.wallSlideCooldownMs} to stop immediate re-latch after a max-duration slide.
    */
   private onViewportFasciaSlideHardBreakForInfiniteSlideBypass(): void {
+    if (!this.isSlidePhase) {
+      return;
+    }
     this.wallCollider.active = false;
     this.player.body.vy = PHYSICS.wallSlideCutoffDropVy;
     this.clearWallColliderRestoreTimeout();
@@ -2751,6 +2814,8 @@ export class PlayScene implements Scene {
     this.snapCameraToPlayer();
     this.centerStairZeroUnderCamera();
     this.snapPlayerOntoStairZero();
+    this.fasciaRestWallStripePhaseAnchorWorldYTop =
+      this.cameraY - WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX;
     this.climbBaselineY = this.player.body.y;
     console.log(
       `1000m Rest Floor Y: ${this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS).toFixed(2)}`,
@@ -4288,6 +4353,14 @@ export class PlayScene implements Scene {
   /** Pixels climbed upward from this run’s spawn baseline (`player.y` decreases when going up). */
   private getClimbHeightPx(): number {
     return Math.max(0, this.climbBaselineY - this.player.body.y);
+  }
+
+  /**
+   * Integer climb meters shown on the scoreboard — **identical** to the `heightMeters` passed into
+   * `scoreboard.update` each frame (not body Y / pixels).
+   */
+  private getHudScoreboardDisplayMeters(): number {
+    return Math.max(0, Math.floor(this.getHudClimbMeters()), Math.floor(this.getBestLandedClimbMeters()));
   }
 
   /** Same climb units as HUD “m” (approx). */
@@ -7535,6 +7608,9 @@ export class PlayScene implements Scene {
    * {@link updateWallSparkParticles}, mirroring `{@link Emitter.start}`.
    */
   private sparkEmitterAnalogueWallSlideStart(): void {
+    if (!this.isSlidePhase) {
+      return;
+    }
     this.wallSparkSlideLatchIgniteDebt += WALL_SPARK_LATCH_TOUCH_DEBT;
   }
 
@@ -7571,6 +7647,9 @@ export class PlayScene implements Scene {
         }
       | undefined,
   ): boolean {
+    if (!this.isSlidePhase) {
+      return false;
+    }
     const body = this.player.body;
     const spec = fasciaAssistSpec;
     if (!spec || body.grounded) {
@@ -7593,6 +7672,12 @@ export class PlayScene implements Scene {
         }
       | undefined,
   ): void {
+    if (!this.isSlidePhase) {
+      this.sparkEmitterAnalogueWallSlideStop();
+      this.wallSlideSmokeParticles = [];
+      this.wallSparkSlideElevatorPhysActiveMemo = false;
+      return;
+    }
     const body = this.player.body;
     const spec = fasciaAssistSpec;
     const emitElevatorSparkStream = this.shouldEmitWallSlideFasciaFrictionStream(spec);
@@ -7762,6 +7847,9 @@ export class PlayScene implements Scene {
   }
 
   private drawWallSlideSmokeParticles(): void {
+    if (!this.isSlidePhase) {
+      return;
+    }
     const gfx = this.wallSparkSmokeGfx;
     for (const p of this.wallSlideSmokeParticles) {
       const u = Math.min(1, p.age / p.life);
@@ -7781,6 +7869,9 @@ export class PlayScene implements Scene {
   }
 
   private drawWallSparkParticles(): void {
+    if (!this.isSlidePhase) {
+      return;
+    }
     for (const p of this.wallSparkParticles) {
       const u = Math.min(1, p.age / p.life);
       const scaleMul =
@@ -8558,13 +8649,16 @@ export class PlayScene implements Scene {
     const s = baseScale * WORLD_EDGE_BONE_TILE_SCALE_MUL;
     const period = th * s;
     t.tileScale.set(s, s);
-    const ty = ((-yTop % period) + period) % period;
+    const stripePhaseYTop =
+      !this.isSlidePhase ? this.fasciaRestWallStripePhaseAnchorWorldYTop : yTop;
+    const ty = ((-stripePhaseYTop % period) + period) % period;
     t.tilePosition.set(0, -ty);
     return t;
   }
 
   /**
    * Twin vertical fascia — same X extents as fascia physics + viewport clamp.
+   * Vertical chain/brick stripe phase scrolls only while {@link isSlidePhase}: otherwise it stays keyed to a fixed world anchor (rest phase).
    * Uses `chain 1.png` left / `chain 2.png` right when loaded; tiles vertically inside each slab column.
    */
   private drawWorldEdgeRestWalls(): void {
@@ -8577,7 +8671,7 @@ export class PlayScene implements Scene {
     const leftX = fascia.leftSlabLeftX;
     const rightX = fascia.rightSlabLeftX;
 
-    const verticalPad = 4200;
+    const verticalPad = WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX;
     const yTop = this.cameraY - verticalPad;
     const stripH = verticalPad * 2 + Math.max(this.worldHeightFromScreen(), 1);
 
@@ -8618,6 +8712,9 @@ export class PlayScene implements Scene {
     const leftX = fascia.leftSlabLeftX;
     const rightX = fascia.rightSlabLeftX;
 
+    /** Match chain tiling: procedural brick phase scrolls only during {@link isSlidePhase}. */
+    const stripeAnchorWorldY = !this.isSlidePhase ? this.fasciaRestWallStripePhaseAnchorWorldYTop : yTop;
+
     const baseFill = 0x1a1630;
     const trim = 0xb8f7ff;
     const rim = 0xc8ffff;
@@ -8637,9 +8734,11 @@ export class PlayScene implements Scene {
 
     const bandH = Math.max(8, REST_FLOOR_TILE_PX * 0.32);
     const bandStripe = (x: number): void => {
-      for (let y = yTop, i = 0; y < yTop + stripH - 1; y += bandH, i += 1) {
+      for (let y = yTop; y < yTop + stripH - 1; y += bandH) {
         const h = Math.min(bandH, yTop + stripH - y);
-        const c = i % 2 === 0 ? brickA : brickB;
+        const patternRow = Math.floor((y - stripeAnchorWorldY) / bandH);
+        const parity = ((patternRow % 2) + 2) % 2;
+        const c = parity === 0 ? brickA : brickB;
         this.platformLayer.rect(x, y, w, h).fill({ color: c, alpha: 1 });
       }
     };
