@@ -1861,7 +1861,6 @@ export class PlayScene implements Scene {
         this.cameraY - WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX;
     }
     this.isSlidePhase = slidePhaseNext;
-    console.log('Current Progress:', cycleProgress, 'Slide Active:', this.isSlidePhase);
     this.scoreboard?.update(dt, this.score, this.jumpCount, visualDistance, this.runTime, this.level);
     this.syncCollectibleHudPosition();
 
