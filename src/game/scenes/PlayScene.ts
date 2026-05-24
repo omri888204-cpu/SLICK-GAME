@@ -2582,14 +2582,37 @@ export class PlayScene implements Scene {
       worldWidthFromScreen: this.worldWidthFromScreen(),
       poolCount: STAIRS.poolCount,
     });
-    this.platforms = this.platformSystem.createPlatformsLoop({
-      baseY: seed.baseY,
-      layoutCamX: seed.layoutCamX,
-      worldWidthFromScreen: this.worldWidthFromScreen(),
-      poolCount: STAIRS.poolCount,
-      platformHeight: STAIRS.platformHeight,
-      uniformBaseWidth: PLATFORM_SIZING.uniformBaseWidth,
-    });
+    const baseY = seed.baseY;
+    let y = baseY;
+    const layoutCamX = seed.layoutCamX;
+
+    for (let index = 0; index < STAIRS.poolCount; index += 1) {
+      const baseWidth = PLATFORM_SIZING.uniformBaseWidth;
+      const platform: Platform = {
+        x: 0,
+        y,
+        width: 0,
+        height: STAIRS.platformHeight,
+        baseWidth,
+        driftDir: Math.random() < 0.5 ? -1 : 1,
+        driftVx: 0,
+        stairId: index,
+        kind: index === 0 ? 'spawn' : 'normal',
+      };
+      this.applyResponsivePlatformWidth(platform);
+      if (index === 0) {
+        /** Wide Floor 0 deck — span comes from {@link getFloorZeroSpawnPlatformBounds}; skip narrow stair centering. */
+        if (platform.kind !== 'spawn') {
+          const ideal = layoutCamX + this.worldWidthFromScreen() * 0.5 - platform.width * 0.5;
+          const { minX, maxX } = this.getPlatformSpawnHorizontalRange(platform.width, layoutCamX);
+          platform.x = Math.max(minX, Math.min(ideal, maxX));
+        }
+      } else {
+        platform.x = this.computePlatformSpawnX(index, platform.width, layoutCamX);
+      }
+      this.platforms.push(platform);
+      y -= this.computeStairGapPx(index);
+    }
 
     this.nextStairId = seed.nextStairId;
     this.createPlatformSprites();
@@ -10768,4 +10791,5 @@ export class PlayScene implements Scene {
     return this.width <= 430 ? MOBILE_CAMERA_ZOOM : CAMERA_ZOOM;
   }
 }
+
 
