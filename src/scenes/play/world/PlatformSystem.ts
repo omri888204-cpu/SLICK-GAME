@@ -1,5 +1,6 @@
 import type { Texture } from 'pixi.js';
 
+import { PLATFORM_SIZING } from '../../../config/game.config';
 import type { Platform } from '../../../game/types';
 import { PlatformPool } from './PlatformPool';
 const REST_FLOOR_INTERVAL_METERS = 1000;
@@ -41,6 +42,20 @@ export type PlatformSystemDeps = {
   worldProbe: WorldProbe;
   renderProbe: RenderProbe;
   callbacks: PlatformSystemCallbacks;
+};
+
+export type CreatePlatformsInput = {
+  worldMaxY: number;
+  worldWidth: number;
+  worldWidthFromScreen: number;
+  poolCount: number;
+  platformHeight: number;
+  uniformBaseWidth: number;
+};
+
+export type CreatePlatformsResult = {
+  platforms: Platform[];
+  nextStairId: number;
 };
 
 export class PlatformSystem {
@@ -141,5 +156,36 @@ export class PlatformSystem {
       normalY,
       this.getNextRestFloorYAbove(previousTopY),
     );
+  }
+
+  createPlatforms(input: CreatePlatformsInput): CreatePlatformsResult {
+    return this.pool.createPlatforms(input, {
+      applyResponsivePlatformWidth: (platform) => this.applyResponsivePlatformWidth(platform),
+      computePlatformSpawnX: (stairId, platformWidth, viewOriginX) =>
+        this.computePlatformSpawnX(stairId, platformWidth, viewOriginX),
+      computeStairGapPx: (stairId) => this.computeStairGapPx(stairId),
+      getPlatformSpawnHorizontalRange: (platformWidth, viewOriginX) =>
+        this.getPlatformSpawnHorizontalRange(platformWidth, viewOriginX),
+    });
+  }
+
+  private applyResponsivePlatformWidth(platform: Platform): void {
+    if (platform.kind === 'rest') {
+      const bounds = this.getRestFloorPlatformBounds();
+      platform.x = bounds.x;
+      platform.width = bounds.width;
+      this.updatePlatformBodyFromScale(platform);
+      return;
+    }
+    if (platform.kind === 'spawn') {
+      const bounds = this.getFloorZeroSpawnPlatformBounds();
+      platform.x = bounds.x;
+      platform.width = bounds.width;
+      this.updatePlatformBodyFromScale(platform);
+      return;
+    }
+    platform.baseWidth = PLATFORM_SIZING.uniformBaseWidth;
+    platform.width = this.getNormalPlatformWorldWidth();
+    this.updatePlatformBodyFromScale(platform);
   }
 }
