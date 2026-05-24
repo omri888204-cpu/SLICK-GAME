@@ -3079,8 +3079,7 @@ export class PlayScene implements Scene {
   }
 
   private updatePlatformBodyFromScale(platform: Platform): void {
-    // Custom physics uses this body directly; keep collider scale in exact sync with art scale.
-    platform.height = STAIRS.platformHeight * PLATFORM_SCALE;
+    this.platformSystem.updatePlatformBodyFromScale(platform);
   }
 
   /** After a small viewport change (mobile URL bar), keep platforms and player inside the new width. */

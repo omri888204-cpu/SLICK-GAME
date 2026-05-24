@@ -53,4 +53,8 @@ export class PlatformSystem {
     void this.deps.renderProbe.getPlatformCount();
     return this.pool.computeStairGapPx(stairId);
   }
+
+  updatePlatformBodyFromScale(platform: Platform): void {
+    this.pool.updatePlatformBodyFromScale(platform);
+  }
 }
