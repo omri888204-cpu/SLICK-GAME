@@ -5,6 +5,7 @@ import { PlatformPool } from './PlatformPool';
 
 export type PlayerProbe = {
   getClimbBaselineY(): number;
+  getPlayerBodyHeight(): number;
 };
 
 export type WorldProbe = {
@@ -92,5 +93,13 @@ export class PlatformSystem {
   ): number {
     const range = this.getPlatformSpawnHorizontalRange(platformWidth, viewOriginX);
     return this.pool.computePlatformSpawnX(stairId, platformWidth, range);
+  }
+
+  getPlatformMeters(platform: Platform): number {
+    return this.pool.getPlatformMeters(
+      platform,
+      this.deps.playerProbe.getClimbBaselineY(),
+      this.deps.playerProbe.getPlayerBodyHeight(),
+    );
   }
 }

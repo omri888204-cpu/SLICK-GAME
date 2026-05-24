@@ -60,4 +60,15 @@ export class PlatformPool {
     const unit = raw - Math.floor(raw);
     return minX + unit * (maxX - minX);
   }
+
+  getPlatformMeters(
+    platform: Platform,
+    climbBaselineY: number,
+    playerBodyHeight: number,
+  ): number {
+    return Math.max(
+      0,
+      Math.floor((climbBaselineY - (platform.y - playerBodyHeight)) / 12),
+    );
+  }
 }

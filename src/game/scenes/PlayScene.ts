@@ -1515,6 +1515,7 @@ export class PlayScene implements Scene {
     this.platformSystem = new PlatformSystem({
       playerProbe: {
         getClimbBaselineY: () => this.climbBaselineY,
+        getPlayerBodyHeight: () => this.player.body.height,
       },
       worldProbe: {
         getCameraX: () => this.cameraX,
@@ -2694,10 +2695,7 @@ export class PlayScene implements Scene {
   }
 
   private getPlatformMeters(platform: Platform): number {
-    return Math.max(
-      0,
-      Math.floor((this.climbBaselineY - (platform.y - this.player.body.height)) / 12),
-    );
+    return this.platformSystem.getPlatformMeters(platform);
   }
 
   private isRestFloorY(worldY: number): boolean {
