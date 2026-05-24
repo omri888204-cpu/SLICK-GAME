@@ -2668,22 +2668,15 @@ export class PlayScene implements Scene {
   }
 
   private pickNextPlatformY(previousTopY: number, normalY: number): number {
-    const restY = this.getNextRestFloorYAbove(previousTopY);
-    if (restY < previousTopY && restY >= normalY) {
-      return restY;
-    }
-    return normalY;
+    return this.platformSystem.pickNextPlatformY(previousTopY, normalY);
   }
 
   private getNextRestFloorYAbove(worldY: number): number {
-    const currentMeters = Math.max(0, (this.climbBaselineY - (worldY - this.player.body.height)) / 12);
-    const nextMeters =
-      Math.floor(currentMeters / REST_FLOOR_INTERVAL_METERS + 1) * REST_FLOOR_INTERVAL_METERS;
-    return this.getRestFloorTopY(nextMeters);
+    return this.platformSystem.getNextRestFloorYAbove(worldY);
   }
 
   private getRestFloorTopY(meters: number): number {
-    return this.climbBaselineY - meters * 12 + this.player.body.height;
+    return this.platformSystem.getRestFloorTopY(meters);
   }
 
   private getRestFloorMeters(platform: Platform): number | null {

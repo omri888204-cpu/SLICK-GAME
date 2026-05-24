@@ -2,6 +2,7 @@ import type { Texture } from 'pixi.js';
 
 import type { Platform } from '../../../game/types';
 import { PlatformPool } from './PlatformPool';
+const REST_FLOOR_INTERVAL_METERS = 1000;
 
 export type PlayerProbe = {
   getClimbBaselineY(): number;
@@ -114,6 +115,31 @@ export class PlatformSystem {
     return this.pool.getFloorZeroSpawnPlatformBounds(
       this.deps.worldProbe.getCameraX(),
       this.deps.worldProbe.getWorldWidthFromScreen(),
+    );
+  }
+
+  getRestFloorTopY(meters: number): number {
+    return this.pool.getRestFloorTopY(
+      this.deps.playerProbe.getClimbBaselineY(),
+      this.deps.playerProbe.getPlayerBodyHeight(),
+      meters,
+    );
+  }
+
+  getNextRestFloorYAbove(worldY: number): number {
+    return this.pool.getNextRestFloorYAbove(
+      this.deps.playerProbe.getClimbBaselineY(),
+      this.deps.playerProbe.getPlayerBodyHeight(),
+      worldY,
+      REST_FLOOR_INTERVAL_METERS,
+    );
+  }
+
+  pickNextPlatformY(previousTopY: number, normalY: number): number {
+    return this.pool.pickNextPlatformY(
+      previousTopY,
+      normalY,
+      this.getNextRestFloorYAbove(previousTopY),
     );
   }
 }

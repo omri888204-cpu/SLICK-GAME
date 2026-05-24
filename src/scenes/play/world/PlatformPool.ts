@@ -89,4 +89,35 @@ export class PlatformPool {
   ): { x: number; width: number } {
     return this.getRestFloorPlatformBounds(cameraX, worldWidthFromScreen);
   }
+
+  getRestFloorTopY(
+    climbBaselineY: number,
+    playerBodyHeight: number,
+    meters: number,
+  ): number {
+    return climbBaselineY - meters * 12 + playerBodyHeight;
+  }
+
+  getNextRestFloorYAbove(
+    climbBaselineY: number,
+    playerBodyHeight: number,
+    worldY: number,
+    restFloorIntervalMeters: number,
+  ): number {
+    const currentMeters = Math.max(0, (climbBaselineY - (worldY - playerBodyHeight)) / 12);
+    const nextMeters =
+      Math.floor(currentMeters / restFloorIntervalMeters + 1) * restFloorIntervalMeters;
+    return this.getRestFloorTopY(climbBaselineY, playerBodyHeight, nextMeters);
+  }
+
+  pickNextPlatformY(
+    previousTopY: number,
+    normalY: number,
+    nextRestFloorYAbove: number,
+  ): number {
+    if (nextRestFloorYAbove < previousTopY && nextRestFloorYAbove >= normalY) {
+      return nextRestFloorYAbove;
+    }
+    return normalY;
+  }
 }
