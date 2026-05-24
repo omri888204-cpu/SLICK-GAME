@@ -14,6 +14,15 @@ export type CreatePlatformsSeed = {
   nextStairId: number;
 };
 
+export type CreatePlatformsLoopInput = {
+  baseY: number;
+  layoutCamX: number;
+  worldWidthFromScreen: number;
+  poolCount: number;
+  platformHeight: number;
+  uniformBaseWidth: number;
+};
+
 export class PlatformPool {
   constructor() {}
 
@@ -144,5 +153,50 @@ export class PlatformPool {
       layoutCamX,
       nextStairId: input.poolCount - 1,
     };
+  }
+
+  createPlatformsLoop(
+    input: CreatePlatformsLoopInput,
+    helpers: {
+      applyResponsivePlatformWidth(platform: Platform): void;
+      getPlatformSpawnHorizontalRange(
+        platformWidth: number,
+        viewOriginX: number,
+      ): { minX: number; maxX: number };
+      computePlatformSpawnX(stairId: number, platformWidth: number, viewOriginX: number): number;
+      computeStairGapPx(stairId: number): number;
+    },
+  ): Platform[] {
+    let y = input.baseY;
+    const platforms: Platform[] = [];
+    for (let index = 0; index < input.poolCount; index += 1) {
+      const platform: Platform = {
+        x: 0,
+        y,
+        width: 0,
+        height: input.platformHeight,
+        baseWidth: input.uniformBaseWidth,
+        driftDir: Math.random() < 0.5 ? -1 : 1,
+        driftVx: 0,
+        stairId: index,
+        kind: index === 0 ? 'spawn' : 'normal',
+      };
+      helpers.applyResponsivePlatformWidth(platform);
+      if (index === 0) {
+        if (platform.kind !== 'spawn') {
+          const ideal = input.layoutCamX + input.worldWidthFromScreen * 0.5 - platform.width * 0.5;
+          const { minX, maxX } = helpers.getPlatformSpawnHorizontalRange(
+            platform.width,
+            input.layoutCamX,
+          );
+          platform.x = Math.max(minX, Math.min(ideal, maxX));
+        }
+      } else {
+        platform.x = helpers.computePlatformSpawnX(index, platform.width, input.layoutCamX);
+      }
+      platforms.push(platform);
+      y -= helpers.computeStairGapPx(index);
+    }
+    return platforms;
   }
 }
