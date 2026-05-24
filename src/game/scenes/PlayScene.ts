@@ -25,6 +25,8 @@ import {
   PLAY_SCENE,
   RENDER,
   SCORE_UI,
+  STAIR_GAP_MAX_PX,
+  STAIR_GAP_MIN_PX,
   STAIRS,
   tunedBlur,
   tunedUiAlpha,
@@ -808,8 +810,6 @@ const MAX_COMBO_SUPER_JUMP_PARTICLES_AFTER_CLEANUP = 40;
 const VIEWPORT_SAFE_MARGIN_SCREEN_PX = 40;
 /** When true, stairs spawn in a band around the player (world X) so they stay on-screen on mobile. */
 const MOBILE_NARROW_UI_MAX_W = 520;
-const STAIR_GAP_MIN_PX = 250;
-const STAIR_GAP_MAX_PX = 350;
 const REST_FLOOR_INTERVAL_METERS = 1000;
 const REST_FLOOR_MONSTER_CLEAR_METERS = 100;
 const REST_FLOOR_RESUME_ABOVE_PX = 50;
@@ -10824,3 +10824,4 @@ export class PlayScene implements Scene {
     return this.width <= 430 ? MOBILE_CAMERA_ZOOM : CAMERA_ZOOM;
   }
 }
+

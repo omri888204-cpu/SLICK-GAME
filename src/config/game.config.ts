@@ -227,6 +227,9 @@ export const COMBO = {
 } as const;
 
 /** Procedural infinite stairs + run reset thresholds. */
+export const STAIR_GAP_MIN_PX = 250;
+export const STAIR_GAP_MAX_PX = 350;
+
 export const STAIRS = {
   /** Fixed pool: stairs are recycled in-place (no per-frame alloc); see `recycleStairsOffscreen`. */
   poolCount: 20,
@@ -366,3 +369,4 @@ export const SCORE_UI = {
   punchMaxRotationRad: (5 * Math.PI) / 180,
   rainbowPulseHz: 1.15,
 };
+
