@@ -102,4 +102,18 @@ export class PlatformSystem {
       this.deps.playerProbe.getPlayerBodyHeight(),
     );
   }
+
+  getRestFloorPlatformBounds(): { x: number; width: number } {
+    return this.pool.getRestFloorPlatformBounds(
+      this.deps.worldProbe.getCameraX(),
+      this.deps.worldProbe.getWorldWidthFromScreen(),
+    );
+  }
+
+  getFloorZeroSpawnPlatformBounds(): { x: number; width: number } {
+    return this.pool.getFloorZeroSpawnPlatformBounds(
+      this.deps.worldProbe.getCameraX(),
+      this.deps.worldProbe.getWorldWidthFromScreen(),
+    );
+  }
 }

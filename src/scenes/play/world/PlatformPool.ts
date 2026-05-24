@@ -71,4 +71,22 @@ export class PlatformPool {
       Math.floor((climbBaselineY - (platform.y - playerBodyHeight)) / 12),
     );
   }
+
+  getRestFloorPlatformBounds(
+    cameraX: number,
+    worldWidthFromScreen: number,
+  ): { x: number; width: number } {
+    const width = worldWidthFromScreen * 2;
+    return {
+      x: cameraX - worldWidthFromScreen * 0.5,
+      width,
+    };
+  }
+
+  getFloorZeroSpawnPlatformBounds(
+    cameraX: number,
+    worldWidthFromScreen: number,
+  ): { x: number; width: number } {
+    return this.getRestFloorPlatformBounds(cameraX, worldWidthFromScreen);
+  }
 }

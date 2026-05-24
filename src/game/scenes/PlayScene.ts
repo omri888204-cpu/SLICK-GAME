@@ -3773,17 +3773,12 @@ export class PlayScene implements Scene {
   }
 
   private getRestFloorPlatformBounds(): { x: number; width: number } {
-    const visibleWorldW = this.worldWidthFromScreen();
-    const width = visibleWorldW * 2;
-    return {
-      x: this.cameraX - visibleWorldW * 0.5,
-      width,
-    };
+    return this.platformSystem.getRestFloorPlatformBounds();
   }
 
   /** Match {@link getRestFloorPlatformBounds} — shared wide span for Floor 0 spawn deck (no rest-floor gameplay hooks). */
   private getFloorZeroSpawnPlatformBounds(): { x: number; width: number } {
-    return this.getRestFloorPlatformBounds();
+    return this.platformSystem.getFloorZeroSpawnPlatformBounds();
   }
 
   private resetPlayer(): void {
