@@ -2,9 +2,9 @@
 
 ## Snapshot
 - Date: 2026-05-24
-- Current Phase: Architecture alignment before PlayScene split
+- Current Phase: PlayScene split in progress (Platform extraction stream)
 - Branch: main
-- Last Approved Scope: v2 architecture plan + Stage A creation of AGENT.md and PROJECT_STATE.md only
+- Last Approved Scope: Atomic dedup of STAIR_GAP_MIN_PX / STAIR_GAP_MAX_PX into game.config.ts (pushed)
 
 ## What Exists Now
 - Scenes:
@@ -30,7 +30,7 @@
 - [2026-05-24] M1: Architecture v2 approved (flattened structure, no contracts layer, no per-file MD, AGENT governance accepted).
 - [2026-05-24] M2: Refactor operating protocol approved (plan -> approval -> execution -> diff -> commit -> state update).
 - [2026-05-24] M3: Push policy and revert protocol formalized in AGENT.md
-
+- [2026-05-24] M4: `STAIR_GAP_MIN_PX` + `STAIR_GAP_MAX_PX` moved to `src/config/game.config.ts`; `PlayScene.ts` now imports shared constants (commit `5b1ad9c`, pushed).
 ## Current In-Progress Milestone
 - Goal: Initialize governance docs, then begin PlayScene extraction sequence without logic changes.
 - Approved Scope:
@@ -78,3 +78,4 @@
 - Safe extension points:
   - New system files created only for the currently approved extraction target.
   - Inline file-header comments for non-obvious module responsibilities.
+
