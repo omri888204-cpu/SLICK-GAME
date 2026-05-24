@@ -35,6 +35,24 @@ Before commit, the agent must provide:
 
 No commit without explicit user "approve commit".
 
+### Push Policy (separate from commit)
+
+A local commit does not authorize push.
+
+After commit:
+1. Agent reports commit completed and waits.
+2. User runs the game and performs 30-60 seconds of visual smoke test.
+3. User explicitly approves push.
+4. Only then: `git push origin <branch>`.
+
+If the smoke test fails:
+- Run `git revert HEAD`.
+- Report failure to user.
+- Do NOT attempt fixes during refactor - this violates "No logic changes during pure refactor".
+- Wait for user direction on next step.
+
+PROJECT_STATE.md is updated only after a successful push, never after a local-only commit. A milestone that did not reach push is not considered complete.
+
 ## Documentation Update Policy
 
 ### Critical Change (requires doc update)
@@ -48,6 +66,10 @@ No commit without explicit user "approve commit".
 Required docs to update:
 - PROJECT_STATE.md (always for critical milestones)
 - AGENT.md only if process/governance changed
+
+Completion rule:
+- A critical milestone is not complete until the relevant commit(s) are successfully pushed.
+- PROJECT_STATE.md must be updated only after successful push, never after a local-only commit.
 
 ### Routine Change (no doc update required)
 - Internal bug fix inside existing boundary.
