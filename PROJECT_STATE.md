@@ -29,6 +29,7 @@
 ## Completed Milestones
 - [2026-05-24] M1: Architecture v2 approved (flattened structure, no contracts layer, no per-file MD, AGENT governance accepted).
 - [2026-05-24] M2: Refactor operating protocol approved (plan -> approval -> execution -> diff -> commit -> state update).
+- [2026-05-24] M3: Push policy and revert protocol formalized in AGENT.md
 
 ## Current In-Progress Milestone
 - Goal: Initialize governance docs, then begin PlayScene extraction sequence without logic changes.
