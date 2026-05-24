@@ -1,6 +1,5 @@
 import type { Platform } from '../../../game/types';
 import { PLATFORM_SIZING, PLAY_SCENE, STAIRS } from '../../../config/game.config';
-import type { CreatePlatformsInput, CreatePlatformsResult } from './PlatformSystem';
 
 export class PlatformPool {
   constructor() {}
@@ -120,56 +119,5 @@ export class PlatformPool {
       return nextRestFloorYAbove;
     }
     return normalY;
-  }
-
-  createPlatforms(
-    input: CreatePlatformsInput,
-    helpers: {
-      applyResponsivePlatformWidth(platform: Platform): void;
-      computePlatformSpawnX(stairId: number, platformWidth: number, viewOriginX: number): number;
-      computeStairGapPx(stairId: number): number;
-      getPlatformSpawnHorizontalRange(
-        platformWidth: number,
-        viewOriginX: number,
-      ): { minX: number; maxX: number };
-    },
-  ): CreatePlatformsResult {
-    const platforms: Platform[] = [];
-    const baseY = input.worldMaxY - 96;
-    let y = baseY;
-    const viewportW = input.worldWidthFromScreen;
-    const maxCamX = Math.max(0, input.worldWidth - viewportW);
-    const layoutCamX = Math.max(0, Math.min((input.worldWidth - viewportW) * 0.5, maxCamX));
-
-    for (let index = 0; index < input.poolCount; index += 1) {
-      const platform: Platform = {
-        x: 0,
-        y,
-        width: 0,
-        height: input.platformHeight,
-        baseWidth: input.uniformBaseWidth,
-        driftDir: Math.random() < 0.5 ? -1 : 1,
-        driftVx: 0,
-        stairId: index,
-        kind: index === 0 ? 'spawn' : 'normal',
-      };
-      helpers.applyResponsivePlatformWidth(platform);
-      if (index === 0) {
-        if (platform.kind !== 'spawn') {
-          const ideal = layoutCamX + viewportW * 0.5 - platform.width * 0.5;
-          const { minX, maxX } = helpers.getPlatformSpawnHorizontalRange(platform.width, layoutCamX);
-          platform.x = Math.max(minX, Math.min(ideal, maxX));
-        }
-      } else {
-        platform.x = helpers.computePlatformSpawnX(index, platform.width, layoutCamX);
-      }
-      platforms.push(platform);
-      y -= helpers.computeStairGapPx(index);
-    }
-
-    return {
-      platforms,
-      nextStairId: input.poolCount - 1,
-    };
   }
 }
