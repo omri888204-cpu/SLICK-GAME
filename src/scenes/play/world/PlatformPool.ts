@@ -1,6 +1,19 @@
 import type { Platform } from '../../../game/types';
 import { PLATFORM_SIZING, PLAY_SCENE, STAIRS } from '../../../config/game.config';
 
+export type CreatePlatformsSeedInput = {
+  worldMaxY: number;
+  worldWidth: number;
+  worldWidthFromScreen: number;
+  poolCount: number;
+};
+
+export type CreatePlatformsSeed = {
+  baseY: number;
+  layoutCamX: number;
+  nextStairId: number;
+};
+
 export class PlatformPool {
   constructor() {}
 
@@ -119,5 +132,17 @@ export class PlatformPool {
       return nextRestFloorYAbove;
     }
     return normalY;
+  }
+
+  createPlatformsSeed(input: CreatePlatformsSeedInput): CreatePlatformsSeed {
+    const baseY = input.worldMaxY - 96;
+    const viewportW = input.worldWidthFromScreen;
+    const maxCamX = Math.max(0, input.worldWidth - viewportW);
+    const layoutCamX = Math.max(0, Math.min((input.worldWidth - viewportW) * 0.5, maxCamX));
+    return {
+      baseY,
+      layoutCamX,
+      nextStairId: input.poolCount - 1,
+    };
   }
 }

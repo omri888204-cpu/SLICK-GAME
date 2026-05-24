@@ -2576,13 +2576,15 @@ export class PlayScene implements Scene {
   private createPlatforms(): void {
     this.platforms = [];
     this.clearPlatformSprites();
-    const baseY = this.worldMaxY - 96;
+    const seed = this.platformSystem.createPlatformsSeed({
+      worldMaxY: this.worldMaxY,
+      worldWidth: this.worldWidth,
+      worldWidthFromScreen: this.worldWidthFromScreen(),
+      poolCount: STAIRS.poolCount,
+    });
+    const baseY = seed.baseY;
     let y = baseY;
-    // `resetRun` clears `cameraX` to 0 before this; spawn must use the same horizontal view as `snapCameraToPlayer`
-    // (world-centered camera), otherwise every stair is laid out for the left edge of the world and disappears on mobile.
-    const viewportW = this.worldWidthFromScreen();
-    const maxCamX = Math.max(0, this.worldWidth - viewportW);
-    const layoutCamX = Math.max(0, Math.min((this.worldWidth - viewportW) * 0.5, maxCamX));
+    const layoutCamX = seed.layoutCamX;
 
     for (let index = 0; index < STAIRS.poolCount; index += 1) {
       const baseWidth = PLATFORM_SIZING.uniformBaseWidth;
@@ -2601,7 +2603,7 @@ export class PlayScene implements Scene {
       if (index === 0) {
         /** Wide Floor 0 deck — span comes from {@link getFloorZeroSpawnPlatformBounds}; skip narrow stair centering. */
         if (platform.kind !== 'spawn') {
-          const ideal = layoutCamX + viewportW * 0.5 - platform.width * 0.5;
+          const ideal = layoutCamX + this.worldWidthFromScreen() * 0.5 - platform.width * 0.5;
           const { minX, maxX } = this.getPlatformSpawnHorizontalRange(platform.width, layoutCamX);
           platform.x = Math.max(minX, Math.min(ideal, maxX));
         }
@@ -2612,7 +2614,7 @@ export class PlayScene implements Scene {
       y -= this.computeStairGapPx(index);
     }
 
-    this.nextStairId = STAIRS.poolCount - 1;
+    this.nextStairId = seed.nextStairId;
     this.createPlatformSprites();
   }
 
@@ -10789,4 +10791,5 @@ export class PlayScene implements Scene {
     return this.width <= 430 ? MOBILE_CAMERA_ZOOM : CAMERA_ZOOM;
   }
 }
+
 

@@ -1,7 +1,7 @@
 import type { Texture } from 'pixi.js';
 
 import type { Platform } from '../../../game/types';
-import { PlatformPool } from './PlatformPool';
+import { PlatformPool, type CreatePlatformsSeed, type CreatePlatformsSeedInput } from './PlatformPool';
 const REST_FLOOR_INTERVAL_METERS = 1000;
 
 export type PlayerProbe = {
@@ -141,5 +141,9 @@ export class PlatformSystem {
       normalY,
       this.getNextRestFloorYAbove(previousTopY),
     );
+  }
+
+  createPlatformsSeed(input: CreatePlatformsSeedInput): CreatePlatformsSeed {
+    return this.pool.createPlatformsSeed(input);
   }
 }
