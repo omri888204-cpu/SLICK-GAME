@@ -86,6 +86,7 @@ import {
 import { SkillHudButton } from '../ui/SkillHudButton';
 import type { ActiveGrapple, Platform, Ripple } from '../types';
 import { MENU_PLAY_TRANSITION } from '../ui/MenuPlayTransition';
+import { PlatformSystem } from '../../scenes/play/world/PlatformSystem';
 import type { Scene } from './Scene';
 
 type DiamondShineSpark = {
@@ -1043,6 +1044,7 @@ export class PlayScene implements Scene {
   private app?: Application;
   private input?: InputManager;
   private physics = new Physics();
+  private platformSystem: PlatformSystem;
   /**
    * Viewport fascia has no Phaser Arcade collider — overlap is custom AABB in {@link Physics}.
    * This mirrors `collider.active`: when `false`, fascia assist is not passed to physics (breaks slide re-latch).
@@ -1510,6 +1512,31 @@ export class PlayScene implements Scene {
     this.fromMenuHandoff = opts?.menuHandoff === true;
     this.onBackToMenu = opts?.onBackToMenu;
     this.gameplayUnlocked = !this.fromMenuHandoff;
+    this.platformSystem = new PlatformSystem({
+      playerProbe: {
+        getClimbBaselineY: () => this.climbBaselineY,
+      },
+      worldProbe: {
+        getCameraX: () => this.cameraX,
+        getCameraY: () => this.cameraY,
+        getWorldWidthFromScreen: () => this.worldWidthFromScreen(),
+        getCameraZoom: () => this.getCameraZoom(),
+      },
+      renderProbe: {
+        getPlatformCount: () => this.platforms.length,
+      },
+      callbacks: {
+        maybeSpawnFirstRestFloorProps: (platform) => this.maybeSpawnFirstRestFloorProps(platform),
+        rebuildPlatformSprites: () => this.rebuildPlatformSprites(),
+        onRestFloorEncountered: (platform) => this.maybeSpawnFirstRestFloorProps(platform),
+        getRestFloorTopY: (meters) => this.getRestFloorTopY(meters),
+        clearRestFloorProps: () => this.clearRestFloorProps(),
+        updateRestFloorCloudBreathing: () => this.updateRestFloorCloudBreathing(),
+        loadTextureFromCandidates: (candidates) => this.loadTextureFromCandidates(candidates),
+        getWorldWidthFromScreen: () => this.worldWidthFromScreen(),
+        getCameraZoom: () => this.getCameraZoom(),
+      },
+    });
   }
 
   /** Starts the 2s sky fall in sync with the menu white overlay fade-out. */
