@@ -1519,6 +1519,10 @@ export class PlayScene implements Scene {
       worldProbe: {
         getCameraX: () => this.cameraX,
         getCameraY: () => this.cameraY,
+        getWorldWidth: () => this.worldWidth,
+        getViewportSafeMarginWorld: () => this.getViewportSafeMarginWorld(),
+        getPlatformEdgePaddingPx: () => PLATFORM_EDGE_PADDING_PX,
+        getWorldBoundsX: () => WORLD_BOUNDS_X,
         getWorldWidthFromScreen: () => this.worldWidthFromScreen(),
         getCameraZoom: () => this.getCameraZoom(),
       },
@@ -2743,13 +2747,7 @@ export class PlayScene implements Scene {
   }
 
   private getNormalPlatformWorldWidth(): number {
-    const vw = this.worldWidthFromScreen();
-    const margin = this.getViewportSafeMarginWorld() * 2 + PLATFORM_EDGE_PADDING_PX * 2;
-    const maxW = Math.max(200, vw - margin);
-    return Math.min(
-      PLATFORM_SIZING.normalWorldWidthPx,
-      Math.floor(maxW * PLATFORM_SIZING.maxViewportWidthFraction),
-    );
+    return this.platformSystem.getNormalPlatformWorldWidth();
   }
 
   /** Fixed sprite width — decoupled from hitbox so PNG art scale stays constant. */
@@ -2785,19 +2783,7 @@ export class PlayScene implements Scene {
     platformWidth: number,
     viewOriginX: number = this.cameraX,
   ): { minX: number; maxX: number } {
-    const marginW = this.getViewportSafeMarginWorld();
-    const vw = this.worldWidthFromScreen();
-    const viewLeft = viewOriginX + marginW;
-    const viewRight = viewOriginX + vw - marginW;
-    const pad = PLATFORM_EDGE_PADDING_PX;
-    const minX = Math.max(WORLD_BOUNDS_X + pad, viewLeft);
-    const maxX = Math.min(this.worldWidth - pad - platformWidth, viewRight - platformWidth);
-    if (maxX <= minX) {
-      const cx = viewOriginX + vw * 0.5 - platformWidth * 0.5;
-      const clamped = Math.max(WORLD_BOUNDS_X + pad, Math.min(cx, this.worldWidth - pad - platformWidth));
-      return { minX: clamped, maxX: clamped };
-    }
-    return { minX, maxX };
+    return this.platformSystem.getPlatformSpawnHorizontalRange(platformWidth, viewOriginX);
   }
 
   private computePlatformSpawnX(
@@ -2805,13 +2791,7 @@ export class PlayScene implements Scene {
     platformWidth: number,
     viewOriginX: number = this.cameraX,
   ): number {
-    const { minX, maxX } = this.getPlatformSpawnHorizontalRange(platformWidth, viewOriginX);
-    if (maxX <= minX) {
-      return minX;
-    }
-    const raw = Math.sin((stairId + 1) * 12.9898) * 43758.5453;
-    const unit = raw - Math.floor(raw);
-    return minX + unit * (maxX - minX);
+    return this.platformSystem.computePlatformSpawnX(stairId, platformWidth, viewOriginX);
   }
 
   private clearWallColliderRestoreTimeout(): void {

@@ -10,6 +10,10 @@ export type PlayerProbe = {
 export type WorldProbe = {
   getCameraX(): number;
   getCameraY(): number;
+  getWorldWidth(): number;
+  getViewportSafeMarginWorld(): number;
+  getPlatformEdgePaddingPx(): number;
+  getWorldBoundsX(): number;
   getWorldWidthFromScreen(): number;
   getCameraZoom(): number;
 };
@@ -56,5 +60,37 @@ export class PlatformSystem {
 
   updatePlatformBodyFromScale(platform: Platform): void {
     this.pool.updatePlatformBodyFromScale(platform);
+  }
+
+  getNormalPlatformWorldWidth(): number {
+    return this.pool.getNormalPlatformWorldWidth(
+      this.deps.worldProbe.getWorldWidthFromScreen(),
+      this.deps.worldProbe.getViewportSafeMarginWorld(),
+      this.deps.worldProbe.getPlatformEdgePaddingPx(),
+    );
+  }
+
+  getPlatformSpawnHorizontalRange(
+    platformWidth: number,
+    viewOriginX: number = this.deps.worldProbe.getCameraX(),
+  ): { minX: number; maxX: number } {
+    return this.pool.getPlatformSpawnHorizontalRange(
+      platformWidth,
+      viewOriginX,
+      this.deps.worldProbe.getViewportSafeMarginWorld(),
+      this.deps.worldProbe.getWorldWidthFromScreen(),
+      this.deps.worldProbe.getPlatformEdgePaddingPx(),
+      this.deps.worldProbe.getWorldBoundsX(),
+      this.deps.worldProbe.getWorldWidth(),
+    );
+  }
+
+  computePlatformSpawnX(
+    stairId: number,
+    platformWidth: number,
+    viewOriginX: number = this.deps.worldProbe.getCameraX(),
+  ): number {
+    const range = this.getPlatformSpawnHorizontalRange(platformWidth, viewOriginX);
+    return this.pool.computePlatformSpawnX(stairId, platformWidth, range);
   }
 }
