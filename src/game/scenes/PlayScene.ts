@@ -3174,7 +3174,8 @@ export class PlayScene implements Scene {
     this.runTime = 0;
     this.menuSkyDropIntroActive = false;
     this.menuSkyDropIntroElapsedSec = 0;
-    this.gameplayUnlocked = !this.fromMenuHandoff;
+    this.fromMenuHandoff = false;
+    this.gameplayUnlocked = true;
     this.photoroomOscTimeMs = 0;
     this.paused = false;
     this.pauseOverlay.visible = false;
@@ -3246,6 +3247,12 @@ export class PlayScene implements Scene {
     if (this.statusPanelExpanded) {
       this.refreshStatusPanelContent();
     }
+    this.touchPointers.clear();
+    this.touchControlPointerId = null;
+    this.input?.clearTouchHolds();
+    this.drawStaticWorld();
+    this.drawDynamicWorld();
+    this.applyCameraTransform();
   }
 
   private checkFallGameOver(): void {
