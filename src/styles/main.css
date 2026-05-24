@@ -17,6 +17,41 @@ body,
   user-select: none;
 }
 
+.menu-loot-totals {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 24;
+  overflow: visible;
+}
+
+.menu-loot-totals__gold,
+.menu-loot-totals__diamond {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-family: Orbitron, 'Arial Black', Impact, sans-serif;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.85),
+    0 0 8px rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+}
+
+.menu-loot-totals__gold {
+  color: #ffd700;
+  -webkit-text-stroke: 1px #5a3d00;
+  paint-order: stroke fill;
+}
+
+.menu-loot-totals__diamond {
+  color: #9fe8ff;
+  -webkit-text-stroke: 1px #1a3050;
+  paint-order: stroke fill;
+}
+
 .sk-landing {
   position: fixed;
   inset: 0;
@@ -24,7 +59,8 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(circle at 50% 20%, rgba(57, 255, 20, 0.08), transparent 52%),
+  background:
+    radial-gradient(circle at 50% 20%, rgba(57, 255, 20, 0.08), transparent 52%),
     linear-gradient(#05050a 0%, #080818 55%, #030308 100%);
   overflow: hidden auto;
   touch-action: auto;

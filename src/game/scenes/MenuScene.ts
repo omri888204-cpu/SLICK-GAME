@@ -1,209 +1,741 @@
-import { signOut } from 'firebase/auth';
-import { Application, Assets, Container, Graphics, Text, type Ticker } from 'pixi.js';
-import slickLogoUrl from '../../assets/ui/slick-logo.png';
-import { auth } from '../../firebase.js';
 import {
-  clearSavedPlayerProfile,
-  getSavedNickname,
-} from '../services/playerProfile';
-import { SlickLogoImage } from '../ui/SlickLogoImage';
-import { loadLogoTextureTransparent } from '../utils/logoTexture';
-import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
-import { getGameUserSession, clearGameUserSession } from '../services/userSession';
+  Application,
+  Assets,
+  Container,
+  Graphics,
+  Sprite,
+  type FederatedPointerEvent,
+  type Rectangle,
+  type Ticker,
+  type Texture,
+} from 'pixi.js';
+import {
+  bindBackgroundMusicUnlock,
+  playBackgroundMusic,
+  preloadBackgroundMusic,
+  stopBackgroundMusic,
+  tryResumeBackgroundMusic,
+} from '../audio/BackgroundMusic';
+import { MENU_BGM_URL } from '../constants/gameMusic';
+import {
+  applyMenuBackDriftAnimation,
+  computeMenuBackBaseScale,
+  computeMenuCoverLayout,
+  computeMenuPlayerFeetPoint,
+  createMenuPlayButtonTexture,
+  layoutMenuCoverSprite,
+  layoutMenuPlayHitZone,
+  MENU_BACK_ASSET_KEY,
+  MENU_BACKDROP_COLOR,
+  MENU_CANDY_LOOP_ASSET_KEY,
+  registerMenuAssets,
+} from '../constants/menuBackground';
+import { loadMenuPlayerIdleFrame, loadMenuPlayerJumpFrame } from '../entities/Player';
+import { MenuLootTotalsOverlay } from '../ui/MenuLootTotalsOverlay';
+import { MenuPlayButton } from '../ui/MenuPlayButton';
+import {
+  createMenuDreamyFadeOverlay,
+  MenuPlayTransition,
+  type MenuPlayHandoff,
+} from '../ui/MenuPlayTransition';
+import { MenuPlayerAvatar } from '../ui/MenuPlayerAvatar';
+import {
+  debugLogFirebaseAuthUser,
+  debugLogLocalStorageCurrency,
+  logMenuCurrencyLoad,
+  logMenuCurrencySourceMessage,
+  persistMenuCurrencySnapshot,
+  readMenuCurrencyFromFirebase,
+  readMenuCurrencyFromLocalStorage,
+  resolveMenuCurrencyDisplay,
+  snapshotFromFirebaseLive,
+  type MenuCurrencySnapshot,
+} from '../services/menuCurrencyDisplay';
+import { debugLogMenuBagStorageRead } from '../services/menuBagCache';
+import { subscribeUserBagBalances } from '../services/rtdbUsers';
+import { auth } from '../../firebase.js';
+import { onAuthStateChanged, type User } from 'firebase/auth';
 import type { Scene } from './Scene';
 
+
+
 /**
- * Main menu after auth: stats card + PLAY over the Pixi stage.
+
+ * Main menu: animated `menu back` layer + static candy UI art + invisible PLAY hit zone.
+
  */
+
 export class MenuScene implements Scene {
+
   readonly name = 'menu';
 
+
+
   private readonly container = new Container();
-  private readonly background = new Graphics();
-  private logo?: SlickLogoImage;
-  private readonly hint: Text;
-  private lobbyOverlay?: HTMLDivElement;
+
+  private readonly backdrop = new Graphics();
+
+  private readonly menuContent = new Container();
+
+  private readonly menuBack = new Sprite();
+
+  private readonly menuForeground = new Sprite();
+
+  private readonly playButton = new MenuPlayButton();
+  private readonly menuPlayer = new MenuPlayerAvatar();
+  private readonly lootTotals = new MenuLootTotalsOverlay();
+  private readonly playHitZone = new Graphics();
+
+  private dreamyFadeOverlay?: Container;
+
+  private playHitButton?: HTMLButtonElement;
+  private menuHost?: HTMLElement;
+
+  private app?: Application;
+
+  private playStarted = false;
+
+  private playTransition: MenuPlayTransition | null = null;
+
+  private playHandoffStarted = false;
+
+  private menuBackCoverScale = 1;
+
+  private menuAnimTimeSec = 0;
+
+  private viewportW = 360;
+
+  private viewportH = 640;
+
+  private bagUnsubscribe: (() => void) | null = null;
+  private authUnsubscribe: (() => void) | null = null;
+  private bagTotalsUid: string | null = null;
+  private currencyLoadSettled = false;
+  private firebaseLiveReceived = false;
+
+
 
   private readonly keyHandler = (ev: KeyboardEvent): void => {
+
+    tryResumeBackgroundMusic();
+
     if (ev.code === 'Space') {
+
       ev.preventDefault();
+
       void this.handlePlay();
+
     }
+
   };
 
-  constructor(private readonly onPlay: () => void | Promise<void>) {
-    this.hint = new Text({
-      text: 'Press Space to play',
-      style: {
-        fill: '#7eb89a',
-        fontFamily: 'system-ui, Segoe UI, sans-serif',
-        fontSize: 16,
-        letterSpacing: 0.5,
-      },
-    });
-    this.hint.anchor.set(0.5);
+
+
+  private readonly playPointerHandler = (ev: FederatedPointerEvent): void => {
+
+    tryResumeBackgroundMusic();
+
+    ev.stopPropagation();
+
+    void this.handlePlay();
+
+  };
+
+
+
+  private readonly playPressHandler = (ev: Event): void => {
+
+    tryResumeBackgroundMusic();
+
+    ev.preventDefault();
+
+    ev.stopPropagation();
+
+    void this.handlePlay();
+
+  };
+
+
+
+  private readonly bgmUnlockHandler = (): void => {
+
+    tryResumeBackgroundMusic();
+
+  };
+
+
+
+  constructor(private readonly onPlay: (handoff: MenuPlayHandoff) => void | Promise<void>) {
+
+    this.menuContent.eventMode = 'none';
+
+    this.menuBack.eventMode = 'none';
+
+    this.menuForeground.eventMode = 'none';
+
+    this.playButton.eventMode = 'none';
+    this.playHitZone.eventMode = 'static';
+
+    this.playHitZone.cursor = 'pointer';
+
+    this.container.sortableChildren = true;
+
+    this.menuBack.zIndex = 0;
+
+    this.menuForeground.zIndex = 2;
+
+    this.playButton.zIndex = 3;
+
+    this.menuPlayer.zIndex = 4;
+
+    this.playHitZone.zIndex = 20;
+
   }
+
+
 
   async init(app: Application): Promise<void> {
-    let texture;
-    try {
-      texture = await loadLogoTextureTransparent(slickLogoUrl);
-    } catch {
-      texture = await Assets.load(slickLogoUrl);
-    }
 
-    this.logo = new SlickLogoImage(texture);
+    this.app = app;
 
-    this.container.addChild(this.background, this.logo, this.hint);
+    registerMenuAssets();
+    preloadBackgroundMusic(MENU_BGM_URL);
+
+    const [menuBackTexture, menuForegroundTexture, idleFrame, jumpFrame] = await Promise.all([
+
+      Assets.load<Texture>(MENU_BACK_ASSET_KEY),
+
+      Assets.load<Texture>(MENU_CANDY_LOOP_ASSET_KEY),
+
+      loadMenuPlayerIdleFrame(),
+
+      loadMenuPlayerJumpFrame(),
+
+    ]);
+
+
+
+    this.menuBack.texture = menuBackTexture;
+
+    this.menuForeground.texture = menuForegroundTexture;
+
+    this.playButton.setTexture(
+      createMenuPlayButtonTexture(
+        menuForegroundTexture,
+        menuForegroundTexture.width,
+        menuForegroundTexture.height,
+      ),
+    );
+
+    this.menuPlayer.setIdleFrame(idleFrame);
+    this.menuPlayer.setJumpFrame(jumpFrame);
+
+
+
+    this.menuContent.addChild(
+      this.menuBack,
+      this.menuForeground,
+      this.playButton,
+      this.menuPlayer,
+    );
+
+    this.container.addChild(this.backdrop, this.menuContent, this.playHitZone);
+
     app.stage.addChild(this.container);
 
-    this.background.eventMode = 'static';
-    this.container.eventMode = 'static';
+    app.stage.eventMode = 'static';
+
+    app.canvas.addEventListener('pointerdown', this.bgmUnlockHandler, { passive: true });
+
+
+
+    this.backdrop.eventMode = 'none';
+
+    this.playHitZone.on('pointerdown', this.playPointerHandler);
+
+
 
     window.addEventListener('keydown', this.keyHandler);
-    this.mountLobbyOverlay();
+
+    this.mountPlayHitButton();
+    this.mountMenuLootOverlay();
+
+    this.layoutMenuContent(this.viewportW, this.viewportH);
+
+    await this.loadAndDisplayMenuCurrency();
+    this.startBagTotalsSubscription();
+
+    bindBackgroundMusicUnlock();
+
+    playBackgroundMusic(MENU_BGM_URL);
+
   }
+
+
 
   update(ticker: Ticker): void {
-    this.logo?.update(ticker.deltaMS / 1000);
-  }
+    const dtSec = ticker.deltaMS / 1000;
+    this.menuAnimTimeSec += dtSec;
 
-  resize(width: number, height: number): void {
-    this.background.clear();
-    this.background.rect(0, 0, width, height).fill({ color: 0x030308, alpha: 1 });
-    this.background.rect(0, 0, width, height).fill({ color: 0x050510, alpha: 0.35 });
-
-    if (this.logo) {
-      this.logo.fitWidth(Math.min(width * 0.44, 240));
-      this.logo.position.set(width * 0.5, height * 0.12);
+    if (this.playTransition) {
+      this.playTransition.tick(dtSec);
+      this.playButton.tickPressAnimation(dtSec);
+      this.menuPlayer.tickTransitionJump(
+        this.playTransition.getElapsedSec(),
+        this.viewportH,
+        this.viewportW,
+      );
+      return;
     }
 
-    this.hint.position.set(width * 0.5, height * 0.36);
+    applyMenuBackDriftAnimation(
+      this.menuBack,
+      this.viewportW,
+      this.viewportH,
+      this.menuBackCoverScale,
+      this.menuAnimTimeSec,
+    );
+
+    this.playButton.pulse(this.menuAnimTimeSec);
+    this.playButton.tickPressAnimation(dtSec);
   }
+
+
+
+  resize(width: number, height: number): void {
+
+    this.viewportW = width;
+
+    this.viewportH = height;
+
+    this.layoutMenuContent(width, height);
+
+  }
+
+
+
+  private layoutMenuContent(width: number, height: number): void {
+
+    this.backdrop.clear();
+
+    this.backdrop.rect(0, 0, width, height).fill({ color: MENU_BACKDROP_COLOR, alpha: 1 });
+
+    this.menuContent.position.set(width * 0.5, height * 0.5);
+    this.menuContent.pivot.set(width * 0.5, height * 0.5);
+    if (!this.playTransition) {
+      this.menuContent.scale.set(1);
+    }
+
+    const backTexW = Math.max(1, this.menuBack.texture.width);
+
+    const backTexH = Math.max(1, this.menuBack.texture.height);
+
+    this.menuBackCoverScale = computeMenuBackBaseScale(width, height, backTexW, backTexH);
+
+    layoutMenuCoverSprite(this.menuForeground, width, height);
+
+    if (!this.playTransition) {
+      applyMenuBackDriftAnimation(
+        this.menuBack,
+        width,
+        height,
+        this.menuBackCoverScale,
+        this.menuAnimTimeSec,
+      );
+    }
+
+
+
+    const fgTexW = Math.max(1, this.menuForeground.texture.width);
+
+    const fgTexH = Math.max(1, this.menuForeground.texture.height);
+
+    const fgLayout = computeMenuCoverLayout(width, height, fgTexW, fgTexH);
+
+    this.playButton.layout(fgLayout, fgTexW, fgTexH);
+
+    this.playButton.pulse(this.menuAnimTimeSec);
+
+    const feetPoint = computeMenuPlayerFeetPoint(fgLayout, fgTexW, fgTexH);
+
+    const hitRect = layoutMenuPlayHitZone(this.playHitZone, width, height, fgTexW, fgTexH);
+
+    if (!this.playTransition) {
+      this.menuPlayer.layout(height, feetPoint.x, feetPoint.y, width);
+    }
+
+    this.container.sortChildren();
+
+    this.layoutHtmlPlayHit(hitRect, width, height);
+    this.layoutMenuLootOverlay(width, height);
+  }
+
+
 
   destroy(): void {
+    stopBackgroundMusic();
+    this.stopAuthSubscription();
+    this.app?.canvas.removeEventListener('pointerdown', this.bgmUnlockHandler);
+
     window.removeEventListener('keydown', this.keyHandler);
-    this.unmountLobbyOverlay();
+
+    this.playHitZone.off('pointerdown', this.playPointerHandler);
+
+    this.playHitButton?.removeEventListener('pointerdown', this.playPressHandler);
+
+    this.unmountPlayHitButton();
+    this.unmountMenuLootOverlay();
+
     this.container.removeAllListeners();
+
     this.container.destroy({ children: true });
+
   }
 
-  private mountLobbyOverlay(): void {
+
+
+  private mountPlayHitButton(): void {
+
+    const host = document.querySelector<HTMLElement>('#app');
+
+    if (!host) {
+
+      return;
+
+    }
+
+    host.style.position = 'relative';
+
+
+
+    const button = document.createElement('button');
+
+    button.type = 'button';
+
+    button.setAttribute('aria-label', 'Play');
+
+    button.style.cssText =
+
+      'position:absolute;opacity:0.001;border:0;padding:0;margin:0;background:transparent;cursor:pointer;z-index:25;touch-action:manipulation;-webkit-tap-highlight-color:transparent;';
+
+    button.addEventListener('pointerdown', this.playPressHandler, { passive: false });
+
+
+
+    host.appendChild(button);
+
+    this.playHitButton = button;
+
+  }
+
+
+
+  private layoutHtmlPlayHit(rect: Rectangle, logicalW: number, logicalH: number): void {
+
+    const button = this.playHitButton;
+
+    const canvas = this.app?.canvas;
+
+    if (!button || !canvas) {
+
+      return;
+
+    }
+
+
+
+    const marginLeft = Number.parseFloat(canvas.style.marginLeft) || 0;
+
+    const marginTop = Number.parseFloat(canvas.style.marginTop) || 0;
+
+    const displayW = Number.parseFloat(canvas.style.width) || logicalW;
+
+    const displayH = Number.parseFloat(canvas.style.height) || logicalH;
+
+    const scaleX = displayW / Math.max(1, logicalW);
+
+    const scaleY = displayH / Math.max(1, logicalH);
+
+
+
+    button.style.left = `${marginLeft + rect.x * scaleX}px`;
+
+    button.style.top = `${marginTop + rect.y * scaleY}px`;
+
+    button.style.width = `${rect.width * scaleX}px`;
+
+    button.style.height = `${rect.height * scaleY}px`;
+
+  }
+
+
+
+  private mountMenuLootOverlay(): void {
     const host = document.querySelector<HTMLElement>('#app');
     if (!host) {
       return;
     }
     host.style.position = 'relative';
+    this.menuHost = host;
+    this.lootTotals.mount(host);
+    this.lootTotals.setVisible(true);
+  }
 
-    const session = getGameUserSession();
-    const nickname = (session?.nickname ?? getSavedNickname()) || 'Player';
-    const bestH = session?.personalBest.maxHeightMeters ?? 0;
-    const bestC = session?.personalBest.bestCombo ?? 0;
-    const bestPts = session?.personalBest.totalPoints ?? 0;
+  private unmountMenuLootOverlay(): void {
+    this.lootTotals.unmount();
+    this.menuHost = undefined;
+  }
 
-    const overlay = document.createElement('div');
-    overlay.className = 'lobby-shell';
-    overlay.style.cssText =
-      'position:absolute;inset:0;display:flex;flex-direction:column;pointer-events:none;z-index:20;';
+  private layoutMenuLootOverlay(logicalW: number, logicalH: number): void {
+    const canvas = this.app?.canvas;
+    if (!canvas) {
+      return;
+    }
+    this.lootTotals.layout(canvas, logicalW, logicalH);
+  }
 
-    const filler = document.createElement('div');
-    filler.style.flex = '1';
-    filler.style.width = '100%';
-    filler.style.minHeight = '0';
+  private unmountPlayHitButton(): void {
 
-    const cardAnchor = document.createElement('div');
-    cardAnchor.style.cssText =
-      'pointer-events:none;width:100%;display:flex;justify-content:center;padding-bottom:16px;';
+    this.playHitButton?.remove();
 
-    const card = document.createElement('div');
-    card.style.pointerEvents = 'auto';
-    card.style.width = 'min(480px, 92vw)';
-    card.style.padding = '20px';
-    card.style.borderRadius = '18px';
-    card.style.background = 'rgba(14, 8, 32, 0.72)';
-    card.style.backdropFilter = isQuickStartMobileDevice() ? 'none' : 'blur(12px)';
-    card.style.border = '1px solid rgba(57, 255, 20, 0.65)';
-    card.style.boxShadow = '0 0 18px rgba(57,255,20,0.25)';
-    card.style.display = 'grid';
-    card.style.gap = '12px';
+    this.playHitButton = undefined;
 
-    const welcome = document.createElement('div');
-    welcome.textContent = nickname.toUpperCase();
-    welcome.style.color = '#FFD700';
-    welcome.style.fontFamily = 'Orbitron, "Press Start 2P", Arial Black, sans-serif';
-    welcome.style.fontSize = '22px';
-    welcome.style.fontWeight = '800';
-    welcome.style.textAlign = 'center';
-    welcome.style.textShadow = '0 0 8px rgba(255,215,0,0.75)';
+  }
 
-    const stats = document.createElement('div');
-    stats.textContent = `Personal best · ${bestH.toLocaleString()} m · ${bestPts.toLocaleString()} PTS · ${bestC.toLocaleString()} combo`;
-    stats.style.color = '#9ab8a8';
-    stats.style.fontFamily = 'system-ui, Segoe UI, sans-serif';
-    stats.style.fontSize = '15px';
-    stats.style.textAlign = 'center';
-    stats.style.lineHeight = '1.35';
-    stats.style.letterSpacing = '0.04em';
-    stats.style.maxWidth = '100%';
-    stats.style.overflowWrap = 'break-word';
+  private async loadAndDisplayMenuCurrency(): Promise<void> {
+    debugLogMenuBagStorageRead();
+    debugLogLocalStorageCurrency();
+    debugLogFirebaseAuthUser();
 
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = 'PLAY';
-    button.style.height = '52px';
-    button.style.borderRadius = '12px';
-    button.style.border = '1px solid rgba(57,255,20,0.85)';
-    button.style.background = 'rgba(46,0,75,0.8)';
-    button.style.color = '#FFD700';
-    button.style.fontFamily = 'Orbitron, "Press Start 2P", Arial Black, sans-serif';
-    button.style.fontWeight = '800';
-    button.style.letterSpacing = '0.1em';
-    button.style.cursor = 'pointer';
-    button.style.textShadow = '0 0 8px rgba(255,215,0,0.85)';
+    const local = readMenuCurrencyFromLocalStorage();
+    if (local) {
+      this.applyMenuCurrencySnapshot(local, 'immediate localStorage (before firebase)', {
+        skipSourceMessage: true,
+      });
+      logMenuCurrencySourceMessage(local);
+    }
 
-    const logout = document.createElement('button');
-    logout.type = 'button';
-    logout.textContent = 'Log out';
-    logout.style.height = '40px';
-    logout.style.borderRadius = '10px';
-    logout.style.border = '1px solid rgba(255,255,255,0.2)';
-    logout.style.background = 'rgba(0,0,0,0.35)';
-    logout.style.color = '#b8c4c0';
-    logout.style.fontFamily = 'system-ui, Segoe UI, sans-serif';
-    logout.style.fontSize = '14px';
-    logout.style.cursor = 'pointer';
+    let firebase: MenuCurrencySnapshot | null = null;
+    const uid = auth.currentUser?.uid;
+    if (uid) {
+      firebase = await readMenuCurrencyFromFirebase(uid);
+    } else {
+      console.info('[MenuCurrency] auth unavailable on this origin — trying localStorage only', {
+        origin: typeof window !== 'undefined' ? window.location.origin : 'unknown',
+      });
+    }
 
-    button.addEventListener('click', () => {
-      void this.handlePlay();
+    const resolved = resolveMenuCurrencyDisplay(local, firebase);
+    if (resolved) {
+      logMenuCurrencyLoad(`menu currency resolved (pre-live): ${resolved.source}`, resolved);
+      this.applyMenuCurrencySnapshot(resolved, 'menu init resolved (pre-live)');
+    } else {
+      console.info('[MenuCurrency] waiting for firebase live save before showing defaults', {
+        hasLocal: !!local,
+        hasFirebase: !!firebase,
+      });
+    }
+  }
+
+  private finalizeMenuCurrencyLoad(
+    local: MenuCurrencySnapshot | null,
+    firebase: MenuCurrencySnapshot | null,
+    reason: string,
+  ): void {
+    const resolved = resolveMenuCurrencyDisplay(local, firebase, {
+      allowFirebaseEmpty: true,
+      allowDefault: true,
     });
-    logout.addEventListener('click', () => {
-      void (async (): Promise<void> => {
-        try {
-          await signOut(auth);
-        } catch {
-          /* still clear local session */
+    if (!resolved) {
+      return;
+    }
+    this.currencyLoadSettled = true;
+    logMenuCurrencyLoad(`${reason}: ${resolved.source}`, resolved);
+    this.applyMenuCurrencySnapshot(resolved, reason, { allowDefault: true });
+  }
+
+  private applyMenuCurrencySnapshot(
+    snap: MenuCurrencySnapshot,
+    reason: string,
+    options?: { skipSourceMessage?: boolean; allowDefault?: boolean },
+  ): void {
+    if (snap.source === 'default' && !this.currencyLoadSettled && !options?.allowDefault) {
+      return;
+    }
+
+    logMenuCurrencyLoad(reason, snap);
+    if (!options?.skipSourceMessage) {
+      logMenuCurrencySourceMessage(snap);
+    }
+    this.lootTotals.setTotals(snap.gold, snap.diamonds);
+    if (snap.source !== 'default') {
+      persistMenuCurrencySnapshot(snap);
+    }
+  }
+
+  private applyCachedMenuBagTotals(): void {
+    const local = readMenuCurrencyFromLocalStorage();
+    if (!local) {
+      return;
+    }
+    this.applyMenuCurrencySnapshot(local, 'localStorage fallback');
+  }
+
+  private startBagTotalsSubscription(): void {
+    this.stopAuthSubscription();
+    this.authUnsubscribe = onAuthStateChanged(auth, (user) => {
+      void this.bindBagTotalsForUser(user);
+    });
+    if (auth.currentUser) {
+      void this.bindBagTotalsForUser(auth.currentUser);
+    }
+  }
+
+  private async bindBagTotalsForUser(user: User | null): Promise<void> {
+    this.bagUnsubscribe?.();
+    this.bagUnsubscribe = null;
+    this.bagTotalsUid = user?.uid ?? null;
+
+    debugLogFirebaseAuthUser();
+    debugLogLocalStorageCurrency();
+
+    if (!user?.uid) {
+      console.info('[MenuCurrency] bag subscription waiting — no auth user yet');
+      const local = readMenuCurrencyFromLocalStorage();
+      if (local) {
+        this.applyMenuCurrencySnapshot(local, 'no auth — localStorage only');
+      }
+      if (!this.currencyLoadSettled) {
+        this.finalizeMenuCurrencyLoad(local, null, 'no auth — finalize');
+      }
+      return;
+    }
+
+    const uid = user.uid;
+
+    this.bagUnsubscribe = subscribeUserBagBalances(
+      uid,
+      (b) => {
+        if (this.bagTotalsUid !== uid) {
+          return;
         }
-        clearGameUserSession();
-        clearSavedPlayerProfile();
-        location.reload();
-      })();
-    });
+        this.firebaseLiveReceived = true;
+        console.info('[MenuCurrency] firebase live bag update', {
+          uid,
+          saveData: b,
+          gold: b.bagGold,
+          diamonds: b.bagDiamonds,
+        });
+        const local = readMenuCurrencyFromLocalStorage();
+        const remote = snapshotFromFirebaseLive(uid, b.bagGold, b.bagDiamonds);
+        const snap = resolveMenuCurrencyDisplay(local, remote, {
+          allowFirebaseEmpty: true,
+          allowDefault: true,
+        });
+        if (!snap) {
+          return;
+        }
+        this.currencyLoadSettled = true;
+        this.applyMenuCurrencySnapshot(snap, `firebase live → ${snap.source}`, { allowDefault: true });
+      },
+      (err) => {
+        console.warn('[MenuScene] bag totals subscribe failed', err);
+        const local = readMenuCurrencyFromLocalStorage();
+        if (local) {
+          this.applyMenuCurrencySnapshot(local, 'localStorage fallback');
+        }
+        if (!this.currencyLoadSettled) {
+          this.finalizeMenuCurrencyLoad(local, null, 'firebase subscribe failed — finalize');
+        }
+      },
+    );
 
-    card.append(welcome, stats, button, logout);
-    cardAnchor.appendChild(card);
-    overlay.appendChild(filler);
-    overlay.appendChild(cardAnchor);
-    host.appendChild(overlay);
-
-    this.lobbyOverlay = overlay;
+    if (!this.currencyLoadSettled) {
+      const local = readMenuCurrencyFromLocalStorage();
+      const firebase = await readMenuCurrencyFromFirebase(uid);
+      const snap = resolveMenuCurrencyDisplay(local, firebase);
+      if (snap) {
+        this.applyMenuCurrencySnapshot(snap, 'auth ready — profile merge (pre-live)');
+      }
+      await Promise.resolve();
+      if (!this.firebaseLiveReceived) {
+        this.finalizeMenuCurrencyLoad(local, firebase, 'auth ready — finalize without live');
+      }
+    }
   }
 
-  private unmountLobbyOverlay(): void {
-    this.lobbyOverlay?.remove();
-    this.lobbyOverlay = undefined;
+  private stopBagTotalsSubscription(): void {
+    this.bagUnsubscribe?.();
+    this.bagUnsubscribe = null;
+    this.bagTotalsUid = null;
   }
+
+  private stopAuthSubscription(): void {
+    this.stopBagTotalsSubscription();
+    this.authUnsubscribe?.();
+    this.authUnsubscribe = null;
+  }
+
+
 
   private async handlePlay(): Promise<void> {
-    await Promise.resolve(this.onPlay());
+    if (this.playStarted) {
+      return;
+    }
+    this.playStarted = true;
+
+    if (this.playHitButton) {
+      this.playHitButton.style.display = 'none';
+    }
+    this.lootTotals.setVisible(false);
+    this.playHitZone.eventMode = 'none';
+
+    this.playButton.startPressAnimation();
+
+    applyMenuBackDriftAnimation(
+      this.menuBack,
+      this.viewportW,
+      this.viewportH,
+      this.menuBackCoverScale,
+      this.menuAnimTimeSec,
+    );
+
+    this.dreamyFadeOverlay = createMenuDreamyFadeOverlay(this.viewportW, this.viewportH);
+    this.dreamyFadeOverlay.zIndex = 30;
+    this.container.addChild(this.dreamyFadeOverlay);
+    this.container.sortChildren();
+
+    await new Promise<void>((resolve, reject) => {
+      this.playTransition = new MenuPlayTransition(
+        this.menuContent,
+        this.menuBack,
+        this.dreamyFadeOverlay!,
+        this.viewportW,
+        this.viewportH,
+        (handoff) => {
+          void this.beginPlayHandoff(handoff).then(resolve).catch(reject);
+        },
+      );
+    });
   }
+
+  private async beginPlayHandoff(handoff: MenuPlayHandoff): Promise<void> {
+    if (this.playHandoffStarted) {
+      return;
+    }
+    this.playHandoffStarted = true;
+
+    const app = this.app;
+    if (!app) {
+      return;
+    }
+
+    handoff.fadeOverlay.parent?.removeChild(handoff.fadeOverlay);
+    app.stage.addChild(handoff.fadeOverlay);
+
+    await Promise.resolve(this.onPlay(handoff));
+  }
+
 }
+
+

@@ -1,10 +1,24 @@
 import { Assets, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
 import {
-  characterSpritesheetPlayableUrl,
+  CANDY_BOY_DISPLAY_WIDTH,
+  CANDY_BOY_FEET_ANCHOR_Y,
+  CANDY_BOY_JUMP_LOOP_FRAME_START,
+  CANDY_BOY_ROW_BANDS,
+  CANDY_BOY_SHEET_URL,
   DEFAULT_PLAYER_SKIN,
+  FIGHTER_FEET_ANCHOR_Y,
+  FIGHTER_FRAME_SIZE,
+  FIGHTER_SHEETS,
+  fighterSheetUrl,
   PLAYER_SKIN,
   type PlayerSkinName,
+  type SkinFeetAnchors,
 } from '../constants/playerSkin';
+import { CHARACTER_SHEET_DARK_BG_MAX_CHANNEL } from '../utils/logoTexture';
+import {
+  extractUniformSheetFrameRows,
+  loadKeyedSheetCanvas,
+} from '../utils/spriteSheetExtract';
 import { ALIVE, GRAPPLE, RENDER, WALK } from '../../config/game.config';
 import type { ActiveGrapple, Direction } from '../types';
 import type { PlayerBody } from '../systems/Physics';
@@ -14,29 +28,22 @@ export enum PlayerState {
   Walk,
   Jump,
   Fall,
+  WallSlide,
   Grapple,
   SuperJump,
   Attack,
 }
 
-/**
- * Spritesheet layout — `public/assets/Player staff/character_spritesheet.png` is an 800×280 sheet
- * arranged as 8 columns × 7 rows of 100×40 frames. The user-facing spec describes
- * 48×48 frames but the asset itself uses 100×40 cells; what matters for animation is
- * that the row mapping below matches their intent (idle = row 0, run = row 1, jump = row 2).
- */
-const FRAME_W = 100;
-const FRAME_H = 40;
-const IDLE_ROW = 0;
-const RUN_ROW = 1;
-const JUMP_ROW = 2;
-const ATTACK_ROW = 3;
-const IDLE_FRAMES = 6;
-const RUN_FRAMES = 8;
-const JUMP_FRAMES = 8;
-const ATTACK_FRAMES = 8;
+const PLAYER_DISPLAY_SCALE = 1.15;
+const FIGHTER_DISPLAY_WIDTH = 235 * PLAYER_DISPLAY_SCALE;
+/** Nudge feet onto the platform deck when grounded (positive = down into surface). */
+const GROUNDED_FEET_SINK_PX = 0;
+const SLIDE_FPS = 10;
 
-const BASE_AVATAR_Y_NINJA = -26;
+type BodyFrame = {
+  texture: Texture;
+  feetAnchorY: number;
+};
 
 /**
  * Attack swing length (seconds). Drives both the animation playback rate and the
@@ -52,10 +59,6 @@ export const PLAYER_ATTACK_DURATION_SEC = 0.4;
 export const PLAYER_ATTACK_HIT_WINDOW_START = 0.18;
 export const PLAYER_ATTACK_HIT_WINDOW_END = 0.78;
 
-/** Display scale of each cell. Character art occupies ~25×28 inside the cell, so a 3.588× scale
- * renders the visible figure (~15% larger than prior 3.12×). */
-const SPRITE_SCALE = 3.588;
-
 const PLAYER_SCALE = 0.45785088;
 const PLAYER_BODY_WIDTH = 70 * PLAYER_SCALE;
 const PLAYER_BODY_HEIGHT = 96 * PLAYER_SCALE;
@@ -64,36 +67,176 @@ const IDLE_FPS = 8;
 
 type CharacterTextures = {
   idle: Texture[];
+  walk: Texture[];
   run: Texture[];
   jump: Texture[];
+  slide: Texture[];
   attack: Texture[];
+  landing: Texture[];
 };
 
 type SkinRenderBundle = {
   textures: CharacterTextures;
   spriteDisplayWidth: number;
-  baseAvatarY: number;
+  feetAnchors: SkinFeetAnchors;
+  jumpLoopFrameStart: number;
 };
 
-function sliceNinjaTextures(source: Texture['source']): CharacterTextures {
-  const sliceRow = (row: number, count: number): Texture[] => {
-    const frames: Texture[] = [];
-    for (let i = 0; i < count; i += 1) {
-      frames.push(
-        new Texture({
-          source,
-          frame: new Rectangle(i * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H),
-        }),
-      );
+async function sliceFighterSheet(url: string, frameCount: number): Promise<Texture[]> {
+  const sheet = (await Assets.load(url)) as Texture;
+  const cell = FIGHTER_FRAME_SIZE;
+  const sheetW = Math.max(sheet.width, sheet.source.width);
+  const sheetH = Math.max(sheet.height, sheet.source.height);
+  const maxFrames = Math.max(1, Math.floor(sheetW / cell));
+  const count = Math.min(frameCount, maxFrames);
+  if (sheetH < cell * 0.5) {
+    console.warn('[Player] Fighter sheet shorter than expected:', url);
+    return [sheet];
+  }
+  const frames: Texture[] = [];
+  for (let i = 0; i < count; i += 1) {
+    frames.push(
+      new Texture({
+        source: sheet.source,
+        frame: new Rectangle(i * cell, 0, cell, cell),
+      }),
+    );
+  }
+  return frames.length > 0 ? frames : [sheet];
+}
+
+async function loadFighterSheetSafe(file: string, frameCount: number): Promise<Texture[]> {
+  try {
+    return await sliceFighterSheet(fighterSheetUrl(file), frameCount);
+  } catch (err) {
+    console.warn('[Player] Failed to load Fighter sheet:', file, err);
+    return [];
+  }
+}
+
+async function loadFighterTextures(): Promise<CharacterTextures | null> {
+  const s = FIGHTER_SHEETS;
+  try {
+    const [idle, run, jump, slide, attack1, attack2, attack3] = await Promise.all([
+      loadFighterSheetSafe(s.idle.file, s.idle.frameCount),
+      loadFighterSheetSafe(s.run.file, s.run.frameCount),
+      loadFighterSheetSafe(s.jump.file, s.jump.frameCount),
+      loadFighterSheetSafe(s.slide.file, s.slide.frameCount),
+      loadFighterSheetSafe(s.attack1.file, s.attack1.frameCount),
+      loadFighterSheetSafe(s.attack2.file, s.attack2.frameCount),
+      loadFighterSheetSafe(s.attack3.file, s.attack3.frameCount),
+    ]);
+    if (idle.length === 0) {
+      return null;
     }
-    return frames;
-  };
+    const attack = [...attack1, ...attack2, ...attack3];
+    const ground = run.length > 0 ? run : idle;
+    return {
+      idle,
+      walk: ground,
+      run: ground,
+      jump: jump.length > 0 ? jump : idle,
+      slide: slide.length > 0 ? slide : idle,
+      attack: attack.length > 0 ? attack : idle,
+      landing: [],
+    };
+  } catch (err) {
+    console.error('[Player] Fighter textures failed:', err);
+    return null;
+  }
+}
+
+function fighterSkinBundle(textures: CharacterTextures): SkinRenderBundle {
   return {
-    idle: sliceRow(IDLE_ROW, IDLE_FRAMES),
-    run: sliceRow(RUN_ROW, RUN_FRAMES),
-    jump: sliceRow(JUMP_ROW, JUMP_FRAMES),
-    attack: sliceRow(ATTACK_ROW, ATTACK_FRAMES),
+    textures,
+    spriteDisplayWidth: FIGHTER_DISPLAY_WIDTH,
+    feetAnchors: FIGHTER_FEET_ANCHOR_Y,
+    jumpLoopFrameStart: textures.jump.length,
   };
+}
+
+function candyBoySkinBundle(textures: CharacterTextures): SkinRenderBundle {
+  return {
+    textures,
+    spriteDisplayWidth: CANDY_BOY_DISPLAY_WIDTH,
+    feetAnchors: CANDY_BOY_FEET_ANCHOR_Y,
+    jumpLoopFrameStart: CANDY_BOY_JUMP_LOOP_FRAME_START,
+  };
+}
+
+async function loadCandyBoyTextures(): Promise<CharacterTextures | null> {
+  try {
+    const sheetCanvas = await loadKeyedSheetCanvas(CANDY_BOY_SHEET_URL, {
+      darkMaxChannel: CHARACTER_SHEET_DARK_BG_MAX_CHANNEL,
+    });
+    if (!sheetCanvas) {
+      console.warn('[Player] Failed to decode Candy boy sheet:', CANDY_BOY_SHEET_URL);
+      return null;
+    }
+
+    const rowFrames = extractUniformSheetFrameRows(sheetCanvas, CANDY_BOY_ROW_BANDS);
+
+    const idle = rowFrames[0]?.textures ?? [];
+    const run = rowFrames[1]?.textures ?? [];
+    const jump = rowFrames[2]?.textures ?? [];
+    const landing = rowFrames[3]?.textures ?? [];
+
+    if (idle.length === 0) {
+      console.warn('[Player] Candy boy idle row produced no frames');
+      return null;
+    }
+
+    const ground = run.length > 0 ? run : idle;
+    const slide =
+      landing.length >= 2
+        ? [landing[0], landing[1]]
+        : landing.length > 0
+          ? landing
+          : idle;
+    const attack =
+      run.length >= 4
+        ? [run[0], run[2], run[4], run[6]].filter((tex): tex is Texture => !!tex)
+        : ground;
+
+    return {
+      idle,
+      walk: ground,
+      run: ground,
+      jump: jump.length > 0 ? jump : idle,
+      slide,
+      attack: attack.length > 0 ? attack : idle,
+      landing,
+    };
+  } catch (err) {
+    console.warn('[Player] Failed to load Candy boy sheet:', err);
+    return null;
+  }
+}
+
+/** Single idle frame for the main-menu avatar (avoids sheet digit labels cycling). */
+export async function loadMenuPlayerIdleFrame(): Promise<Texture | undefined> {
+  const candy = await loadCandyBoyTextures();
+  if (candy && candy.idle.length > 0) {
+    return candy.idle[0];
+  }
+  const fighter = await loadFighterTextures();
+  if (fighter && fighter.idle.length > 0) {
+    return fighter.idle[0];
+  }
+  return undefined;
+}
+
+/** Jump pose for the menu fly-into-clouds beat. */
+export async function loadMenuPlayerJumpFrame(): Promise<Texture | undefined> {
+  const candy = await loadCandyBoyTextures();
+  if (candy && candy.jump.length > 0) {
+    return candy.jump[0];
+  }
+  const fighter = await loadFighterTextures();
+  if (fighter && fighter.jump.length > 0) {
+    return fighter.jump[0];
+  }
+  return undefined;
 }
 
 export class Player extends Container {
@@ -108,7 +251,7 @@ export class Player extends Container {
   };
 
   /**
-   * Wall slide can only latch when `true`; set `false` when a slide starts, `true` after landing on a platform.
+   * Slide-phase chain walls only: elevator latch when `true`; `false` on slide latch, `true` after stair land.
    */
   hasTouchedPlatformSinceLastSlide = true;
 
@@ -127,11 +270,14 @@ export class Player extends Container {
   private silhouette?: Sprite;
   private textures?: CharacterTextures;
   private skinBundles?: Record<PlayerSkinName, SkinRenderBundle>;
-  private spriteDisplayWidth = FRAME_W * SPRITE_SCALE;
-  private baseAvatarY = BASE_AVATAR_Y_NINJA;
+  private spriteDisplayWidth = FIGHTER_DISPLAY_WIDTH;
+  private feetAnchors: SkinFeetAnchors = FIGHTER_FEET_ANCHOR_Y;
+  private jumpLoopFrameStart = Number.MAX_SAFE_INTEGER;
   private distanceTraveled = 0;
   private idleTime = 0;
   private airTime = 0;
+  private wallSlideAnimTime = 0;
+  private wallSliding = false;
   private walkBlend = 0;
   private jumpPulseMs = 0;
   private jumpAnticipationMs = 0;
@@ -168,24 +314,48 @@ export class Player extends Container {
     return Math.min(1, grapple.extendT / extendSec);
   }
 
+  private resolveSkinKey(skinName: PlayerSkinName): PlayerSkinName | undefined {
+    const bundles = this.skinBundles;
+    if (!bundles) {
+      return undefined;
+    }
+    if (bundles[skinName]) {
+      return skinName;
+    }
+    if (bundles[PLAYER_SKIN.CANDY_BOY]) {
+      return PLAYER_SKIN.CANDY_BOY;
+    }
+    if (bundles[DEFAULT_PLAYER_SKIN]) {
+      return DEFAULT_PLAYER_SKIN;
+    }
+    if (bundles[PLAYER_SKIN.FIGHTER]) {
+      return PLAYER_SKIN.FIGHTER;
+    }
+    return undefined;
+  }
+
   /** Swap playable spritesheet and remap idle / run / jump / attack strips. */
   updatePlayerSkin(skinName: PlayerSkinName): void {
-    const b = this.skinBundles?.[skinName];
-    if (!b) {
+    const key = this.resolveSkinKey(skinName);
+    const b = key != null ? this.skinBundles?.[key] : undefined;
+    if (!b || key == null) {
       return;
     }
 
-    this.skinName = skinName;
+    this.skinName = key;
     this.textures = b.textures;
     this.spriteDisplayWidth = b.spriteDisplayWidth;
-    this.baseAvatarY = b.baseAvatarY;
+    this.feetAnchors = b.feetAnchors;
+    this.jumpLoopFrameStart = b.jumpLoopFrameStart;
 
     const frame0 = b.textures.idle[0] ?? Texture.EMPTY;
+    const feetY = b.feetAnchors.idle;
 
     const snapPx = RENDER.pixelArt;
 
     if (this.bodySprite && this.avatarRig) {
       this.bodySprite.texture = frame0;
+      this.bodySprite.anchor.set(0.5, feetY);
       this.bodySprite.width = this.spriteDisplayWidth;
       this.bodySprite.scale.y = this.bodySprite.scale.x;
       this.bodySprite.roundPixels = snapPx;
@@ -193,54 +363,59 @@ export class Player extends Container {
 
     if (this.silhouette) {
       this.silhouette.texture = frame0;
+      this.silhouette.anchor.set(0.5, feetY);
       this.silhouette.width = this.spriteDisplayWidth + 5;
       this.silhouette.scale.y = this.silhouette.scale.x;
       this.silhouette.roundPixels = snapPx;
-      this.silhouette.position.set(0, this.baseAvatarY);
-    }
-
-    if (this.avatarRig) {
-      this.avatarRig.position.set(0, this.baseAvatarY);
     }
   }
 
   async load(): Promise<void> {
-    const ninjaUrl = characterSpritesheetPlayableUrl();
-    const ninjaSheet = (await Assets.load(ninjaUrl)) as Texture;
+    const [fighterTextures, candyBoyTextures] = await Promise.all([
+      loadFighterTextures(),
+      loadCandyBoyTextures(),
+    ]);
 
-    const ninjaTextures = sliceNinjaTextures(ninjaSheet.source);
-    const ninjaDisplayW = FRAME_W * SPRITE_SCALE;
+    this.skinBundles = {} as Record<PlayerSkinName, SkinRenderBundle>;
+    if (candyBoyTextures) {
+      this.skinBundles[PLAYER_SKIN.CANDY_BOY] = candyBoySkinBundle(candyBoyTextures);
+    }
+    if (fighterTextures) {
+      this.skinBundles[PLAYER_SKIN.FIGHTER] = fighterSkinBundle({
+        ...fighterTextures,
+        landing: [],
+      });
+    }
 
-    this.skinBundles = {
-      [PLAYER_SKIN.NINJA_SLICK]: {
-        textures: ninjaTextures,
-        spriteDisplayWidth: ninjaDisplayW,
-        baseAvatarY: BASE_AVATAR_Y_NINJA,
-      },
-    };
+    const preferred =
+      this.skinBundles[DEFAULT_PLAYER_SKIN] ??
+      this.skinBundles[PLAYER_SKIN.CANDY_BOY] ??
+      this.skinBundles[PLAYER_SKIN.FIGHTER];
+    if (!preferred) {
+      throw new Error('[Player] No playable character textures loaded');
+    }
 
-    const initialFrame = ninjaTextures.idle[0] ?? Texture.EMPTY;
+    const initialBundle = preferred;
+    const initialFrame = initialBundle.textures.idle[0] ?? Texture.EMPTY;
+    const initialFeetY = initialBundle?.feetAnchors.idle ?? 1;
 
     this.silhouette = new Sprite(initialFrame);
     this.silhouette.roundPixels = RENDER.pixelArt;
-    this.silhouette.anchor.set(0.5);
+    this.silhouette.anchor.set(0.5, initialFeetY);
     this.silhouette.tint = 0xf4ead2;
     this.silhouette.alpha = 0.22;
-    this.silhouette.width = ninjaDisplayW + 5;
+    this.silhouette.width = (initialBundle?.spriteDisplayWidth ?? FIGHTER_DISPLAY_WIDTH) + 5;
     this.silhouette.scale.y = this.silhouette.scale.x;
-    this.silhouette.position.set(0, BASE_AVATAR_Y_NINJA);
 
     this.avatarRig = new Container();
     this.avatarRig.sortableChildren = true;
 
     this.bodySprite = new Sprite(initialFrame);
     this.bodySprite.roundPixels = RENDER.pixelArt;
-    this.bodySprite.anchor.set(0.5);
-    this.bodySprite.width = ninjaDisplayW;
+    this.bodySprite.anchor.set(0.5, initialFeetY);
+    this.bodySprite.width = initialBundle?.spriteDisplayWidth ?? FIGHTER_DISPLAY_WIDTH;
     this.bodySprite.scale.y = this.bodySprite.scale.x;
     this.bodySprite.position.set(0, 0);
-
-    this.avatarRig.position.set(0, BASE_AVATAR_Y_NINJA);
     this.avatarRig.addChild(this.bodySprite);
 
     this.addChildAt(this.silhouette, 1);
@@ -256,7 +431,15 @@ export class Player extends Container {
     grapple: ActiveGrapple | null = null,
     beastMode = false,
     shieldActive = false,
+    wallSliding = false,
   ): void {
+    this.wallSliding = wallSliding;
+    if (wallSliding) {
+      this.wallSlideAnimTime += dt;
+    } else {
+      this.wallSlideAnimTime = 0;
+    }
+
     this.grappleClip = grapple;
     this.grapplePoseActive = grapple !== null;
     this.grappleAnimT = Player.computeGrappleAnimProgress(grapple, GRAPPLE.extendSec);
@@ -381,6 +564,11 @@ export class Player extends Container {
       return;
     }
 
+    if (this.wallSliding) {
+      this.state = PlayerState.WallSlide;
+      return;
+    }
+
     if (!this.body.grounded) {
       this.state = this.body.vy < 0 ? PlayerState.Jump : PlayerState.Fall;
       return;
@@ -415,7 +603,9 @@ export class Player extends Container {
       return;
     }
 
-    const texture = this.pickBodyTexture();
+    const { texture, feetAnchorY } = this.pickBodyFrame();
+    this.bodySprite.anchor.set(0.5, feetAnchorY);
+    this.silhouette.anchor.set(0.5, feetAnchorY);
     const pullingGrapple =
       this.state === PlayerState.Grapple &&
       this.grappleClip !== null &&
@@ -423,11 +613,13 @@ export class Player extends Container {
     const walkPhase = Math.sin(this.distanceTraveled * WALK.bobFrequency);
     const stridePhase = Math.cos(this.distanceTraveled * WALK.bobFrequency);
     const idleBreath = Math.sin(this.idleTime * ALIVE.idleBreathSpeed);
-    const idleOffset = Math.cos(this.idleTime * ALIVE.idleBreathSpeed) * ALIVE.idleFloatPx;
+    const idleOffset = this.body.grounded
+      ? 0
+      : Math.cos(this.idleTime * ALIVE.idleBreathSpeed) * ALIVE.idleFloatPx;
     const idleBlend = 1 - this.walkBlend;
     const walkBob = walkPhase * WALK.bobAmplitude * this.walkBlend;
     const walkSway = stridePhase * WALK.swayAmplitude * this.walkBlend;
-    const groundedSink = this.body.grounded ? 4 : 0;
+    const groundedSink = this.body.grounded ? GROUNDED_FEET_SINK_PX : 0;
     let stretch =
       1 +
       Math.abs(walkPhase) * WALK.stretchAmplitude * this.walkBlend +
@@ -468,7 +660,7 @@ export class Player extends Container {
       squash *= 1 + ALIVE.jumpAnticipationStretch * jumpAnticipation;
     }
 
-    if (landingPulse > 0) {
+    if (landingPulse > 0 && !(this.textures.landing.length > 0)) {
       stretch *= 1 - ALIVE.landingSquash * landingPulse;
       squash *= 1 + ALIVE.landingStretch * landingPulse;
     }
@@ -482,7 +674,7 @@ export class Player extends Container {
     this.bodySprite.scale.y = magX * stretch;
     this.avatarRig.position.set(
       walkSway,
-      this.baseAvatarY + groundedSink + walkBob + idleOffset * idleBlend,
+      this.getFeetAnchorY() + groundedSink + walkBob + idleOffset * idleBlend,
     );
     this.avatarRig.rotation =
       walkPhase * WALK.tiltAmplitude * this.walkBlend +
@@ -524,7 +716,7 @@ export class Player extends Container {
         .ellipse(0, -6, 40 * pulse, 30 * pulse)
         .stroke({ width: 2, color: 0xffcc44, alpha: 0.25 + 0.15 * pulse });
     }
-    if (shieldActive) {
+    if (shieldActive && !this.body.grounded) {
       const pulse = 0.58 + 0.42 * Math.sin(this.idleTime * 12);
       this.glow
         .ellipse(0, -6, 56 * pulse, 42 * pulse)
@@ -539,7 +731,7 @@ export class Player extends Container {
     if (superJumpPop > 0 && !shieldActive) {
       const ring = 0.42 + 0.58 * superJumpPop;
       this.glow
-        .ellipse(0, this.baseAvatarY - 10, 44 * ring, 34 * ring)
+        .ellipse(0, this.getFeetAnchorY() - this.spriteDisplayWidth * 0.42, 44 * ring, 34 * ring)
         .stroke({ width: 2.4, color: 0x88fff2, alpha: 0.38 * superJumpPop });
     }
   }
@@ -548,17 +740,38 @@ export class Player extends Container {
     this.feet.clear();
   }
 
+  private jumpFrameFeetAnchorY(frameIndex: number): number {
+    if (
+      this.feetAnchors.jumpLoop !== undefined &&
+      frameIndex >= this.jumpLoopFrameStart
+    ) {
+      return this.feetAnchors.jumpLoop;
+    }
+    return this.feetAnchors.jump;
+  }
+
   /** Selects an animation frame based on player state, velocity, and elapsed time. */
-  private pickBodyTexture(): Texture {
+  private pickBodyFrame(): BodyFrame {
+    const empty: BodyFrame = {
+      texture: Texture.EMPTY,
+      feetAnchorY: this.feetAnchors.idle,
+    };
     if (!this.textures) {
-      return Texture.EMPTY;
+      return empty;
+    }
+
+    if (this.state === PlayerState.WallSlide && this.textures.slide.length > 0) {
+      const slide = this.textures.slide;
+      const idx =
+        Math.floor(this.wallSlideAnimTime * SLIDE_FPS) % Math.max(1, slide.length);
+      return { texture: slide[idx], feetAnchorY: this.feetAnchors.slide };
     }
 
     if (this.state === PlayerState.Attack && this.textures.attack.length > 0) {
       const attack = this.textures.attack;
       const progress = this.getAttackProgress();
       const idx = Math.min(attack.length - 1, Math.floor(progress * attack.length));
-      return attack[idx];
+      return { texture: attack[idx], feetAnchorY: this.feetAnchors.attack };
     }
 
     if (this.state === PlayerState.Grapple) {
@@ -567,23 +780,48 @@ export class Player extends Container {
         this.grappleClip?.phase === 'pull'
           ? 0.55
           : 0.2 + 0.35 * this.grappleAnimT;
-      return jump[Math.min(jump.length - 1, Math.floor(phaseT * jump.length))];
+      const idx = Math.min(jump.length - 1, Math.floor(phaseT * jump.length));
+      return { texture: jump[idx], feetAnchorY: this.jumpFrameFeetAnchorY(idx) };
+    }
+
+    if (
+      this.body.grounded &&
+      this.landingPulseMs > 0 &&
+      this.textures.landing.length > 0
+    ) {
+      const landing = this.textures.landing;
+      const progress = 1 - this.landingPulseMs / ALIVE.landingPulseMs;
+      const idx = Math.min(
+        landing.length - 1,
+        Math.floor(Math.max(0, progress) * landing.length),
+      );
+      return {
+        texture: landing[idx],
+        feetAnchorY: this.feetAnchors.landing ?? this.feetAnchors.idle,
+      };
     }
 
     if (!this.body.grounded) {
       const jump = this.textures.jump;
       const t = Player.airborneFrameT(this.body.vy, this.airTime);
-      return jump[Math.min(jump.length - 1, Math.floor(t * jump.length))];
+      const idx = Math.min(jump.length - 1, Math.floor(t * jump.length));
+      return { texture: jump[idx], feetAnchorY: this.jumpFrameFeetAnchorY(idx) };
     }
 
     if (this.state === PlayerState.Walk) {
-      const run = this.textures.run;
-      const idx = Math.floor(this.distanceTraveled / WALK.runFrameDistance) % run.length;
-      return run[idx];
+      const walk = this.textures.walk;
+      const idx =
+        Math.floor(this.distanceTraveled / WALK.runFrameDistance) %
+        Math.max(1, walk.length);
+      return { texture: walk[idx], feetAnchorY: this.feetAnchors.run };
     }
 
     const idle = this.textures.idle;
-    return idle[Math.floor(this.idleTime * IDLE_FPS) % idle.length];
+    return {
+      texture:
+        idle[Math.floor(this.idleTime * IDLE_FPS) % Math.max(1, idle.length)] ?? Texture.EMPTY,
+      feetAnchorY: this.feetAnchors.idle,
+    };
   }
 
   /**
@@ -605,6 +843,11 @@ export class Player extends Container {
     }
 
     return Math.min(0.99, 0.7 + Math.min(1, (vy - 400) / 800) * 0.29);
+  }
+
+  /** World Y of the avatar rig origin — bottom-center of the sprite (feet). */
+  private getFeetAnchorY(): number {
+    return this.body.height * 0.5;
   }
 
   private getPulse(durationMs: number, remainingMs: number): number {

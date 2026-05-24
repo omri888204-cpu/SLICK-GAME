@@ -1,5 +1,5 @@
 import { Container, Graphics, Text, type DestroyOptions } from 'pixi.js';
-import { COMBO } from '../../config/game.config';
+import { COMBO, tunedBloom, tunedBlur, tunedUiAlpha, tunedUiStroke } from '../../config/game.config';
 
 /** Outer box geometry in local coordinates — `position` is set externally to the badge center. */
 export const COMBO_BADGE_W = 184;
@@ -121,11 +121,11 @@ export class ComboBadge extends Container {
         fontWeight: '900',
         fontSize: 30,
         letterSpacing: 2,
-        stroke: { color: '#1a0028', width: 5 },
+        stroke: { color: '#1a0028', width: tunedUiStroke(5) },
         dropShadow: {
-          alpha: 0.65,
+          alpha: tunedBloom(0.65),
           angle: Math.PI / 4,
-          blur: 5,
+          blur: tunedBlur(5),
           color: '#ff2288',
           distance: 3,
         },
@@ -346,10 +346,10 @@ export class ComboBadge extends Container {
     this.bg.clear();
     this.bg
       .roundRect(0, 0, COMBO_BADGE_W, COMBO_BADGE_H, 14)
-      .fill({ color: 0x0a0014, alpha: 0.92 });
+      .fill({ color: 0x0a0014, alpha: tunedUiAlpha(0.92) });
     this.bg
       .roundRect(0, 0, COMBO_BADGE_W, COMBO_BADGE_H, 14)
-      .stroke({ width: 3, color, alpha: 0.95 });
+      .stroke({ width: tunedUiStroke(3), color, alpha: 0.95 });
     this.bg
       .roundRect(4, 4, COMBO_BADGE_W - 8, COMBO_BADGE_H - 8, 11)
       .stroke({ width: 1.4, color, alpha: 0.32 });
@@ -358,10 +358,10 @@ export class ComboBadge extends Container {
     this.glow.clear();
     this.glow
       .roundRect(-8, -8, COMBO_BADGE_W + 16, COMBO_BADGE_H + 16, 20)
-      .stroke({ width: 6, color, alpha: glowAlpha * 0.4 });
+      .stroke({ width: 6, color, alpha: glowAlpha * tunedBloom(0.4) });
     this.glow
       .roundRect(-4, -4, COMBO_BADGE_W + 8, COMBO_BADGE_H + 8, 17)
-      .stroke({ width: 4, color, alpha: glowAlpha * 0.55 });
+      .stroke({ width: 4, color, alpha: glowAlpha * tunedBloom(0.55) });
 
     this.wordText.position.set(COMBO_BADGE_W * 0.5, COMBO_BADGE_H * 0.39);
     this.wordText.style.fill = color;

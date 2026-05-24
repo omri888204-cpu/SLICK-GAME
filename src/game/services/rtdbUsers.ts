@@ -33,7 +33,7 @@ export type UserProfileNode = {
   email: string;
   registrationComplete?: boolean;
   selectedCharacterId?: string;
-  /** Playable runner skin: `NINJA_SLICK` (see {@link ../constants/playerSkin}). */
+  /** Playable runner skin: `FIGHTER` (see {@link ../constants/playerSkin}). */
   selected_character?: string;
   createdAt?: number;
 };

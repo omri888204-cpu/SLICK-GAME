@@ -19,13 +19,18 @@ import {
   COLLECTIBLES,
   GRAPPLE,
   PHYSICS,
+  PLATFORM_LEVEL_ART,
+  PLATFORM_LEVEL_DECK_ANCHOR_Y,
+  PLATFORM_SIZING,
   PLAY_SCENE,
   RENDER,
   SCORE_UI,
   STAIRS,
+  tunedBlur,
+  tunedUiAlpha,
+  tunedUiStroke,
   WALK,
 } from '../../config/game.config';
-import { HyperScoreboard } from '../ui/HyperScoreboard';
 import {
   ComboBadge,
   COMBO_BADGE_H,
@@ -33,7 +38,16 @@ import {
   comboStreakToWordTier,
 } from '../ui/ComboBadge';
 import { ComboSynth } from '../audio/ComboSynth';
+import {
+  loadSkillButtonTextures,
+  preloadSkillButtonAssets,
+} from '../constants/skillButtons';
 import { Player } from '../entities/Player';
+import { CandyAtmosphereManager } from '../systems/atmosphere/CandyAtmosphereManager';
+import {
+  BACK_5000_BACKDROP_COLOR,
+  BACKGROUND_TIER_SWITCH_METERS,
+} from '../systems/atmosphere/candyStaticBackground';
 import {
   buildLeaderboardRowFromSyncedUser,
   fetchTopLeaderboard,
@@ -49,27 +63,29 @@ import {
   subscribeUserBagBalances,
   upsertPersonalBestIfBetter,
 } from '../services/rtdbUsers';
-import { getGameUserSession, patchSessionPersonalBest, clearGameUserSession } from '../services/userSession';
+import { writeMenuBagCache } from '../services/menuBagCache';
+import { getGameUserSession, patchSessionPersonalBest } from '../services/userSession';
 import {
-  clearSavedPlayerProfile,
   getSavedSelectedCharacterSkin,
 } from '../services/playerProfile';
 import { normalizeSelectedCharacterSkin } from '../constants/playerSkin';
 import { auth } from '../../firebase.js';
-import { signOut } from 'firebase/auth';
+import { logoutAndReturnToLogin } from '../landing/runLandingGate';
 import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
 import { InputManager } from '../systems/InputManager';
 import { Physics } from '../systems/Physics';
-import type {
-  ActiveGrapple,
-  MushroomEnemy,
-  MushroomEnemyState,
-  Platform,
-  Ripple,
-} from '../types';
-import crystalPlatformUrl from '../../assets/sprites/crystal-platform.png';
-import slimePlatformUrl from '../../assets/sprites/slime-platform.png';
-import volcanoPlatformUrl from '../../assets/sprites/volcano-platform.png';
+import {
+  extractPlatformFoodSheetFrameRows,
+  loadKeyedSheetCanvas,
+  type SheetRowBand,
+} from '../utils/spriteSheetExtract';
+import {
+  loadKeyedTrimmedTexture,
+  PLATFORM_FOOD_SHEET_DARK_BG_MAX_CHANNEL,
+} from '../utils/logoTexture';
+import { SkillHudButton } from '../ui/SkillHudButton';
+import type { ActiveGrapple, Platform, Ripple } from '../types';
+import { MENU_PLAY_TRANSITION } from '../ui/MenuPlayTransition';
 import type { Scene } from './Scene';
 
 type DiamondShineSpark = {
@@ -109,15 +125,33 @@ type TouchRipple = {
   life: number;
 };
 
-type MushroomDeathEffect = {
-  sprite: Sprite;
-  phase: 'die' | 'blood';
-  timeInPhase: number;
-};
-
 type CollectibleKind = 'coin' | 'diamond' | 'shield';
 
-type BagItemKind = 'gold' | 'diamond' | 'purpleMushroom';
+/** `platforms marshmelo.png` squash — physics {@link Platform} hitbox unchanged. */
+type PlatformJuiceLayer = Container & {
+  isBouncing: boolean;
+  bounceElapsedSec?: number;
+};
+
+const PLATFORM_SPRITE_DATA_IS_BOUNCING = 'isBouncing';
+
+type PlatformSpriteWithData = Sprite & {
+  platformSpriteData?: Map<string, unknown>;
+};
+
+function setPlatformSpriteData(sprite: Sprite, key: string, value: unknown): void {
+  const s = sprite as PlatformSpriteWithData;
+  if (!s.platformSpriteData) {
+    s.platformSpriteData = new Map();
+  }
+  s.platformSpriteData.set(key, value);
+}
+
+function getPlatformSpriteData(sprite: Sprite, key: string): unknown {
+  return (sprite as PlatformSpriteWithData).platformSpriteData?.get(key);
+}
+
+type BagItemKind = 'gold' | 'diamond';
 
 type BagSlotItem = {
   kind: BagItemKind;
@@ -170,41 +204,88 @@ const SFX_REMOTE: Record<SfxId, string> = {
 
 /** Game binaries live in `public/assets/` and grouped subfolders. */
 const GAME_ASSETS = `${import.meta.env.BASE_URL}assets`;
+const PLATFORMS_DIR = `${GAME_ASSETS}/Platforms`;
+const MARSHMELO_SHEET_URL = `${PLATFORMS_DIR}/${encodeURIComponent('platforms marshmelo.png')}`;
+/**
+ * Marshmallow grid only (top section) — left→right, top→bottom. Oreo (row 3 col 2) omitted.
+ * Column `x1` is exclusive (see {@link SheetRowBand}).
+ */
+const MARSHMELO_ROW_BANDS: readonly SheetRowBand[] = [
+  {
+    y0: 173,
+    y1: 273,
+    columns: [
+      { x0: 50, x1: 323 },
+      { x0: 369, x1: 656 },
+      { x0: 697, x1: 976 },
+    ],
+  },
+  {
+    y0: 367,
+    y1: 487,
+    columns: [
+      { x0: 46, x1: 322 },
+      { x0: 372, x1: 657 },
+      { x0: 696, x1: 989 },
+    ],
+  },
+  {
+    y0: 553,
+    y1: 701,
+    columns: [
+      { x0: 47, x1: 327 },
+      { x0: 694, x1: 983 },
+    ],
+  },
+] as const;
+/** Chocolate grid (bottom section) — measured cells, x1 exclusive. */
+const CHOCOLATE_ROW_BANDS: readonly SheetRowBand[] = [
+  {
+    y0: 895,
+    y1: 1035,
+    columns: [
+      { x0: 44, x1: 330 },
+      { x0: 368, x1: 656 },
+      { x0: 695, x1: 999 },
+    ],
+  },
+  {
+    y0: 1106,
+    y1: 1254,
+    columns: [
+      { x0: 47, x1: 341 },
+      { x0: 341, x1: 666 },
+      { x0: 694, x1: 1003 },
+    ],
+  },
+  {
+    y0: 1317,
+    y1: 1455,
+    columns: [
+      { x0: 25, x1: 341 },
+      { x0: 341, x1: 676 },
+      { x0: 694, x1: 1005 },
+    ],
+  },
+] as const;
+const PLATFORM_SQUASH_SCALE_X = 1.2;
+const PLATFORM_SQUASH_SCALE_Y = 0.7;
+const PLATFORM_SQUASH_DURATION_MS = 150;
+const PLATFORM_SQUASH_JUICE_LABEL = 'platform-squash-juice';
 const BG_TESET_DIR_URL = `${GAME_ASSETS}/${encodeURIComponent('backgroud teset')}`;
 /** Bottom death hazard — full `lava 2.png` scaled to viewport width (see {@link drawBottomDeathLine}). */
 const DEATH_LINE_IMAGE_URL = `${BG_TESET_DIR_URL}/${encodeURIComponent('lava 2.png')}`;
-const STATIC_BG_TESET3_CANDIDATES = [
-  `${BG_TESET_DIR_URL}/${encodeURIComponent('new background.png')}`,
-  `${BG_TESET_DIR_URL}/${encodeURIComponent('teset 3-Photoroom.png')}`,
-  `${BG_TESET_DIR_URL}/${encodeURIComponent('טסט 3.png')}`,
-] as const;
-/** 1000m+ swap texture: `sky.png` under {@link BG_TESET_DIR_URL} (same folder as teset 1/2). */
-const STATIC_BG_TESET3_POST_REST_1K_CANDIDATES = [
-  `${BG_TESET_DIR_URL}/${encodeURIComponent('sky.png')}`,
-] as const;
-/** מ־2000 מ׳: רקע אחורי — `sky 3.png` תחת {@link BG_TESET_DIR_URL}. */
-const STATIC_BG_TESET3_POST_REST_2K_CANDIDATES = [
-  `${BG_TESET_DIR_URL}/${encodeURIComponent('sky 3.png')}`,
-] as const;
-/** מ־3000 מ׳: רקע אחורי — `sky 4.png` תחת {@link BG_TESET_DIR_URL}. */
-const STATIC_BG_TESET3_POST_REST_3K_CANDIDATES = [
-  `${BG_TESET_DIR_URL}/${encodeURIComponent('sky 4.png')}`,
-] as const;
-/** מ־5000 מ׳: רקע אחורי — `sky 5.png` תחת {@link BG_TESET_DIR_URL}. */
-const STATIC_BG_TESET3_POST_REST_5K_CANDIDATES = [
-  `${BG_TESET_DIR_URL}/${encodeURIComponent('sky 5.png')}`,
-] as const;
-const STATIC_BG_TESET2_PHOTOROOM_CANDIDATES = [
-  `${BG_TESET_DIR_URL}/${encodeURIComponent('teset 2-Photoroom.png')}`,
-  `${BG_TESET_DIR_URL}/${encodeURIComponent('טסט 2.png')}`,
-] as const;
-const STATIC_BG_TESET1_PHOTOROOM_CANDIDATES = [
-  `${BG_TESET_DIR_URL}/${encodeURIComponent('teset 1-Photoroom.png')}`,
-  `${BG_TESET_DIR_URL}/${encodeURIComponent('טסט 1.png')}`,
-] as const;
+const CANDY_BG_URL = `${BG_TESET_DIR_URL}/${encodeURIComponent('canndy.png')}?v=20260521`;
+/** Full candy scene (sky + cliffs + foreground) — replaces teset 1/2/3 and altitude sky swaps. */
+const CANDY_BG_CANDIDATES = [CANDY_BG_URL] as const;
+const STATIC_BG_TESET3_CANDIDATES = CANDY_BG_CANDIDATES;
+const STATIC_BG_TESET3_POST_REST_1K_CANDIDATES = CANDY_BG_CANDIDATES;
+const STATIC_BG_TESET3_POST_REST_2K_CANDIDATES = CANDY_BG_CANDIDATES;
+const STATIC_BG_TESET3_POST_REST_3K_CANDIDATES = CANDY_BG_CANDIDATES;
+const STATIC_BG_TESET3_POST_REST_5K_CANDIDATES = CANDY_BG_CANDIDATES;
 /** Letterbox fill behind tiles / Photoroom stack. */
 const BG_Z_BACKDROP_FILL = -50;
-/** Photoroom sky layer — Phaser depth −30; `TilingSprite` + `syncTeset3PhotoroomTileScroll`. */
+/** Candy backdrop — `TilingSprite` + light parallax via {@link syncTeset3PhotoroomTileScroll}. */
 const BG_Z_TESET3_STATIC = -30;
 /** ~`setScrollFactor(0.1)` — `tilePosition` tracks camera at 10%. */
 const TESET3_PHOTOROOM_SCROLL_FACTOR = 0.1;
@@ -214,6 +295,10 @@ const BG_Z_TESET2_SPRITE = -20;
 const BG_Z_TESET1_SPRITE = -10;
 /** Only Photoroom stack + fill — skip altitude tier parallax (set `false` to restore `BACKGROUND_TIERS`). */
 const STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY = true;
+/** Static candy layers — `layer1/2` + `loop wall 2` + lightweight FX. */
+const USE_CANDY_STATIC_ATMOSPHERE = true;
+/** Legacy multi-layer parallax — disabled when static atmosphere is active. */
+const USE_CANDY_CANYON_PARALLAX = false;
 /** Orange strip at viewport bottom — vector fallback only (see {@link drawBottomDeathLine}). */
 const DEATH_ORANGE_BAR_HEIGHT_PX = 18;
 /** Full viewport-bottom hazard band height (matches legacy vector lava block). */
@@ -266,30 +351,36 @@ const LAVA_TEETH_LAYER_Z_INDEX = 23;
 const LAVA_LAYER_Z_INDEX = 25;
 /** Always above player (40) so molten pool covers the avatar on overlap. */
 const LAVA_POOL_LAYER_Z_INDEX = 45;
-/** Gameplay BGM: random track from `public/assets/game music/` on each fresh run (see `pickRandomGameMusicBgmUrl`). */
+/** Gameplay BGM — `public/assets/game music/Gummy Moon Arcade.mp3`. */
 const GAME_MUSIC_DIR_URL = `${GAME_ASSETS}/${encodeURIComponent('game music')}`;
-const GAME_MUSIC_BGM_FILENAMES = [
-  'Dream Sakura_Loop.ogg',
-  'Honobono Teahouse.mp3',
-  'Moonlight Japanese Harp.mp3',
-  "Mountain God's Shrine.mp3",
-  'Mysterious Kyoto.mp3',
-  'Shamisen Samurai Rock.mp3',
-  'Voice of Evening Calm.mp3',
-] as const;
+const GAME_MUSIC_BGM_FILENAMES = ['Gummy Moon Arcade.mp3'] as const;
 const GAME_MUSIC_BGM_TRACKS: readonly string[] = GAME_MUSIC_BGM_FILENAMES.map(
   (name) => `${GAME_MUSIC_DIR_URL}/${encodeURIComponent(name)}`,
 );
-/** If the curated list is empty (should not happen), fall back to legacy loop under `assets/music/`. */
-const BGM_FALLBACK_URL = `${GAME_ASSETS}/music/${encodeURIComponent('Dream Sakura_Loop.ogg')}`;
+const BGM_FALLBACK_URL = `${GAME_MUSIC_DIR_URL}/${encodeURIComponent('Gummy Moon Arcade.mp3')}`;
 /** Lava-rise tension loop — `public/assets/sound effect/stress mode.m4a` (3500→6000 landed m). */
 const STRESS_MODE_BGM_URL = `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/${encodeURIComponent('stress mode.m4a')}`;
+const ENABLE_STRESS_MODE_BGM = false;
+const ENABLE_WALL_SLIDE_LOOP_SFX = false;
 const REST_FLOOR_HOUSE_CANDIDATES = [
   `${GAME_ASSETS}/house/isohome.png.png`,
   `${GAME_ASSETS}/house/${encodeURIComponent('House 1.png')}`,
 ] as const;
 const REST_FLOOR_CLOUD_URL = `${GAME_ASSETS}/objects/Cloud.png`;
 const REST_FLOOR_SUPPLIES_URL = `${GAME_ASSETS}/objects/supplies_objects.png`;
+/** Wide rest/spawn deck art — top strip marshmallow [0, 5000) m, bottom strip chocolate [5000, 10000) m. */
+const REST_PLATFORM_SHEET_URL = `${GAME_ASSETS}/${encodeURIComponent('backgroud teset')}/${encodeURIComponent('rest platform.png')}`;
+/** Texture-space Y split between marshmallow (top) and chocolate (bottom) in {@link REST_PLATFORM_SHEET_URL}. */
+const REST_PLATFORM_SHEET_SPLIT_Y = 512;
+/** Left/right cap width in texture px — keeps swirl/star art crisp; center tiles at uniform scale. */
+const REST_PLATFORM_END_CAP_TEX_PX = 260;
+
+type RestPlatformStripSlices = {
+  full: Texture;
+  leftCap: Texture;
+  center: Texture;
+  rightCap: Texture;
+};
 
 const SFX_LOCAL: Record<SfxId, string> = {
   tongue_shoot: `${import.meta.env.BASE_URL}audio/tongue_shoot.mp3`,
@@ -397,45 +488,6 @@ const BACKGROUND_TIERS: readonly BackgroundTierSpec[] = [
   },
 ] as const;
 
-/**
- * Mushroom enemy spritesheets.
- *
- * Each strip is a single 64-px tall row of 80×64 frames; the asset pack splits idle / run /
- * attack into separate files (rather than one combined sheet). Frame counts come from
- * `width / 80`: idle = 7, run = 8, attack = 10.
- */
-const MUSHROOM_IDLE_URL = `${GAME_ASSETS}/monsters/Mushroom-Idle.png`;
-const MUSHROOM_RUN_URL = `${GAME_ASSETS}/monsters/Mushroom-Run.png`;
-const MUSHROOM_ATTACK_URL = `${GAME_ASSETS}/monsters/Mushroom-Attack.png`;
-/** Horizontal strip: same frame size as idle/run/attack; plays before `blood.png` burst. */
-const MUSHROOM_DIE_URL = `${GAME_ASSETS}/monsters/Mushroom-Die.png`;
-const MUSHROOM_DIE_FRAME_COUNT = 16;
-/** 6×6 sheet, first 22 frames = splatter sequence. */
-const BLOOD_SHEET_URL = `${GAME_ASSETS}/monsters/blood.png`;
-const BLOOD_SHEET_COLS = 6;
-const BLOOD_EFFECT_FRAME_COUNT = 22;
-const MUSHROOM_DEATH_DIE_FPS = 18;
-const MUSHROOM_DEATH_BLOOD_FPS = 22;
-const MUSHROOM_DEATH_BLOOD_SCALE = 2.65;
-const MUSHROOM_FRAME_W = 80;
-const MUSHROOM_FRAME_H = 64;
-const MUSHROOM_IDLE_FRAME_COUNT = 7;
-const MUSHROOM_RUN_FRAME_COUNT = 8;
-const MUSHROOM_ATTACK_FRAME_COUNT = 10;
-const MUSHROOM_ANIM_FPS = 10;
-const MUSHROOM_WALK_SPEED_PX = 60;
-const MUSHROOM_SPRITE_SCALE = 2.4;
-/** Tight collision box around the mushroom body (smaller than the visible sprite). */
-const MUSHROOM_HITBOX_W = 46;
-const MUSHROOM_HITBOX_H = 60;
-const MUSHROOM_EDGE_MARGIN = 0.06;
-const MUSHROOM_EDGE_PAUSE_SEC = 0.32;
-const MUSHROOM_ATTACK_RANGE_PX = 220;
-/** First platform index that may carry an enemy. Skips the starting platform (index 0). */
-/** First stair index that may host a mushroom — skips Floor 0 spawn deck + early climb. */
-const MUSHROOM_PLATFORM_START_INDEX = 5;
-const MUSHROOM_PLATFORM_STRIDE = 3;
-
 /** Player melee attack — virtual button (bottom-right) + KeyF, plays the attack row of the character spritesheet. */
 /** When false, hides the on-screen attack circle; `KeyF` still triggers {@link PlayScene.playerAttack} via `InputManager`. */
 const ATTACK_VIRTUAL_BUTTON_VISIBLE = false;
@@ -450,8 +502,6 @@ const PLAYER_ATTACK_VERT_PAD_PX = 16;
 
 /** Rope “bead” bridge look for low altitude (HUD meters). Physics stays the same AABB. */
 const BEAD_BRIDGE_MAX_METERS = 1000;
-/** Approximate stair span for the first phase — used with optional width variation. */
-const SPRING_PHASE_STAIR_COUNT = 72;
 
 const BEAD_BRIDGE_PALETTES: ReadonlyArray<{
   body: number;
@@ -487,9 +537,13 @@ class PlaySceneSfx {
 
   async load(): Promise<void> {
     await Promise.all(
-      (Object.keys(SFX_REMOTE) as SfxId[]).map((id) => this.loadOne(id)),
+      (Object.keys(SFX_REMOTE) as SfxId[])
+        .filter((id) => ENABLE_WALL_SLIDE_LOOP_SFX || id !== 'wall_slide')
+        .map((id) => this.loadOne(id)),
     );
-    this.initWallSlideLoopFromPrototype();
+    if (ENABLE_WALL_SLIDE_LOOP_SFX) {
+      this.initWallSlideLoopFromPrototype();
+    }
   }
 
   private loadOne(id: SfxId): Promise<void> {
@@ -563,7 +617,7 @@ class PlaySceneSfx {
    * Call every frame while sliding — retries `play()` after autoplay blocks and keeps volume current.
    */
   ensureWallSlideLoopPlaying(): void {
-    if (!this.isSlidePhaseActive()) {
+    if (!ENABLE_WALL_SLIDE_LOOP_SFX || !this.isSlidePhaseActive()) {
       return;
     }
     if (this.wallSlideLoop == null) {
@@ -619,44 +673,21 @@ const COLLECTIBLE_LINES_HALF_GAP_PX = 13;
 /** Vertical offset from the diamond HUD icon row to the shield row (same column as diamond). */
 const COLLECTIBLE_SHIELD_ICON_BELOW_DIAMOND_PX = 22;
 const PLATFORM_SCALE = PLAY_SCENE.stairPlatformScale;
-/** Horizontal repeat width of one grass/dirt block inside `slime-platform.png` (atlas is tiled). */
-const SLIME_PLATFORM_TILE_PX = 46;
 const PLATFORM_EDGE_PADDING_PX = 8;
 const CAMERA_ZOOM = 0.5;
 const MOBILE_CAMERA_ZOOM = 0.42;
 const CAMERA_PLAYER_SCREEN_Y_RATIO = 0.62;
+/** Menu handoff: in-game fall duration — synced with white overlay {@link MENU_PLAY_TRANSITION.fadeOutSec}. */
+const MENU_SKY_DROP_INTRO_SEC = MENU_PLAY_TRANSITION.fadeOutSec;
+const MENU_SKY_DROP_FALL_VIEWPORT_RATIO = 0.82;
 const AUTO_SCROLL_BASE_SPEED_PX = 120;
-const HURRY_UP_FLASH_SEC = 2.6;
-/** HUD climb (m): no multiplier gain below this, then +`SCROLL_SPEED_STEP_DELTA` every `SCROLL_SPEED_STEP_METERS`. */
+/** HUD climb (m): flat ×1 SPD below this, then linear ramp to {@link SCROLL_SPEED_MAX_MULT}. */
 const SCROLL_SPEED_WARMUP_METERS = 300;
-const SCROLL_SPEED_STEP_METERS = 200;
-/** Per milestone delta (3× legacy 0.05 → faster difficulty ramp). */
+/** Linear SPD ramp ends here — reaches ×{@link SCROLL_SPEED_MAX_MULT} at 10k m. */
+const SCROLL_SPEED_RAMP_END_METERS = 10000;
+const SCROLL_SPEED_MAX_MULT = 2.5;
+/** UI tier feedback — one tier per this multiplier step above ×1. */
 const SCROLL_SPEED_STEP_DELTA = 0.15;
-/**
- * Extra scroll / drift multiplier from run time (stacks with altitude). Avoids a soft ceiling around ~×5
- * when climb height stalls against auto-scroll so late runs keep getting faster.
- */
-const SCROLL_SPEED_RUNTIME_START_SEC = 30;
-const SCROLL_SPEED_RUNTIME_STEP_SEC = 18;
-const SCROLL_SPEED_RUNTIME_DELTA = 0.07;
-/**
- * Extra mult from total run score so SPD keeps rising while the player earns points even if HUD climb (m) plateaus vs auto-scroll.
- */
-const SCROLL_SPEED_SCORE_STEP = 4500;
-const SCROLL_SPEED_SCORE_DELTA = 0.055;
-/**
- * Past this HUD altitude (m), each further {@link SCROLL_SPEED_STEP_METERS} band adds
- * {@link SCROLL_SPEED_HIGH_TIER_DELTA} instead of {@link SCROLL_SPEED_STEP_DELTA} (~×5 / ~6000m is no longer a practical cap).
- */
-const SCROLL_SPEED_HIGH_TIER_FROM_METERS = 5200;
-/** Steeper per-step mult above {@link SCROLL_SPEED_HIGH_TIER_FROM_METERS} (same 200m banding as base). */
-const SCROLL_SPEED_HIGH_TIER_DELTA = 0.26;
-/**
- * Hard ceiling for the total scroll multiplier once climb reaches this altitude (HUD-equivalent m).
- * No combos / score / runtime extras can push {@link getAltitudeSpeedMultiplier} above this.
- */
-const HARD_SPEED_CAP_FROM_METERS = 5000;
-const HARD_SPEED_CAP_MULT = 5.0;
 /** Continuous altitude shake disabled; it became visible jitter around the 3000m+ tiers. */
 const ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD = Number.POSITIVE_INFINITY;
 const SPEED_TIER_SHAKE_SEC = 0;
@@ -665,11 +696,34 @@ const SPEED_TIER_UI_FLASH_SEC = 0.22;
 const SPEED_TIER_PULSE_COLOR = 0xb8a0ff;
 const SPEED_TIER_PULSE_FILL_ALPHA = 0.11;
 const PAUSE_RESUME_BTN_MIN_H = 64;
-/** Compact pause control: left column under main header bar (`drawTopHeaderPanel`). */
-const HEADER_PAUSE_BTN_W = 40;
-const HEADER_PAUSE_BTN_H = 34;
-const HEADER_PAUSE_LEFT_MARGIN_PX = 12;
-const HEADER_PAUSE_BELOW_HEADER_GAP_PX = 8;
+/** Pause coin — full-res PNG on disk; crop + scale in Pixi only. */
+const PAUSE_BTN_TEXTURE_URL = `${GAME_ASSETS}/objects/${encodeURIComponent('pause.png')}`;
+const MUSIC_BTN_SHEET_URL = `${GAME_ASSETS}/objects/${encodeURIComponent('music buttons.png')}`;
+/** Gap between stacked pause + music HUD icons (screen px). */
+const HEADER_HUD_BTN_GAP_PX = 4;
+/** On-screen pause button size (tuned for former `buttons 2.png` HUD slot). */
+const HEADER_PAUSE_BTN_DISPLAY_SIZE_PX_MOBILE = 80;
+const HEADER_PAUSE_BTN_DISPLAY_SIZE_PX_DESKTOP = 88;
+/** 30% smaller baseline, then −15%, then −10% on screen. */
+const HEADER_PAUSE_BTN_DISPLAY_SCALE = 0.7 * 0.85 * 0.85 * 0.9;
+/** Top-right inset — lower X nudges the pause button right. */
+const HEADER_PAUSE_BTN_SCREEN_MARGIN_X = 10;
+const HEADER_PAUSE_BTN_SCREEN_Y = 12;
+const HEADER_PAUSE_BTN_Z_INDEX = 1000;
+const HEADER_PAUSE_BTN_Z_INDEX_PAUSED = 1275;
+const HEADER_PAUSE_BTN_HOVER_SCALE = 1.04;
+const HEADER_PAUSE_BTN_PRESS_SCALE = 1.08;
+const HEADER_PAUSE_BTN_GLOW_PULSE_SEC = 2.2;
+/** Min alpha for pause tap — ignores transparent padding around the coin art. */
+const HEADER_PAUSE_BTN_HIT_ALPHA_THRESHOLD = 48;
+/** Premium floating chip styling (Candy Crush–style, no neon frame). */
+const FLOATING_HUD_CHIP_FILL = 0x1a0a2e;
+const FLOATING_HUD_CHIP_ALPHA = 0.5;
+const FLOATING_HUD_CHIP_STROKE = 0xffffff;
+const FLOATING_HUD_CHIP_STROKE_ALPHA = 0.16;
+const FLOATING_HUD_SHADOW_ALPHA = 0.22;
+/** Right sidebar hamburger menu (stats / bag / leaderboard). Disabled for now. */
+const STATUS_PANEL_ENABLED = false;
 /** Right sidebar status panel: toggle sits on the far right; expanded body grows left (below header strip). */
 const STATUS_PANEL_RIGHT_MARGIN_PX = 12;
 const STATUS_PANEL_TOGGLE_W_PX = 40;
@@ -717,8 +771,19 @@ const UI_HEADER_H = 92;
 const UI_SAFE_PAD_TOP = 10;
 const UI_SAFE_PAD_BOTTOM = 12;
 const UI_HEADER_INFO_ROW_Y = UI_SAFE_PAD_TOP + 40;
-const HURRY_BANNER_H = 46;
-const HURRY_BANNER_SLIDE_SPEED = 760;
+/** Shared top HUD row — aligned with pause button (top-right). */
+const TIMER_CLIMB_HUD_ROW_Y = HEADER_PAUSE_BTN_SCREEN_Y;
+const TIMER_HUD_FILL = '#fff6cc';
+const TIMER_HUD_STROKE = '#4a3200';
+const TIMER_HUD_STROKE_WIDTH = 2.4;
+const TIMER_HUD_SHIFT_LEFT_PX = 24;
+const TIMER_HUD_SHIFT_UP_PX = 6;
+const TIMER_CLIMB_HUD_GAP_PX = 8;
+/** Left reserve for collectibles; combo + meters cluster starts here. */
+const TIMER_HUD_LEFT_RESERVE_PX = 108;
+const CLIMB_HUD_SHIFT_LEFT_PX = 14;
+/** Floating row for pause + menu toggle (no header bar frame). */
+const FLOATING_HUD_SECOND_ROW_Y = UI_SAFE_PAD_TOP + 56;
 const OVERLAY_BG_ALPHA = 0.72;
 const WORLD_BOUNDS_X = 0;
 /** Room for >= 100000 HUD meters (/12 px per m) relative to baseline without leaving the playable band while rebasing catches up. */
@@ -815,13 +880,11 @@ const SCORE_METERS_MULTIPLIER = 10;
 const SCORE_COMBO_MULTIPLIER = 5;
 const LEVEL_PLATFORM_SPEED_BASE = 24;
 const LEVEL_PLATFORM_SPEED_PER_LEVEL = 5;
-const LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL = 0.005;
-const LEVEL_PLATFORM_MIN_BASE_WIDTH = 72;
 const LEVEL_MILESTONE_STEP = 10;
 /** Structural fall shields: fixed stock per run, never above this cap; not granted by gold/diamond/items. */
 const MAX_FALL_SHIELDS = 3;
 /** On fall-save, place the player exactly this many platform gaps above the last recorded platform. */
-const SHIELD_BOUNCE_PLATFORM_RISE_COUNT = 5;
+const SHIELD_BOUNCE_PLATFORM_RISE_COUNT = 8;
 const SHIELD_SAVE_FLASH_SEC = 0.42;
 const JUMP_BUFFER_SEC = 0.1;
 /**
@@ -860,23 +923,27 @@ const SUPER_JUMP_STAIR_CROSS_EPS = 3;
 const COMBO_GLOW_STREAK = 15;
 /** Grounded jumps before the skill pair unlocks (both buttons; counter resets after mega jump / expiry). */
 const PULL_UP_JUMPS_REQUIRED = 6;
-/** Combo HUD anchor X; Y is computed under the skill pair in `layoutComboHudRoot`. */
-const COMBO_HUD_SCREEN_X = 20;
-/** Vertical gap between skill buttons strip and combo badge. */
-const COMBO_BELOW_SKILL_PAIR_GAP_PX = 8;
 /** Uniform scale for combo badge only (`uiLayer`, screen-fixed — equivalent to scrollFactor 0). */
 const COMBO_HUD_ROOT_SCALE = 0.33;
-/** Skill pair (`SUPER JUMP` + `PULL UP`): screen-fixed on `uiLayer` — Phaser `scrollFactor` 0 equivalent. */
-const PULL_UP_BTN_W = 152;
-const PULL_UP_BTN_H = 44;
-/** Horizontal gap between `SUPER JUMP` (left) and `PULL UP` (right) inside the pair. */
-const SKILL_PAIR_BTN_GAP_PX = 14;
-/** Top-left anchor under main HUD / combo + timer stack (unscaled layout coords before `skillPairRoot.scale`). */
-const SKILL_PAIR_HUD_X = 100;
-/** Tight offset below the main header panel bottom (`UI_SAFE_PAD_TOP` + `UI_HEADER_H`). */
-const SKILL_PAIR_BELOW_HEADER_GAP_PX = 4;
-/** Uniform scale on `skillPairRoot` (mobile tap targets). */
-const PULL_UP_BTN_SCALE = 0.65;
+/** Skill pair (`SUPER JUMP` + `PULL UP`): screen-fixed on `uiLayer`. */
+/** Native crop width per button in `skill-buttons.png` (482×250 px each half). */
+const SKILL_BTN_NATIVE_CROP_W = 482;
+const SKILL_BTN_DISPLAY_W_MIN = 120;
+const SKILL_BTN_DISPLAY_W_MAX_MOBILE = 196;
+const SKILL_BTN_DISPLAY_W_MAX_DESKTOP = 236;
+/** Horizontal gap between side-by-side skill buttons (local px, before root scale). */
+const SKILL_PAIR_BTN_GAP_PX = 10;
+/** Pull Up only — nudge left toward Super Jump (local px). */
+const SKILL_PULL_UP_NUDGE_LEFT_PX = 14;
+/** Gap below meters/speed row (screen px, before `skillPairRoot` scale). */
+const SKILL_PAIR_BELOW_CLIMB_GAP_PX = 6;
+/** Nudge skill pair left under the meters/speed HUD (screen px). */
+const SKILL_PAIR_SHIFT_LEFT_PX = 28;
+/** Uniform scale on `skillPairRoot` — keep at 1 to preserve PNG sharpness. */
+const PULL_UP_BTN_SCALE = 1;
+/** Legacy vector fallback when the PNG sheet fails to load. */
+const SKILL_FALLBACK_BTN_W = 152;
+const SKILL_FALLBACK_BTN_H = 44;
 /** Super Tongue effects (matches the user-confirmed "B" recipe). */
 const SUPER_TONGUE_STAIRS_UP = 4;
 const SUPER_TONGUE_BUFF_DURATION_SEC = 3.0;
@@ -955,9 +1022,22 @@ type WallSlideSmokeFxParticle = {
   color: number;
 };
 
+export type PlaySceneOptions = {
+  menuHandoff?: boolean;
+  onBackToMenu?: () => void | Promise<void>;
+};
+
 export class PlayScene implements Scene {
   readonly name = 'play';
 
+  private fromMenuHandoff = false;
+  private readonly onBackToMenu?: () => void | Promise<void>;
+  private menuSkyDropIntroActive = false;
+  private menuSkyDropIntroElapsedSec = 0;
+  private menuSkyDropIntroStartY = 0;
+  private menuSkyDropIntroTargetY = 0;
+  private gameplayUnlocked = true;
+  private gameplayActive = false;
   private app?: Application;
   private input?: InputManager;
   private physics = new Physics();
@@ -1004,6 +1084,7 @@ export class PlayScene implements Scene {
   private bgStaticTeset2Sprite: Sprite | null = null;
   private bgStaticTeset1Sprite: Sprite | null = null;
   private bgOverlayLayers: { tile: TilingSprite; speed: number }[] = [];
+  private atmosphereManager: CandyAtmosphereManager | null = null;
   private loadedBackgroundTiers = new Map<BackgroundTierId, LoadedBackgroundTier>();
   private activeBackgroundTierId?: BackgroundTierId;
   private activeOverlayBackgroundTierId?: BackgroundTierId;
@@ -1060,10 +1141,33 @@ export class PlayScene implements Scene {
   private gameShake = new Container();
   /** HUD + touch: never parented under `world` / `gameShake` so it isn’t redrawn with the camera. */
   private uiLayer = new Container();
-  private headerPanel = new Graphics();
   private headerPauseRoot = new Container();
-  private headerPauseBtn = new Graphics();
-  private headerPauseIcon?: Text;
+  private headerPauseBtn = new Sprite();
+  private headerPauseBtnTexture: Texture | null = null;
+  private headerPauseBtnBaseScale = 1;
+  private headerPauseBtnDisplayW = HEADER_PAUSE_BTN_DISPLAY_SIZE_PX_MOBILE;
+  private headerPauseBtnDisplayH = HEADER_PAUSE_BTN_DISPLAY_SIZE_PX_MOBILE;
+  private headerPauseBtnPressed = false;
+  private headerPauseBtnHovered = false;
+  private headerPauseGlowTimeSec = 0;
+  private headerPauseBtnHitAlpha: Uint8Array | null = null;
+  private headerPauseBtnHitW = 0;
+  private headerPauseBtnHitH = 0;
+  private readonly headerPauseBtnAlphaHitArea = {
+    contains: (x: number, y: number) => this.testHeaderPauseBtnAlphaHit(x, y),
+  };
+  private headerMusicBtn = new Sprite();
+  private headerMusicBtnTexture: Texture | null = null;
+  private headerMusicBtnBaseScale = 1;
+  private headerMusicBtnPressed = false;
+  private headerMusicBtnHovered = false;
+  private headerMusicBtnHitAlpha: Uint8Array | null = null;
+  private headerMusicBtnHitW = 0;
+  private headerMusicBtnHitH = 0;
+  private readonly headerMusicBtnAlphaHitArea = {
+    contains: (x: number, y: number) => this.testHeaderMusicBtnAlphaHit(x, y),
+  };
+  private bgmMuted = false;
   /** Bottom-right virtual ATTACK button — taps call `playerAttack()`. */
   private attackBtnRoot = new Container();
   private attackBtn = new Graphics();
@@ -1075,6 +1179,10 @@ export class PlayScene implements Scene {
   private pauseTitle?: Text;
   private pauseResumeBtn = new Graphics();
   private pauseResumeLabel?: Text;
+  private pauseMenuBtn = new Graphics();
+  private pauseMenuLabel?: Text;
+  private pauseLogoutBtn = new Graphics();
+  private pauseLogoutLabel?: Text;
   private pauseTouchLockLabel?: Text;
   /** Collapsible right sidebar: tabs (MY STATS / GLOBAL TOP 5), session stats, RTDB top list, LOG OUT. */
   private statusPanelRoot = new Container();
@@ -1137,7 +1245,6 @@ export class PlayScene implements Scene {
   private tongueArmature: PixiArmatureDisplay | null = null;
   private tongueDbReady = false;
   private player = new Player();
-  private scoreboard?: HyperScoreboard;
   private collectibleHudRoot = new Container();
   private collectibleHudGoldIcon = new Graphics();
   private collectibleHudDiamondIcon = new Graphics();
@@ -1169,12 +1276,6 @@ export class PlayScene implements Scene {
   private wallSlideFasciaSfxStreamingMemo = false;
   private wallSlideSmokeParticles: WallSlideSmokeFxParticle[] = [];
   private climbHudText?: Text;
-  /** New jump-counter HUD line beneath the climb readout. Driven by `this.jumpCount`. */
-  private jumpsHudText?: Text;
-  private timerHudText?: Text;
-  private hurryBannerRoot = new Container();
-  private hurryBannerGfx = new Graphics();
-  private hurryBannerText?: Text;
   private gameOver = false;
   private gameOverOverlay = new Container();
   private gameOverBackdrop = new Graphics();
@@ -1210,7 +1311,6 @@ export class PlayScene implements Scene {
   /** Lifetime YOUR BAG totals from `/users/{uid}/stats` — updated live via {@link subscribeUserBagBalances}. */
   private remoteBagGold = 0;
   private remoteBagDiamond = 0;
-  private remoteBagPurpleMushrooms = 0;
   private userBagUnsubscribe: (() => void) | null = null;
   private collectibles: Collectible[] = [];
   /** Last-milestone sweep (⌊max climb m / 1000⌋) — see {@link maybeRunPeriodicPoolMaintenance}. */
@@ -1219,32 +1319,13 @@ export class PlayScene implements Scene {
   private diamondCount = 0;
   private runGoldCollected = 0;
   private runDiamondCollected = 0;
-  /** Purple mushroom enemies defeated this run (melee or touch — persisted like gold/gems). */
-  private runPurpleMushroomsCollected = 0;
-  /**
-   * Mushroom enemies live in their own world-space container so they sort above platforms but
-   * below the player. The `mushroomEnemies` / `mushroomEnemySprites` arrays are kept in
-   * lockstep — index `i` of one mirrors index `i` of the other.
-   */
-  private mushroomEnemies: MushroomEnemy[] = [];
-  private mushroomEnemySprites: Sprite[] = [];
-  private mushroomEnemyLayer = new Container();
-  /** One-shot die → blood VFX at enemy world position (above living mushrooms). */
-  private mushroomDeathFxLayer = new Container();
-  private mushroomDeathEffects: MushroomDeathEffect[] = [];
-  private mushroomIdleTextures: Texture[] = [];
-  private mushroomRunTextures: Texture[] = [];
-  private mushroomAttackTextures: Texture[] = [];
-  private mushroomDieTextures: Texture[] = [];
-  private bloodEffectTextures: Texture[] = [];
   /** Displayed counts (lerp toward real counts for smooth HUD). */
   private hudGoldShown = 0;
   private hudDiamondShown = 0;
   /** 1 = full collectible HUD punch, decays each frame. */
   private collectibleHudBump = 0;
   /**
-   * Updated at end of each {@link update} from the same integer climb “m” as the scoreboard HUD
-   * (`heightMeters` → {@link HyperScoreboard.update}), so bands match what is displayed. Fascia /
+   * Updated at end of each {@link update} from the same integer climb “m” as {@link getHudScoreboardDisplayMeters}.
    * {@link Physics} read this on the following frame after it is updated.
    */
   isSlidePhase = false;
@@ -1258,8 +1339,16 @@ export class PlayScene implements Scene {
   private playerFallingBehindLava = false;
   private sfx = new PlaySceneSfx(() => this.isSlidePhase);
   private platformTexture?: Texture;
-  private platformTextureSlime?: Texture;
-  private platformTextureVolcano?: Texture;
+  /** Marshmallow frames — HUD [0, 5000) m. */
+  private marshmallowTextures: Texture[] = [];
+  private marshmallowFeetAnchorY = 1;
+  /** Chocolate frames — HUD [5000, 10000) m. */
+  private chocolateTextures: Texture[] = [];
+  private chocolateFeetAnchorY = 1;
+  /** `rest platform.png` top strip — wide rest/spawn decks [0, 5000) m. */
+  private restPlatformMarshmallowSlices?: RestPlatformStripSlices;
+  /** `rest platform.png` bottom strip — wide rest/spawn decks [5000, 10000) m. */
+  private restPlatformChocolateSlices?: RestPlatformStripSlices;
   private restFloorHouseTexture?: Texture;
   private restFloorHouseSprite?: Sprite;
   private restFloorCloudTexture?: Texture;
@@ -1269,7 +1358,7 @@ export class PlayScene implements Scene {
   private restFloorSupplyTextures: Texture[] = [];
   private restFloorSupplySprites: Sprite[] = [];
   private platformSprites: Container[] = [];
-  private platformSpriteModes: Array<'legacy' | 'bead'> = [];
+  private platformSpriteModes: Array<'legacy' | 'bead' | 'rest-tile'> = [];
   private platformSpriteCols: number[] = [];
   /** Rebuild bead-rope art when width/height/count palette changes. */
   private beadBridgeLayoutSig: number[] = [];
@@ -1285,6 +1374,8 @@ export class PlayScene implements Scene {
   private worldMaxY = 0;
   private cameraX = 0;
   private cameraY = 0;
+  /** px/s — smoothed parallax accel easing in {@link ParallaxManager}. */
+  private cameraScrollVelocityPx = 0;
   /**
    * Until the first jump off the Floor 0 spawn deck (`kind === 'spawn'`), skip auto-scroll and
    * vertical follow — framing stays at {@link snapCameraToPlayer} after each reset.
@@ -1338,33 +1429,42 @@ export class PlayScene implements Scene {
   private comboSynth?: ComboSynth;
   /** Successful grounded jumps since last Pull-up press (or run start); caps visibility unlock at {@link PULL_UP_JUMPS_REQUIRED}. */
   private pullUpJumpsAccum = 0;
-  /** `SUPER JUMP` + `PULL UP` wrapper — top-left `uiLayer`; hidden until {@link pullUpJumpsAccum} ≥ threshold. */
+  /** `SUPER JUMP` + `PULL UP` wrapper — centered under meters/speed on `uiLayer`. */
   private skillPairRoot = new Container();
-  private superJumpBtnRoot = new Container();
-  private superJumpBtnGfx = new Graphics();
-  private superJumpBtnLabel?: Text;
-  /** Pull-up (`PULL UP`) inside {@link skillPairRoot}. */
-  private superTongueBtnRoot = new Container();
-  private superTongueBtnGfx = new Graphics();
-  private superTongueBtnLabel?: Text;
+  private readonly superJumpHudBtn = new SkillHudButton(() => {
+    this.fireManualSuperJump();
+  });
+  private readonly pullUpHudBtn = new SkillHudButton(() => {
+    this.fireSuperTongue();
+  });
+  private readonly superJumpFallbackRoot = new Container();
+  private readonly superJumpFallbackGfx = new Graphics();
+  private superJumpFallbackLabel?: Text;
+  private readonly pullUpFallbackRoot = new Container();
+  private readonly pullUpFallbackGfx = new Graphics();
+  private pullUpFallbackLabel?: Text;
+  private skillButtonsUseImageArt = false;
+  private skillButtonTextures: Awaited<ReturnType<typeof loadSkillButtonTextures>> | null = null;
+  private skillBtnDisplayW = SKILL_BTN_DISPLAY_W_MAX_MOBILE;
+  private superTongueBtnPulse = 0;
   private skillPairAvailable = false;
   /** Pull-up used this offer — Super Jump remains until chain window ends or spend. */
   private skillPullUpSpent = false;
   private skillSuperJumpSpent = false;
   private skillChainWindowEnd = 0;
-  private superTongueBtnPulse = 0;
   /** Seconds left of "free chain grapple" buff after pressing Super Tongue. */
   private superTongueBuffTime = 0;
   private jumpBufferTimeLeft = 0;
   private runTime = 0;
   /** MS accumulator from Pixi ticker — Phaser `update(time)` analogue for Photoroom sine. */
   private photoroomOscTimeMs = 0;
-  private hurryUpTimeLeft = 0;
-  private hurryBannerX = 0;
   private diamondShineSparks: DiamondShineSpark[] = [];
   private shakeTime = 0;
   private shakeOffsetX = 0;
   private shakeOffsetY = 0;
+  /** Subtle spring bounce on jump/land — applied via {@link applyCameraTransform}. */
+  private cameraJuiceY = 0;
+  private cameraJuiceVelY = 0;
   /** Phase accumulator for speed-stress screenshake (continuous, not impact bursts). */
   private velocityStressShakePhase = 0;
   private bgm?: HTMLAudioElement;
@@ -1396,19 +1496,85 @@ export class PlayScene implements Scene {
    * fall-shield relaunch resolves the actual deck underfoot).
    */
   private lastLandedPlatform: Platform | null = null;
+  /** Prevents double bounce when {@link clampPlayerToCameraViewport} runs twice per frame. */
+  private restWallBounceAppliedThisFrame = false;
+  /** Rest (bone) walls: icy kick only after landing on a stair; one wall chain per stair. */
+  private restWallChainEligible = true;
+  /** Rest phase: run charge → repeatable wall kicks while airborne. */
+  private icyRunChargePxPerSec = 0;
+  private restWallKickCooldownUntil = 0;
+
+  constructor(opts?: PlaySceneOptions) {
+    this.fromMenuHandoff = opts?.menuHandoff === true;
+    this.onBackToMenu = opts?.onBackToMenu;
+    this.gameplayUnlocked = !this.fromMenuHandoff;
+  }
+
+  /** Starts the 2s sky fall in sync with the menu white overlay fade-out. */
+  beginMenuSkyDropIntro(): void {
+    if (!this.fromMenuHandoff || this.gameplayUnlocked) {
+      return;
+    }
+    const deck = this.platforms[0];
+    if (!deck || deck.kind !== 'spawn') {
+      return;
+    }
+
+    this.snapPlayerOntoStairZero();
+    this.menuSkyDropIntroTargetY = this.player.body.y;
+    const fallPx = this.worldHeightFromScreen() * MENU_SKY_DROP_FALL_VIEWPORT_RATIO;
+    this.menuSkyDropIntroStartY = this.menuSkyDropIntroTargetY - fallPx;
+    this.player.body.y = Math.round(this.menuSkyDropIntroStartY);
+    this.player.body.vx = 0;
+    this.player.body.vy = 0;
+    this.player.body.grounded = false;
+    this.menuSkyDropIntroElapsedSec = 0;
+    this.menuSkyDropIntroActive = true;
+    this.touchControlsLayer.visible = false;
+    this.attackBtnRoot.visible = false;
+    this.input?.clearTouchHolds();
+  }
+
+  /** Lands on Floor 0 and unlocks normal gameplay (also called when the scripted fall completes). */
+  finishMenuSkyDropIntro(): void {
+    if (!this.fromMenuHandoff || this.gameplayUnlocked) {
+      return;
+    }
+
+    this.menuSkyDropIntroActive = false;
+    this.snapPlayerOntoStairZero();
+    this.player.body.vx = 0;
+    this.player.body.vy = 0;
+    this.player.body.grounded = true;
+    this.gameplayUnlocked = true;
+    this.player.onLand(480);
+    this.sfx.play('player_land', 0.72);
+    this.pulseCameraJuiceLanding(480);
+    this.touchControlsLayer.visible = true;
+    this.attackBtnRoot.visible = true;
+    const deck = this.platforms[0];
+    if (deck) {
+      this.lastLandedPlatform = deck;
+      this.currentGroundPlatform = deck;
+    }
+  }
+
   async init(app: Application): Promise<void> {
     this.app = app;
     this.width = app.screen.width;
     this.height = app.screen.height;
     this.refreshWorldViewport();
 
+    this.atmosphereManager = new CandyAtmosphereManager(this.backgroundRoot);
+
     this.lavaLayer.addChild(this.deathZoneFallback);
     this.lavaLayer.sortableChildren = true;
     this.deathZoneFallback.zIndex = 0;
     this.lavaTeethLayer.sortableChildren = true;
     this.lavaPoolLayer.sortableChildren = true;
+    preloadSkillButtonAssets();
     const quickMobile = isQuickStartMobileDevice();
-    await Promise.all([
+    const [, , , , , , , , skillButtonTextures] = await Promise.all([
       quickMobile ? this.loadPlatformSpriteCore() : this.loadPlatformSprite(),
       this.player.load(),
       this.sfx.load(),
@@ -1417,7 +1583,7 @@ export class PlayScene implements Scene {
       quickMobile ? this.loadBackgroundTextureEssentialForQuickMobile() : this.loadBackgroundTexture(),
       this.loadStaticTeset3BackgroundLayer(),
       this.loadPhotoroomStaticMidForegroundSprites(),
-      quickMobile ? Promise.resolve() : this.loadMushroomTextures(),
+      loadSkillButtonTextures(),
     ]);
 
     const skin = normalizeSelectedCharacterSkin(
@@ -1439,8 +1605,6 @@ export class PlayScene implements Scene {
       this.platformLayer,
       this.viewportFasciaBoneLayer,
       this.restFloorPropLayer,
-      this.mushroomEnemyLayer,
-      this.mushroomDeathFxLayer,
       this.lavaTeethLayer,
       this.lavaLayer,
       this.rippleLayer,
@@ -1453,18 +1617,13 @@ export class PlayScene implements Scene {
       this.lavaPoolLayer,
     );
     this.jelly.zIndex = 0;
-    this.platformSpriteLayer.zIndex = 2;
+    this.platformSpriteLayer.zIndex = 4;
     this.platformLayer.zIndex = 3;
     this.viewportFasciaBoneLayer.zIndex = 3;
     this.viewportFasciaBoneLayer.eventMode = 'none';
     this.viewportFasciaBoneLayer.sortableChildren = false;
     this.restFloorPropLayer.zIndex = REST_FLOOR_HOUSE_DEPTH;
     this.restFloorPropLayer.sortableChildren = true;
-    /** Above platforms, below FX/player so jumps visually pass in front of enemies. */
-    this.mushroomEnemyLayer.zIndex = 4;
-    this.mushroomEnemyLayer.sortableChildren = false;
-    this.mushroomDeathFxLayer.zIndex = 4.5;
-    this.mushroomDeathFxLayer.sortableChildren = false;
     /** Stairs drift behind the death-zone art; ripples + collectibles sit under power line so coins/diamonds don’t paint over it. */
     this.rippleLayer.zIndex = 22;
     this.collectiblesGfx.zIndex = 23;
@@ -1496,11 +1655,6 @@ export class PlayScene implements Scene {
     this.levelUpFloatText.zIndex = 45;
     this.tongueRoot.addChild(this.tongueVector);
 
-    this.scoreboard = new HyperScoreboard();
-    this.scoreboard.position.set(10, 6);
-    this.scoreboard.onResize(this.width);
-    this.uiLayer.addChild(this.scoreboard);
-
     this.setupCollectibleHud(app);
     this.layoutCollectibleHud();
 
@@ -1508,21 +1662,19 @@ export class PlayScene implements Scene {
     this.input.attach();
     this.setupTouchControlsOverlay(app);
     this.setupClimbHud(app);
-    this.setupComboHud();
-    this.setupAutoScrollHud();
+    this.setupComboHud(skillButtonTextures);
     this.setupGameOverUi();
     this.touchGlobalAnywhereLock = this.loadTouchGlobalSteeringPreference();
     this.setupPauseUi();
+    await this.loadHeaderHudButtonTextures();
     this.setupHeaderPauseButton();
     this.setupStatusPanel();
     this.setupAttackButton();
     this.setupSpeedTierPulseOverlay();
-    this.drawTopHeaderPanel();
     this.layoutHeaderPauseButton();
+    this.layoutClimbHud();
     this.layoutStatusPanel();
-    if (this.scoreboard) {
-      this.scoreboard.visible = false;
-    }
+    this.uiLayer.sortChildren();
 
     if (quickMobile) {
       void this.finishDeferredPlaySceneLoadsForMobile().catch(() => {});
@@ -1535,13 +1687,18 @@ export class PlayScene implements Scene {
     this.drawDynamicWorld();
     this.startLeaderboardRealtimeSubscription();
     this.startUserBagRealtimeSubscription();
+    this.gameplayActive = true;
   }
 
   /** Pixi passes {@link Ticker}; `time`/`delta` below match Phaser-style `update(time, delta)`. */
   update(ticker: Ticker): void {
+    if (!this.gameplayActive) {
+      return;
+    }
     // Use real frame delta on mobile — capping to 1/30s made slow frames *lose* time so drifting
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
+    this.updateHeaderPauseButtonFx(dt);
     if (this.gameOver) {
       this.updateScreenShake(dt);
       this.refreshGameOverScoreText();
@@ -1554,6 +1711,29 @@ export class PlayScene implements Scene {
       return;
     }
     this.runTime += dt;
+
+    if (!this.gameplayUnlocked) {
+      this.tickMenuSkyDropIntro(dt);
+      this.updateCamera(dt);
+      this.drawDynamicWorld();
+      this.player.update(dt, 0, false, null, false, this.fallShields > 0, false);
+      this.applyCameraTransform();
+      this.updateScreenShake(dt);
+      this.syncPlayerDepthRelativeToLava();
+      this.tickAltitudePresentation(dt);
+      this.tickDeathLavaLift(dt);
+      if (this.atmosphereManager?.isReady) {
+        this.atmosphereManager.update({
+          dt,
+          cameraY: this.cameraY,
+          climbMeters: this.getHudClimbMeters(),
+        });
+      }
+      return;
+    }
+
+    this.restWallBounceAppliedThisFrame = false;
+    this.syncSlidePhaseFromHudMeters();
     this.photoroomOscTimeMs += Math.max(0, ticker.deltaMS);
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
     this.updateTouchRipples(dt);
@@ -1637,6 +1817,9 @@ export class PlayScene implements Scene {
       touchAirControl,
       touchGroundMul,
     );
+    if (!this.isSlidePhase) {
+      this.tickRestPhaseRunMomentum(dt, ax);
+    }
     if (jumpArcAssistActive) {
       this.jumpArcAssistTime = Math.max(0, this.jumpArcAssistTime - dt);
       const body = this.player.body;
@@ -1750,11 +1933,13 @@ export class PlayScene implements Scene {
 
     if (result.landedPlatform) {
       this.player.hasTouchedPlatformSinceLastSlide = true;
+      this.restWallChainEligible = true;
       this.currentGroundPlatform = result.landedPlatform;
       this.player.onLand(result.impactVy);
       if (!wasGrounded) {
         const landVol = Math.min(1, result.impactVy / 520);
         this.sfx.play('player_land', 0.35 + landVol * 0.65);
+        this.pulseCameraJuiceLanding(result.impactVy);
       }
       const p = result.landedPlatform;
       const idDelta = p.stairId - this.lastScoredStairId;
@@ -1781,6 +1966,9 @@ export class PlayScene implements Scene {
     } else if (!this.player.body.grounded) {
       this.currentGroundPlatform = null;
     }
+
+    this.onPlatformSquashLandCollider(prePhysicsFeetY, wasGrounded, result.landedPlatform);
+    this.tickPlatformSquashJuice(dt);
 
     /** Air jump off fascia before interval tick — avoids paying both {@link incrementComboForViewportFasciaSlideAscend} and {@link registerComboJump} same frame */
     this.maybeConsumeFasciaWallSlideBufferedJumpAfterPhysics(fasciaAssistSpec, !!result.landedPlatform);
@@ -1822,12 +2010,9 @@ export class PlayScene implements Scene {
     this.updateRipples(dt);
     this.updateDiamondShineSparks(dt);
     this.updateCollectibles(dt);
-    this.updateMushroomEnemies(dt);
-    this.updateMushroomDeathEffects(dt);
     if (this.input?.consumeAttack()) {
       this.playerAttack();
     }
-    this.tickPlayerAttackHitbox();
     this.refreshAttackButtonCooldownVisual();
     this.updateCollectibleHudSmooth(dt);
     /**
@@ -1842,6 +2027,7 @@ export class PlayScene implements Scene {
       this.grapple,
       comboGlow,
       this.fallShields > 0,
+      wallSlideStreamForSfx,
     );
     this.tickAltitudePresentation(dt);
     this.tickDeathLavaLift(dt);
@@ -1850,22 +2036,20 @@ export class PlayScene implements Scene {
     this.drawDynamicWorld();
     this.updateSpeedTierUiFlash(dt);
     this.updateScreenShake(dt);
+    this.updateCameraJuice(dt);
     this.recomputeDerivedTotalScore();
     this.updateLevelProgress();
-    const visualDistance = this.getHudScoreboardDisplayMeters();
-    const cycleProgress = Math.floor(visualDistance) % SLIDE_PHASE_CYCLE_METERS;
-    const slidePhaseNext =
-      cycleProgress >= SLIDE_PHASE_START_METERS && cycleProgress < SLIDE_PHASE_END_METERS;
-    if (this.isSlidePhase && !slidePhaseNext) {
-      this.fasciaRestWallStripePhaseAnchorWorldYTop =
-        this.cameraY - WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX;
-    }
-    this.isSlidePhase = slidePhaseNext;
-    this.scoreboard?.update(dt, this.score, this.jumpCount, visualDistance, this.runTime, this.level);
     this.syncCollectibleHudPosition();
 
     const time = this.photoroomOscTimeMs;
     this.syncPhotoroomTeset12ScreenAnchoredOscillation(time);
+    if (this.atmosphereManager?.isReady) {
+      this.atmosphereManager.update({
+        dt,
+        cameraY: this.cameraY,
+        climbMeters: this.getHudClimbMeters(),
+      });
+    }
   }
 
   resize(width: number, height: number): void {
@@ -1877,15 +2061,11 @@ export class PlayScene implements Scene {
     this.height = height;
     this.refreshWorldViewport();
 
-    if (this.scoreboard) {
-      this.scoreboard.onResize(width);
-      this.scoreboard.position.set(10, 6);
-    }
     this.layoutCollectibleHud();
+    this.layoutHeaderPauseButton();
     this.layoutClimbHud();
     this.layoutSkillPairHud();
     this.layoutComboHudRoot();
-    this.layoutAutoScrollHud();
     this.layoutGameOverUi();
     this.layoutHeaderPauseButton();
     this.layoutStatusPanel();
@@ -1893,7 +2073,7 @@ export class PlayScene implements Scene {
     this.layoutPauseOverlay();
     this.layoutLogoutConfirmOverlay();
     this.redrawSpeedPulseOverlay();
-    this.drawTopHeaderPanel();
+    this.uiLayer.sortChildren();
     this.input?.onResize();
 
     // Mobile browser chrome toggles height in small steps; resetting the whole run felt like “stuck” stairs.
@@ -1901,8 +2081,8 @@ export class PlayScene implements Scene {
       prevW > 0 && this.platforms.length > 0 && dw <= 36 && dh <= 96;
     if (minorViewportJitter) {
       this.drawStaticWorld();
-      this.drawTopHeaderPanel();
       this.layoutHeaderPauseButton();
+      this.layoutClimbHud();
       this.layoutStatusPanel();
       this.layoutAttackButton();
       this.layoutPauseOverlay();
@@ -1916,7 +2096,6 @@ export class PlayScene implements Scene {
 
     this.resetRun();
     this.drawStaticWorld();
-    this.drawTopHeaderPanel();
     this.drawDynamicWorld();
   }
 
@@ -2154,6 +2333,7 @@ export class PlayScene implements Scene {
       this.jumpArcTargetCenterX = centerX;
     }
     this.player.onJump();
+    this.pulseCameraJuiceJump();
     return true;
   }
 
@@ -2368,7 +2548,7 @@ export class PlayScene implements Scene {
     const layoutCamX = Math.max(0, Math.min((this.worldWidth - viewportW) * 0.5, maxCamX));
 
     for (let index = 0; index < STAIRS.poolCount; index += 1) {
-      const baseWidth = 150 + ((index * 37) % 80);
+      const baseWidth = PLATFORM_SIZING.uniformBaseWidth;
       const platform: Platform = {
         x: 0,
         y,
@@ -2406,6 +2586,9 @@ export class PlayScene implements Scene {
     if (this.shouldPausePlatformGeneration()) {
       return;
     }
+    if (this.shouldPauseStairRecycleDuringSlideFall()) {
+      return;
+    }
     const feetY = this.player.body.y + this.player.body.height;
     const cameraCutoff = this.cameraY + this.worldHeightFromScreen() + STAIRS.recycleBelowScreenPx;
     const keepBelowPlayer =
@@ -2431,7 +2614,7 @@ export class PlayScene implements Scene {
       this.nextStairId += 1;
       p.stairId = this.nextStairId;
       p.y = this.pickNextPlatformY(previousTopY, spawnY);
-      p.baseWidth = 150 + ((this.nextStairId * 37) % 80);
+      p.baseWidth = PLATFORM_SIZING.uniformBaseWidth;
       p.driftDir = Math.random() < 0.5 ? -1 : 1;
       p.driftVx = 0;
       p.kind = this.isRestFloorY(p.y) ? 'rest' : 'normal';
@@ -2527,14 +2710,19 @@ export class PlayScene implements Scene {
     return { slabW: w, leftSlabLeftX: leftN, rightSlabLeftX: rightN };
   }
 
-  private getPlatformResponsiveWidthMul(): number {
-    if (this.width <= 380) {
-      return 0.78;
-    }
-    if (this.width <= MOBILE_NARROW_UI_MAX_W) {
-      return 0.88;
-    }
-    return 1;
+  private getNormalPlatformWorldWidth(): number {
+    const vw = this.worldWidthFromScreen();
+    const margin = this.getViewportSafeMarginWorld() * 2 + PLATFORM_EDGE_PADDING_PX * 2;
+    const maxW = Math.max(200, vw - margin);
+    return Math.min(
+      PLATFORM_SIZING.normalWorldWidthPx,
+      Math.floor(maxW * PLATFORM_SIZING.maxViewportWidthFraction),
+    );
+  }
+
+  /** Fixed sprite width — decoupled from hitbox so PNG art scale stays constant. */
+  private getPlatformSpriteWorldWidth(_platform: Platform): number {
+    return PLATFORM_SIZING.spriteWorldWidthPx;
   }
 
   private applyResponsivePlatformWidth(platform: Platform): void {
@@ -2552,36 +2740,9 @@ export class PlayScene implements Scene {
       this.updatePlatformBodyFromScale(platform);
       return;
     }
-    const springPhaseMul = this.getSpringPhasePlatformWidthMul(platform.stairId);
-    platform.width =
-      platform.baseWidth *
-      PLATFORM_SCALE *
-      this.getPlatformResponsiveWidthMul() *
-      springPhaseMul;
+    platform.baseWidth = PLATFORM_SIZING.uniformBaseWidth;
+    platform.width = this.getNormalPlatformWorldWidth();
     this.updatePlatformBodyFromScale(platform);
-  }
-
-  /**
-   * In the first Spring phase, widen some stairs so early gameplay uses both narrow and
-   * noticeably wide layouts (requested "use all", including wider stairs).
-   */
-  private getSpringPhasePlatformWidthMul(stairId: number): number {
-    if (stairId > SPRING_PHASE_STAIR_COUNT) {
-      return 1;
-    }
-    // Deterministic pseudo-random by stair id: stable across frames/rebuilds.
-    const raw = Math.sin((stairId + 11) * 31.719) * 43758.5453;
-    const unit = raw - Math.floor(raw);
-    if (unit < 0.22) {
-      return 0.88;
-    }
-    if (unit < 0.52) {
-      return 1;
-    }
-    if (unit < 0.8) {
-      return 1.18;
-    }
-    return 1.32;
   }
 
   /**
@@ -2650,6 +2811,8 @@ export class PlayScene implements Scene {
   /**
    * Keep the avatar inside the camera band. When fascia exists, clamps to the **inner** playfield span between
    * the drawn strips (same geometry as {@link drawWorldEdgeRestWalls}), not the larger margin-only band.
+   *
+   * Rest phase (bone walls): Icy Tower–style bounce when eligible; slide phase unchanged (soft restitution only).
    */
   private clampPlayerToCameraViewport(): void {
     const body = this.player.body;
@@ -2673,24 +2836,166 @@ export class PlayScene implements Scene {
       left = Math.max(worldMin, viewLeft);
       right = Math.min(worldMax, viewRight);
     }
-    const rest = PHYSICS.viewportClampWallRestitution;
 
     if (right < left) {
       body.x = Math.max(worldMin, Math.min(this.cameraX + vw * 0.5 - body.width * 0.5, worldMax));
       return;
     }
 
+    const slideRest = PHYSICS.viewportClampWallRestitution;
+
     if (body.x < left) {
+      const approachVx = body.vx;
       body.x = left;
-      if (body.vx < 0) {
-        body.vx = -body.vx * rest;
+      if (this.isSlidePhase) {
+        if (approachVx < 0) {
+          body.vx = -approachVx * slideRest;
+        }
+      } else {
+        this.applyRestFasciaWallContact('left', approachVx);
       }
     } else if (body.x > right) {
+      const approachVx = body.vx;
       body.x = right;
-      if (body.vx > 0) {
-        body.vx = -body.vx * rest;
+      if (this.isSlidePhase) {
+        if (approachVx > 0) {
+          body.vx = -approachVx * slideRest;
+        }
+      } else {
+        this.applyRestFasciaWallContact('right', approachVx);
       }
     }
+  }
+
+  /**
+   * Slide 4000–6000m vs rest bone walls — must run before physics so 6000m transition does not leave elevator latch on.
+   */
+  private syncSlidePhaseFromHudMeters(): void {
+    const cycleProgress =
+      Math.floor(this.getHudScoreboardDisplayMeters()) % SLIDE_PHASE_CYCLE_METERS;
+    const next =
+      cycleProgress >= SLIDE_PHASE_START_METERS && cycleProgress < SLIDE_PHASE_END_METERS;
+    if (this.isSlidePhase && !next) {
+      this.onRestSlidePhaseExited();
+    }
+    this.isSlidePhase = next;
+  }
+
+  /** Leaving slide segment (e.g. 6000m): clear wall-slide state so gameplay does not freeze on the fascia. */
+  private onRestSlidePhaseExited(): void {
+    this.fasciaRestWallStripePhaseAnchorWorldYTop =
+      this.cameraY - WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX;
+    this.physics.resetWallSlideSession();
+    this.clearWallColliderRestoreTimeout();
+    this.wallCollider.active = true;
+    this.sparkEmitterAnalogueWallSlideStop();
+    if (this.wallSlideFasciaSfxStreamingMemo) {
+      this.sfx.endWallSlideLoop();
+    }
+    this.wallSlideFasciaSfxStreamingMemo = false;
+    this.wallSparkSlideElevatorPhysActiveMemo = false;
+    this.fasciaSlideComboNextStepAtRunTime = null;
+    this.player.hasTouchedPlatformSinceLastSlide = true;
+  }
+
+  /**
+   * Rest wall: Icy Tower kick whenever impact speed/charge is high enough (repeatable in air).
+   */
+  private applyRestFasciaWallContact(side: 'left' | 'right', approachVx: number): void {
+    const body = this.player.body;
+    const stopInward = (): void => {
+      if (side === 'left' && body.vx < 0) {
+        body.vx = 0;
+      } else if (side === 'right' && body.vx > 0) {
+        body.vx = 0;
+      }
+    };
+
+    if (this.restWallBounceAppliedThisFrame) {
+      stopInward();
+      return;
+    }
+
+    if (body.grounded) {
+      stopInward();
+      return;
+    }
+
+    const pushingInto =
+      side === 'left'
+        ? approachVx < -PHYSICS.icyWallKickMinImpactVx * 0.5
+        : approachVx > PHYSICS.icyWallKickMinImpactVx * 0.5;
+
+    if (!this.restWallChainEligible) {
+      stopInward();
+      return;
+    }
+
+    if (pushingInto) {
+      this.restWallChainEligible = false;
+    }
+
+    if (this.runTime < this.restWallKickCooldownUntil) {
+      stopInward();
+      return;
+    }
+
+    const outward = side === 'left' ? 1 : -1;
+    const approach = Math.abs(approachVx);
+    const impact = Math.max(approach, this.icyRunChargePxPerSec);
+
+    if (impact < PHYSICS.icyWallKickMinImpactVx || !pushingInto) {
+      stopInward();
+      return;
+    }
+
+    const kick01 = this.getRestWallKick01(impact);
+    const outSpeed = Math.max(
+      PHYSICS.icyWallKickMinVx,
+      Math.min(PHYSICS.icyRunChargeMax, impact * PHYSICS.icyWallKickRestitution),
+    );
+    body.vx = outward * outSpeed;
+    this.icyRunChargePxPerSec = Math.min(PHYSICS.icyRunChargeMax, outSpeed);
+
+    const diagonalRatio =
+      PHYSICS.icyWallKickDiagonalVyPerVxMin +
+      (PHYSICS.icyWallKickDiagonalVyPerVxMax - PHYSICS.icyWallKickDiagonalVyPerVxMin) * kick01;
+
+    const popVy = Math.max(
+      PHYSICS.icyWallKickMinVy +
+        kick01 * (PHYSICS.icyWallKickMaxVy - PHYSICS.icyWallKickMinVy),
+      outSpeed * diagonalRatio,
+    );
+    body.vy = Math.min(body.vy, -popVy);
+
+    this.restWallBounceAppliedThisFrame = true;
+    this.restWallKickCooldownUntil = this.runTime + PHYSICS.icyWallKickCooldownSec;
+    this.shakeTime = Math.max(this.shakeTime, 0.16 + kick01 * 0.14);
+  }
+
+  /** 0..1 kick strength from impact speed at the wall. */
+  private getRestWallKick01(impactSpeed: number): number {
+    const floor = WALK.speedPxPerSecond * 0.35;
+    const span = Math.max(1, PHYSICS.icyWallKickSpeedForMax - floor);
+    return Math.min(1, Math.max(0, (impactSpeed - floor) / span));
+  }
+
+  /** Banks run charge while steering — feeds repeatable wall kicks. */
+  private tickRestPhaseRunMomentum(dt: number, axis: number): void {
+    const body = this.player.body;
+    const vx = Math.abs(body.vx);
+    const decay = Math.exp(-PHYSICS.icyRunChargeDecayPerSec * dt);
+    let charge = Math.max(vx, this.icyRunChargePxPerSec * decay);
+
+    const ax = Math.max(-1, Math.min(1, axis));
+    if (Math.abs(ax) > 0.12) {
+      const sameDir = Math.sign(ax) === Math.sign(body.vx) || Math.abs(body.vx) < 28;
+      if (sameDir && vx > WALK.vxThreshold) {
+        charge += vx * PHYSICS.icyRunChargeBuildPerSec * dt;
+      }
+    }
+
+    this.icyRunChargePxPerSec = Math.min(PHYSICS.icyRunChargeMax, charge);
   }
 
   /** After camera snap, keep the starting stair centered in the safe view band. */
@@ -2721,8 +3026,24 @@ export class PlayScene implements Scene {
     }
     const b = this.player.body;
     b.x = Math.round(p.x + p.width * 0.5 - b.width * 0.5);
-    /** Same slight air gap as legacy spawn — feet a few px above the deck top (`worldMaxY - 100` when stair 0 sat at `worldMaxY - 96`). */
-    b.y = Math.round(p.y - b.height - 4);
+    /** Feet on deck top — physics resolves landing on the same frame. */
+    b.y = Math.round(p.y - b.height);
+  }
+
+  private tickMenuSkyDropIntro(dt: number): void {
+    if (!this.menuSkyDropIntroActive) {
+      return;
+    }
+    this.menuSkyDropIntroElapsedSec += dt;
+    const t = Math.min(1, this.menuSkyDropIntroElapsedSec / MENU_SKY_DROP_INTRO_SEC);
+    const eased = t * t;
+    const span = this.menuSkyDropIntroTargetY - this.menuSkyDropIntroStartY;
+    this.player.body.y = Math.round(this.menuSkyDropIntroStartY + span * eased);
+    this.player.body.vy = (span * 2 * t) / MENU_SKY_DROP_INTRO_SEC;
+    this.player.body.grounded = false;
+    if (t >= 1) {
+      this.finishMenuSkyDropIntro();
+    }
   }
 
   private updatePlatformBodyFromScale(platform: Platform): void {
@@ -2762,7 +3083,10 @@ export class PlayScene implements Scene {
   }
 
   private syncPlatformSpritesFromPlatforms(): void {
-    if (!this.platformTexture) {
+    const hasStairArt =
+      this.marshmallowTextures.length > 0 || this.chocolateTextures.length > 0;
+    const hasRestArt = !!(this.restPlatformMarshmallowSlices || this.restPlatformChocolateSlices);
+    if (!hasStairArt && !hasRestArt) {
       return;
     }
 
@@ -2774,34 +3098,26 @@ export class PlayScene implements Scene {
       }
 
       if (platform.kind === 'rest' || platform.kind === 'spawn') {
+        if (hasRestArt) {
+          this.syncRestFloorPlatformSprite(i, root, platform);
+        } else {
+          root.visible = false;
+        }
+        continue;
+      }
+      if (!hasStairArt) {
         root.visible = false;
         continue;
       }
       root.visible = true;
 
       const platformM = this.getPlatformMeters(platform);
-      let tex: Texture = this.platformTexture;
-      let artMul = 1;
-
-      if (platformM >= STAIRS.stormPlatformAfterMeters && this.restFloorCloudTexture !== undefined) {
-        tex = this.restFloorCloudTexture;
-        artMul = STAIRS.stormPlatformArtScale;
-      } else if (platformM >= STAIRS.volcanoPlatformAfterMeters && this.platformTextureVolcano !== undefined) {
-        tex = this.platformTextureVolcano;
-        artMul = STAIRS.volcanoPlatformArtScale;
-      } else if (platformM >= STAIRS.slimePlatformAfterMeters && this.platformTextureSlime !== undefined) {
-        tex = this.platformTextureSlime;
-        artMul = STAIRS.slimePlatformArtScale;
-      } else if (platformM >= STAIRS.compactPlatformArtAfterMeters) {
-        artMul = STAIRS.compactPlatformArtScale;
+      const levelTex = this.pickPlatformLevelTexture(platformM, platform);
+      if (!levelTex) {
+        continue;
       }
 
-      const useBeadBridge = platformM <= BEAD_BRIDGE_MAX_METERS;
-      if (useBeadBridge) {
-        this.syncBeadBridgePlatformSprite(i, root, platform);
-      } else {
-        this.syncLegacyPlatformSprite(i, root, platform, tex, artMul);
-      }
+      this.syncLegacyPlatformSprite(i, root, platform, levelTex, 1);
     }
   }
 
@@ -2839,7 +3155,6 @@ export class PlayScene implements Scene {
     this.diamondCount = 0;
     this.runGoldCollected = 0;
     this.runDiamondCollected = 0;
-    this.runPurpleMushroomsCollected = 0;
     this.resetBagSlots();
     this.collectibles = [];
     this.jumpCount = 0;
@@ -2857,16 +3172,21 @@ export class PlayScene implements Scene {
     this.superTongueBuffTime = 0;
     this.jumpBufferTimeLeft = 0;
     this.runTime = 0;
+    this.menuSkyDropIntroActive = false;
+    this.menuSkyDropIntroElapsedSec = 0;
+    this.gameplayUnlocked = !this.fromMenuHandoff;
     this.photoroomOscTimeMs = 0;
-    this.hurryUpTimeLeft = 0;
     this.paused = false;
     this.pauseOverlay.visible = false;
     this.headerPauseRoot.visible = true;
-    this.statusPanelRoot.visible = true;
+    this.syncHeaderPauseHudLayer();
+    this.statusPanelRoot.visible = STATUS_PANEL_ENABLED;
     this.attackBtnRoot.visible = true;
     this.shakeTime = 0;
     this.shakeOffsetX = 0;
     this.shakeOffsetY = 0;
+    this.cameraJuiceY = 0;
+    this.cameraJuiceVelY = 0;
     this.velocityStressShakePhase = 0;
     this.speedTierUiFlashTime = 0;
     this.speedPulseGfx.visible = false;
@@ -2894,14 +3214,15 @@ export class PlayScene implements Scene {
     this.shieldSaveFlashTime = 0;
     this.fallShields = MAX_FALL_SHIELDS;
     this.lastLandedPlatform = null;
-    this.clearMushroomDeathEffects();
+    this.restWallBounceAppliedThisFrame = false;
+    this.icyRunChargePxPerSec = 0;
+    this.restWallKickCooldownUntil = 0;
     this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
     if (this.levelUpFloatText) {
       this.levelUpFloatText.visible = false;
     }
     this.createPlatforms();
     this.spawnCollectibleField();
-    this.spawnMushroomEnemies();
     this.resetPlayer();
     this.snapCameraToPlayer();
     this.centerStairZeroUnderCamera();
@@ -2913,14 +3234,11 @@ export class PlayScene implements Scene {
       `1000m Rest Floor Y: ${this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS).toFixed(2)}`,
     );
     this.clearRestFloorProps();
-    this.scoreboard?.reset();
     this.hudGoldShown = this.goldCount;
     this.hudDiamondShown = this.diamondCount;
     this.collectibleHudBump = 0;
     this.collectibleHudRoot.scale.set(1);
     this.refreshCollectibleHudText();
-    this.scoreboard?.setLevel(this.level);
-    this.refreshAutoScrollHud();
     this.syncScrollSpeedTierBaseline();
     if (opts?.pickNewBgm === true) {
       this.startBackgroundMusic();
@@ -3323,9 +3641,6 @@ export class PlayScene implements Scene {
     for (const w of this.windParticles) {
       w.y += deltaY;
     }
-    for (const e of this.mushroomDeathEffects) {
-      e.sprite.position.y += deltaY;
-    }
 
     this.world.position.set(-this.cameraX, -this.cameraY);
     this.layoutBackground();
@@ -3358,34 +3673,6 @@ export class PlayScene implements Scene {
       }
     }
 
-    for (let i = this.mushroomDeathEffects.length - 1; i >= 0; i -= 1) {
-      const e = this.mushroomDeathEffects[i];
-      if (e.sprite.position.y > yCut) {
-        e.sprite.destroy();
-        this.mushroomDeathEffects.splice(i, 1);
-      }
-    }
-
-    for (let i = this.mushroomEnemies.length - 1; i >= 0; i -= 1) {
-      const enemy = this.mushroomEnemies[i];
-      const platform = this.platforms[enemy.platformIdx];
-      if (platform !== undefined && platform.y > yCut) {
-        this.removeMushroomEnemyQuiet(i);
-      }
-    }
-  }
-
-  private removeMushroomEnemyQuiet(index: number): void {
-    if (index < 0 || index >= this.mushroomEnemies.length) {
-      return;
-    }
-    const sprite = this.mushroomEnemySprites[index];
-    if (sprite) {
-      this.mushroomEnemyLayer.removeChild(sprite);
-      sprite.destroy();
-    }
-    this.mushroomEnemies.splice(index, 1);
-    this.mushroomEnemySprites.splice(index, 1);
   }
 
   /** Every 1000 climb meters, tighten transient particle pools so allocations do not creep upward. */
@@ -3421,6 +3708,15 @@ export class PlayScene implements Scene {
    */
   private shouldPausePlatformGeneration(): boolean {
     return this.isRestFloorHolding();
+  }
+
+  /** Slide wall-ride can drop the player — keep the stair pool fixed until they land again. */
+  private shouldPauseStairRecycleDuringSlideFall(): boolean {
+    return (
+      this.isSlidePhase &&
+      !this.player.body.grounded &&
+      this.player.body.vy > STAIRS.slideFallPauseRecycleVy
+    );
   }
 
   private updateRestFloorHoldState(): void {
@@ -3479,6 +3775,10 @@ export class PlayScene implements Scene {
     this.player.body.vx = 0;
     this.player.body.vy = 0;
     this.player.body.grounded = true;
+    this.restWallBounceAppliedThisFrame = false;
+    this.restWallChainEligible = true;
+    this.icyRunChargePxPerSec = 0;
+    this.restWallKickCooldownUntil = 0;
     this.player.hasTouchedPlatformSinceLastSlide = true;
     this.grapple = null;
     this.grappleCooldown = 0;
@@ -3528,30 +3828,6 @@ export class PlayScene implements Scene {
       })
       .filter((collectible): collectible is Collectible => collectible !== null);
 
-    const nextMushrooms: MushroomEnemy[] = [];
-    const nextMushroomSprites: Sprite[] = [];
-    for (let i = 0; i < this.mushroomEnemies.length; i += 1) {
-      const enemy = this.mushroomEnemies[i];
-      const platform = previousPlatforms[enemy.platformIdx];
-      const nextIndex = platform ? nextIndexByPlatform.get(platform) : undefined;
-      const sprite = this.mushroomEnemySprites[i];
-      if (nextIndex === undefined) {
-        if (sprite) {
-          this.mushroomEnemyLayer.removeChild(sprite);
-          sprite.destroy();
-        }
-        continue;
-      }
-      if (!sprite) {
-        continue;
-      }
-      enemy.platformIdx = nextIndex;
-      nextMushrooms.push(enemy);
-      nextMushroomSprites.push(sprite);
-    }
-    this.mushroomEnemies = nextMushrooms;
-    this.mushroomEnemySprites = nextMushroomSprites;
-
     this.platforms = nextPlatforms;
     this.currentGroundPlatform = restPlatform;
     if (this.lastLandedPlatform !== null && !this.platforms.includes(this.lastLandedPlatform)) {
@@ -3586,7 +3862,7 @@ export class PlayScene implements Scene {
         y,
         width: 0,
         height: STAIRS.platformHeight,
-        baseWidth: 150 + ((this.nextStairId * 37) % 80),
+        baseWidth: PLATFORM_SIZING.uniformBaseWidth,
         driftDir: Math.random() < 0.5 ? -1 : 1,
         driftVx: 0,
         stairId: this.nextStairId,
@@ -3605,7 +3881,6 @@ export class PlayScene implements Scene {
     }
     this.rebuildPlatformSprites();
     this.spawnCollectibleField();
-    this.spawnMushroomEnemies();
   }
 
   /** Grounded on {@link platforms}[0] when it is the wide Floor 0 spawn deck (feet band matches physics landing). */
@@ -3634,10 +3909,12 @@ export class PlayScene implements Scene {
     const viewportW = this.worldWidthFromScreen();
     const viewportH = this.worldHeightFromScreen();
     const playerCy = this.player.body.y + this.player.body.height * 0.5;
+    const cameraYBefore = this.cameraY;
     this.cameraX = (this.worldWidth - viewportW) * 0.5;
     if (this.cameraFrozenUntilFirstFloor0Jump) {
       const maxCamXFrozen = Math.max(0, this.worldWidth - viewportW);
       this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamXFrozen));
+      this.cameraScrollVelocityPx = 0;
       this.world.position.set(-this.cameraX, -this.cameraY);
       this.layoutBackground();
       return;
@@ -3645,6 +3922,7 @@ export class PlayScene implements Scene {
     if (this.isRestFloorHolding()) {
       const maxCamX = Math.max(0, this.worldWidth - viewportW);
       this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
+      this.cameraScrollVelocityPx = 0;
       this.world.position.set(-this.cameraX, -this.cameraY);
       this.layoutBackground();
       return;
@@ -3659,6 +3937,8 @@ export class PlayScene implements Scene {
     const maxCamX = Math.max(0, this.worldWidth - viewportW);
     this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
     this.cameraY = Math.min(0, this.cameraY);
+
+    this.cameraScrollVelocityPx = (this.cameraY - cameraYBefore) / Math.max(dt, 1e-4);
 
     this.world.position.set(-this.cameraX, -this.cameraY);
     this.layoutBackground();
@@ -3682,6 +3962,12 @@ export class PlayScene implements Scene {
   private prepareTextureForInfiniteTile(tex: Texture): void {
     tex.source.style.addressModeU = 'repeat';
     tex.source.style.addressModeV = 'repeat';
+  }
+
+  /** Single-scene backdrop (`canndy.png`) — clamp so parallax does not tile the art. */
+  private prepareTextureForBackgroundScene(tex: Texture): void {
+    tex.source.style.addressModeU = 'clamp-to-edge';
+    tex.source.style.addressModeV = 'clamp-to-edge';
   }
 
   private async loadTextureFromCandidates(candidates: readonly string[]): Promise<Texture> {
@@ -3925,7 +4211,7 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * After the first frame of gameplay: extra BG tiers, decorative platform atlases, mushrooms, DragonBones tongue.
+   * After the first frame of gameplay: extra BG tiers, decorative platform atlases, DragonBones tongue.
    */
   private async finishDeferredPlaySceneLoadsForMobile(): Promise<void> {
     if (!STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY) {
@@ -3935,10 +4221,6 @@ export class PlayScene implements Scene {
     }
     this.layoutBackground();
     await this.loadPlatformSpriteDecorAndAltTextures();
-    await this.loadMushroomTextures();
-    if (!this.gameOver && this.mushroomRunTextures.length > 0 && this.mushroomEnemies.length === 0) {
-      this.spawnMushroomEnemies();
-    }
     await this.tryLoadTongueArmature();
   }
 
@@ -3980,8 +4262,14 @@ export class PlayScene implements Scene {
     this.backgroundRoot.position.set(0, 0);
     this.syncBackgroundTierForCurrentAltitude(vw, vh);
 
+    const backdropColor =
+      USE_CANDY_STATIC_ATMOSPHERE &&
+      this.atmosphereManager?.isReady &&
+      this.getHudClimbMeters() >= BACKGROUND_TIER_SWITCH_METERS
+        ? BACK_5000_BACKDROP_COLOR
+        : this.currentBackgroundColor;
     this.bgBackdropFill.clear();
-    this.bgBackdropFill.rect(0, 0, vw, vh).fill({ color: this.currentBackgroundColor, alpha: 1 });
+    this.bgBackdropFill.rect(0, 0, vw, vh).fill({ color: backdropColor, alpha: 1 });
 
     for (const { tile, speed } of this.bgParallaxLayers) {
       tile.position.set(0, 0);
@@ -4014,7 +4302,20 @@ export class PlayScene implements Scene {
     // teset 2/1: positioned after {@link layoutBackground} in {@link syncPhotoroomTeset12ScreenAnchoredOscillation}
     // so Y is not reset here every frame (would kill sine oscillation on layer 2).
 
-    this.syncTeset3PhotoroomTileScroll();
+    if (this.atmosphereManager?.isReady) {
+      this.atmosphereManager.layout({
+        viewportW: vw,
+        viewportH: vh,
+        bottomAnchorY: orangeBarTopY,
+        cameraY: this.cameraY,
+        climbMeters: this.getHudClimbMeters(),
+      });
+      if (this.bgStaticTeset3Tile) {
+        this.bgStaticTeset3Tile.visible = false;
+      }
+    } else {
+      this.syncTeset3PhotoroomTileScroll();
+    }
   }
 
   /**
@@ -4128,7 +4429,7 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * רקע אחורי (tiling): מ־1000 מ׳ `sky.png`, מ־2000 מ׳ `sky 3.png`, מ־3000 מ׳ `sky 4.png`, מ־5000 מ׳ `sky 5.png`; דגלים רק אחרי טקסטורה תקינה.
+   * Altitude milestones still run for save-state flags; all tiers use `canndy.png` so the art stays identical.
    */
   private maybeTriggerFarSkyTextureMilestones(): void {
     const d = this.playerDistance;
@@ -4162,19 +4463,33 @@ export class PlayScene implements Scene {
   private async loadStaticTeset3BackgroundLayer(): Promise<void> {
     const vw = Math.max(1, this.worldWidthFromScreen());
     const vh = Math.max(1, this.worldHeightFromScreen());
+
+    if (USE_CANDY_STATIC_ATMOSPHERE && this.atmosphereManager) {
+      const loaded = await this.atmosphereManager.load();
+      if (loaded) {
+        this.hideLegacyCandyBackdropTile();
+        return;
+      }
+      console.warn('[PlayScene] Candy static atmosphere failed — falling back to canndy.png');
+    }
+
+    if (USE_CANDY_CANYON_PARALLAX) {
+      console.warn('[PlayScene] Candy canyon parallax is disabled — falling back to canndy.png');
+    }
+
     try {
       const baseTex = await this.loadTextureFromCandidates(STATIC_BG_TESET3_CANDIDATES);
-      this.prepareTextureForInfiniteTile(baseTex);
+      this.prepareTextureForBackgroundScene(baseTex);
       this.bgStaticTeset3BaseTexture = baseTex;
 
       try {
         const skyTex = await this.loadTextureFromCandidates(
           STATIC_BG_TESET3_POST_REST_1K_CANDIDATES,
         );
-        this.prepareTextureForInfiniteTile(skyTex);
+        this.prepareTextureForBackgroundScene(skyTex);
         this.background1kTexture = skyTex;
       } catch (error) {
-        console.error('CRITICAL ERROR: Failed to load sky.png from candidates!', error);
+        console.error('CRITICAL ERROR: Failed to load canndy.png (1k milestone)!', error);
         this.background1kTexture = undefined;
       }
 
@@ -4182,10 +4497,10 @@ export class PlayScene implements Scene {
         const sky3Tex = await this.loadTextureFromCandidates(
           STATIC_BG_TESET3_POST_REST_2K_CANDIDATES,
         );
-        this.prepareTextureForInfiniteTile(sky3Tex);
+        this.prepareTextureForBackgroundScene(sky3Tex);
         this.background2kSkyTexture = sky3Tex;
       } catch (error) {
-        console.error('CRITICAL ERROR: Failed to load sky 3.png from candidates!', error);
+        console.error('CRITICAL ERROR: Failed to load canndy.png (2k milestone)!', error);
         this.background2kSkyTexture = undefined;
       }
 
@@ -4193,10 +4508,10 @@ export class PlayScene implements Scene {
         const sky4Tex = await this.loadTextureFromCandidates(
           STATIC_BG_TESET3_POST_REST_3K_CANDIDATES,
         );
-        this.prepareTextureForInfiniteTile(sky4Tex);
+        this.prepareTextureForBackgroundScene(sky4Tex);
         this.background3kSkyTexture = sky4Tex;
       } catch (error) {
-        console.error('CRITICAL ERROR: Failed to load sky 4.png from candidates!', error);
+        console.error('CRITICAL ERROR: Failed to load canndy.png (3k milestone)!', error);
         this.background3kSkyTexture = undefined;
       }
 
@@ -4204,10 +4519,10 @@ export class PlayScene implements Scene {
         const sky5Tex = await this.loadTextureFromCandidates(
           STATIC_BG_TESET3_POST_REST_5K_CANDIDATES,
         );
-        this.prepareTextureForInfiniteTile(sky5Tex);
+        this.prepareTextureForBackgroundScene(sky5Tex);
         this.background5kSkyTexture = sky5Tex;
       } catch (error) {
-        console.error('CRITICAL ERROR: Failed to load sky 5.png from candidates!', error);
+        console.error('CRITICAL ERROR: Failed to load canndy.png (5k milestone)!', error);
         this.background5kSkyTexture = undefined;
       }
 
@@ -4240,6 +4555,12 @@ export class PlayScene implements Scene {
     }
   }
 
+  private hideLegacyCandyBackdropTile(): void {
+    if (this.bgStaticTeset3Tile) {
+      this.bgStaticTeset3Tile.visible = false;
+    }
+  }
+
   private attachStaticTeset3TileBehindParallax(): void {
     const tile = this.bgStaticTeset3Tile;
     if (!tile || this.backgroundRoot.children.includes(tile)) {
@@ -4251,43 +4572,18 @@ export class PlayScene implements Scene {
     this.backgroundRoot.addChildAt(tile, Math.min(at, this.backgroundRoot.children.length));
   }
 
+  /** Legacy tree/grass Photoroom layers — superseded by full-scene `canndy.png`. */
   private async loadPhotoroomStaticMidForegroundSprites(): Promise<void> {
-    const vw = Math.max(1, this.worldWidthFromScreen());
-    const vh = Math.max(1, this.worldHeightFromScreen());
-
-    const loadOne = async (
-      candidates: readonly string[],
-      zIndex: number,
-    ): Promise<Sprite | null> => {
-      try {
-        const tex = await this.loadTextureFromCandidates(candidates);
-        const hAboveOrange = Math.max(1, vh - DEATH_ORANGE_BAR_HEIGHT_PX);
-        const orangeBarTopY = vh - DEATH_ORANGE_BAR_HEIGHT_PX;
-        const sp = new Sprite(tex);
-        sp.eventMode = 'none';
-        sp.roundPixels = false;
-        sp.anchor.set(0.5, 1);
-        sp.zIndex = zIndex;
-        sp.position.set(vw * 0.5, orangeBarTopY);
-        sp.width = vw;
-        sp.height = hAboveOrange;
-        sp.visible = true;
-        this.ensureBackgroundBackdropFill();
-        if (!this.backgroundRoot.children.includes(sp)) {
-          this.backgroundRoot.addChild(sp);
-        }
-        return sp;
-      } catch {
-        return null;
-      }
-    };
-
-    const [s2, s1] = await Promise.all([
-      loadOne(STATIC_BG_TESET2_PHOTOROOM_CANDIDATES, BG_Z_TESET2_SPRITE),
-      loadOne(STATIC_BG_TESET1_PHOTOROOM_CANDIDATES, BG_Z_TESET1_SPRITE),
-    ]);
-    this.bgStaticTeset2Sprite = s2;
-    this.bgStaticTeset1Sprite = s1;
+    if (this.bgStaticTeset1Sprite) {
+      this.backgroundRoot.removeChild(this.bgStaticTeset1Sprite);
+      this.bgStaticTeset1Sprite.destroy();
+      this.bgStaticTeset1Sprite = null;
+    }
+    if (this.bgStaticTeset2Sprite) {
+      this.backgroundRoot.removeChild(this.bgStaticTeset2Sprite);
+      this.bgStaticTeset2Sprite.destroy();
+      this.bgStaticTeset2Sprite = null;
+    }
   }
 
   private updateScreenShake(dt: number): void {
@@ -4349,7 +4645,6 @@ export class PlayScene implements Scene {
     const rise = next - this.scoreHudSyncBaseline;
     this.score = next;
     if (rise > 0) {
-      this.scoreboard?.onPointsGained(rise);
       this.maybeTriggerScreenShake(rise);
     }
     this.scoreHudSyncBaseline = next;
@@ -4382,6 +4677,9 @@ export class PlayScene implements Scene {
 
   /** Same landed-meter window as lava rise/hold ({@link tickDeathLavaLift}). */
   private shouldPlayStressModeBgm(): boolean {
+    if (!ENABLE_STRESS_MODE_BGM) {
+      return false;
+    }
     const m = Math.max(0, this.getBestLandedClimbMeters());
     return m >= DEATH_LAVA_LIFT_RISE_START_METERS && m < DEATH_LAVA_LIFT_HOLD_END_METERS;
   }
@@ -4549,8 +4847,6 @@ export class PlayScene implements Scene {
     this.level = nextLevel;
     this.levelUpBannerTime = 1;
     this.spawnLevelUpParticles();
-    this.scoreboard?.setLevel(this.level);
-    this.scoreboard?.triggerLevelUp();
     const nextMilestone = Math.floor(this.level / LEVEL_MILESTONE_STEP);
     if (nextMilestone > previousMilestone) {
       this.currentBackgroundColor = this.getBackgroundColorForLevel(this.level);
@@ -4560,7 +4856,6 @@ export class PlayScene implements Scene {
 
   private updatePlatformDifficulty(dt: number): void {
     void dt;
-    const widthRatio = Math.max(0.5, 1 - this.level * LEVEL_PLATFORM_WIDTH_DECAY_RATIO_PER_LEVEL);
     const edgePad = PLATFORM_EDGE_PADDING_PX;
     for (const p of this.platforms) {
       if (p.kind === 'rest') {
@@ -4579,11 +4874,8 @@ export class PlayScene implements Scene {
         this.updatePlatformBodyFromScale(p);
         continue;
       }
-      const targetBaseWidth = Math.max(
-        LEVEL_PLATFORM_MIN_BASE_WIDTH,
-        p.baseWidth * widthRatio,
-      );
-      p.width = targetBaseWidth * PLATFORM_SCALE * this.getPlatformResponsiveWidthMul();
+      p.baseWidth = PLATFORM_SIZING.uniformBaseWidth;
+      p.width = this.getNormalPlatformWorldWidth();
       p.driftVx = 0;
       if (p.x < edgePad) {
         p.x = edgePad;
@@ -4737,10 +5029,7 @@ export class PlayScene implements Scene {
     return Math.max(0, this.climbBaselineY - this.player.body.y);
   }
 
-  /**
-   * Integer climb meters shown on the scoreboard — **identical** to the `heightMeters` passed into
-   * `scoreboard.update` each frame (not body Y / pixels).
-   */
+  /** Integer climb meters used for HUD text, scroll tiers, and derived score. */
   private getHudScoreboardDisplayMeters(): number {
     return Math.max(0, Math.floor(this.getHudClimbMeters()), Math.floor(this.getBestLandedClimbMeters()));
   }
@@ -4766,8 +5055,7 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * Scroll / difficulty: **continuous** climb scaling (not floor’d to 200 m steps) so SPD rises smoothly
-   * while ascending; steeper slope above {@link SCROLL_SPEED_HIGH_TIER_FROM_METERS}; plus runtime + score.
+   * Scroll / difficulty: linear ×1 → ×{@link SCROLL_SPEED_MAX_MULT} from warmup to 10k m (HUD climb).
    */
   private getAltitudeSpeedMultiplier(): number {
     const m = Math.max(
@@ -4775,39 +5063,19 @@ export class PlayScene implements Scene {
       this.peakClimbMetersThisRun,
       this.getBestLandedClimbMeters(),
     );
-    const w = SCROLL_SPEED_WARMUP_METERS;
-    const band = SCROLL_SPEED_STEP_METERS;
-    let altitudeMult = 1;
-    if (m > w) {
-      const effM = m - w;
-      const lowSpanM = SCROLL_SPEED_HIGH_TIER_FROM_METERS - w;
-      const lowM = Math.min(effM, lowSpanM);
-      const highM = Math.max(0, effM - lowSpanM);
-      altitudeMult =
-        1 +
-        SCROLL_SPEED_STEP_DELTA * (lowM / band) +
-        SCROLL_SPEED_HIGH_TIER_DELTA * (highM / band);
+    if (m <= SCROLL_SPEED_WARMUP_METERS) {
+      return 1;
     }
-    const runtimeSteps = Math.max(
-      0,
-      Math.floor((this.runTime - SCROLL_SPEED_RUNTIME_START_SEC) / SCROLL_SPEED_RUNTIME_STEP_SEC),
-    );
-    const scoreSteps = Math.max(0, Math.floor(this.score / SCROLL_SPEED_SCORE_STEP));
-    let mult =
-      altitudeMult +
-      SCROLL_SPEED_RUNTIME_DELTA * runtimeSteps +
-      SCROLL_SPEED_SCORE_DELTA * scoreSteps;
-    if (m >= HARD_SPEED_CAP_FROM_METERS) {
-      mult = Math.min(mult, HARD_SPEED_CAP_MULT);
-    }
-    return mult;
+    const rampSpan = Math.max(1, SCROLL_SPEED_RAMP_END_METERS - SCROLL_SPEED_WARMUP_METERS);
+    const effM = Math.min(m - SCROLL_SPEED_WARMUP_METERS, rampSpan);
+    return 1 + (SCROLL_SPEED_MAX_MULT - 1) * (effM / rampSpan);
   }
 
   private getCameraScrollSpeedPx(): number {
     return AUTO_SCROLL_BASE_SPEED_PX * this.getAltitudeSpeedMultiplier();
   }
 
-  /** Tier index for speed feedback; tracks whole {@link SCROLL_SPEED_STEP_DELTA} steps of {@link getAltitudeSpeedMultiplier} (altitude + runtime). */
+  /** Tier index for speed feedback; tracks whole {@link SCROLL_SPEED_STEP_DELTA} steps above ×1. */
   private getScrollSpeedTier(): number {
     const mult = this.getAltitudeSpeedMultiplier();
     if (mult <= 1.0001) {
@@ -4954,15 +5222,15 @@ export class PlayScene implements Scene {
     void app;
     this.collectibleHudGoldText = new Text({
       text: '0',
-      style: this.createNeonGoldTextStyle(19, 3),
+      style: this.createFloatingHudTextStyle(18, '#ffe566', '#4a3200', 2.2),
     });
     this.collectibleHudDiamondText = new Text({
       text: '0',
-      style: this.createNeonGoldTextStyle(19, 3),
+      style: this.createFloatingHudTextStyle(18, '#b8f0ff', '#1a3050', 2.2),
     });
     this.collectibleHudShieldText = new Text({
       text: `${MAX_FALL_SHIELDS}`,
-      style: this.createNeonGoldTextStyle(19, 3),
+      style: this.createFloatingHudTextStyle(18, '#cce8ff', '#1a3050', 2.2),
     });
     this.collectibleHudGoldText.anchor.set(0, 0.5);
     this.collectibleHudDiamondText.anchor.set(0, 0.5);
@@ -4989,32 +5257,35 @@ export class PlayScene implements Scene {
     void app;
     this.climbHudText = new Text({
       text: '',
-      style: this.createNeonGoldTextStyle(13, 2),
+      style: this.createFloatingHudTextStyle(13, TIMER_HUD_FILL, TIMER_HUD_STROKE, TIMER_HUD_STROKE_WIDTH),
     });
     this.climbHudText.anchor.set(1, 0);
     this.climbHudText.zIndex = 1003;
-    this.climbHudText.alpha = 0.9;
+    this.climbHudText.alpha = 0.96;
     this.uiLayer.addChild(this.climbHudText);
-
-    this.jumpsHudText = new Text({
-      text: '↑ 0',
-      style: this.createNeonGoldTextStyle(17, 3),
-    });
-    this.jumpsHudText.anchor.set(1, 0);
-    this.jumpsHudText.zIndex = 1003;
-    this.jumpsHudText.alpha = 0.95;
-    this.uiLayer.addChild(this.jumpsHudText);
 
     this.layoutClimbHud();
     this.refreshClimbHudText();
   }
 
   private layoutClimbHud(): void {
+    this.layoutTimerClimbHudRow();
+    this.layoutComboHudRoot();
+    this.layoutSkillPairHud();
+  }
+
+  /** Meters/speed row — left of pause coin, combo occupies the former timer slot. */
+  private layoutTimerClimbHudRow(): void {
+    const rowY = TIMER_CLIMB_HUD_ROW_Y;
+    const leftLimit = TIMER_HUD_LEFT_RESERVE_PX;
+    const comboW = COMBO_BADGE_W * COMBO_HUD_ROOT_SCALE;
+
     if (this.climbHudText) {
-      this.climbHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + 34);
-    }
-    if (this.jumpsHudText) {
-      this.jumpsHudText.position.set(this.width - 20, UI_SAFE_PAD_TOP + 54);
+      this.climbHudText.anchor.set(0, 0);
+      this.climbHudText.position.set(
+        leftLimit + comboW + TIMER_CLIMB_HUD_GAP_PX - CLIMB_HUD_SHIFT_LEFT_PX,
+        rowY,
+      );
     }
   }
 
@@ -5024,9 +5295,6 @@ export class PlayScene implements Scene {
       const mApprox = Math.round(this.getClimbHeightPx() / 12);
       this.climbHudText.text = `${mApprox}M  |  SPD x${mult.toFixed(2)}`;
     }
-    if (this.jumpsHudText) {
-      this.jumpsHudText.text = `↑ ${this.jumpCount}`;
-    }
   }
 
   /**
@@ -5034,10 +5302,9 @@ export class PlayScene implements Scene {
    * equivalent to Phaser `scrollFactor(0)` / camera‑fixed HUD.
    */
   private layoutComboHudRoot(): void {
-    const skillBarTop = UI_SAFE_PAD_TOP + UI_HEADER_H + SKILL_PAIR_BELOW_HEADER_GAP_PX;
-    const skillBarBottom = skillBarTop + PULL_UP_BTN_H * PULL_UP_BTN_SCALE;
-    const comboY = skillBarBottom + COMBO_BELOW_SKILL_PAIR_GAP_PX;
-    this.comboHudRoot.position.set(COMBO_HUD_SCREEN_X, comboY);
+    const comboX = TIMER_HUD_LEFT_RESERVE_PX - TIMER_HUD_SHIFT_LEFT_PX;
+    const comboY = TIMER_CLIMB_HUD_ROW_Y - TIMER_HUD_SHIFT_UP_PX;
+    this.comboHudRoot.position.set(comboX, comboY);
     this.comboHudRoot.scale.set(COMBO_HUD_ROOT_SCALE);
   }
 
@@ -5045,7 +5312,7 @@ export class PlayScene implements Scene {
    * Combo badge → scaled `comboHudRoot`. Skill pair (`SUPER JUMP` + `PULL UP`) is a sibling on
    * `uiLayer` under the timer/header strip (`scrollFactor` 0 equivalent).
    */
-  private setupComboHud(): void {
+  private setupComboHud(skillTextures: Awaited<ReturnType<typeof loadSkillButtonTextures>>): void {
     this.comboHudRoot.eventMode = 'none';
     this.comboHudRoot.sortableChildren = true;
     this.comboHudRoot.zIndex = 1004;
@@ -5061,66 +5328,167 @@ export class PlayScene implements Scene {
     this.skillPairRoot.sortableChildren = true;
     this.skillPairRoot.visible = false;
     this.skillPairRoot.scale.set(PULL_UP_BTN_SCALE);
-    this.skillPairRoot.alpha = 0.85;
 
-    this.superJumpBtnRoot.position.set(0, 0);
-    this.superJumpBtnGfx.cursor = 'pointer';
-    this.superJumpBtnGfx.eventMode = 'none';
-    this.superJumpBtnLabel = new Text({
-      text: 'SUPER JUMP',
-      style: this.createNeonGoldTextStyle(12, 2.5),
-    });
-    this.superJumpBtnLabel.anchor.set(0.5);
-    this.superJumpBtnLabel.position.set(PULL_UP_BTN_W * 0.5, PULL_UP_BTN_H * 0.5);
-    this.superJumpBtnLabel.eventMode = 'none';
-    this.superJumpBtnRoot.addChild(this.superJumpBtnGfx, this.superJumpBtnLabel);
-    this.superJumpBtnGfx.on('pointertap', (event) => {
-      event.stopPropagation();
-      this.fireManualSuperJump();
-    });
+    this.setupSkillFallbackButtons();
 
-    this.superTongueBtnRoot.position.set(PULL_UP_BTN_W + SKILL_PAIR_BTN_GAP_PX, 0);
-    this.superTongueBtnGfx.cursor = 'pointer';
-    this.superTongueBtnGfx.eventMode = 'none';
-    this.superTongueBtnLabel = new Text({
-      text: 'PULL UP',
-      style: this.createNeonGoldTextStyle(14, 3),
-    });
-    this.superTongueBtnLabel.anchor.set(0.5);
-    this.superTongueBtnLabel.position.set(PULL_UP_BTN_W * 0.5, PULL_UP_BTN_H * 0.5);
-    this.superTongueBtnLabel.eventMode = 'none';
-    this.superTongueBtnRoot.addChild(this.superTongueBtnGfx, this.superTongueBtnLabel);
-    this.superTongueBtnGfx.on('pointertap', (event) => {
-      event.stopPropagation();
-      this.fireSuperTongue();
-    });
+    this.skillButtonTextures = skillTextures;
+    this.skillButtonsUseImageArt = skillTextures != null;
+    if (skillTextures) {
+      this.applySkillButtonArtLayout();
+    } else {
+      this.drawSuperJumpFallbackButton();
+      this.drawPullUpFallbackButton();
+    }
+    this.updateSkillButtonArtMode();
 
-    this.skillPairRoot.addChild(this.superJumpBtnRoot, this.superTongueBtnRoot);
+    this.skillPairRoot.addChild(
+      this.superJumpHudBtn.root,
+      this.pullUpHudBtn.root,
+      this.superJumpFallbackRoot,
+      this.pullUpFallbackRoot,
+    );
 
     this.comboHudRoot.addChild(this.comboBadge);
     this.uiLayer.addChild(this.comboHudRoot);
     this.uiLayer.addChild(this.skillPairRoot);
     this.layoutSkillPairHud();
     this.layoutComboHudRoot();
-    this.drawSuperJumpButton();
-    this.drawSuperTongueButton();
+  }
+
+  private setupSkillFallbackButtons(): void {
+    this.superJumpFallbackRoot.position.set(0, 0);
+    this.superJumpFallbackGfx.cursor = 'pointer';
+    this.superJumpFallbackGfx.eventMode = 'none';
+    this.superJumpFallbackLabel = new Text({
+      text: 'SUPER JUMP',
+      style: this.createNeonGoldTextStyle(12, 2.5),
+    });
+    this.superJumpFallbackLabel.anchor.set(0.5);
+    this.superJumpFallbackLabel.position.set(
+      SKILL_FALLBACK_BTN_W * 0.5,
+      SKILL_FALLBACK_BTN_H * 0.5,
+    );
+    this.superJumpFallbackLabel.eventMode = 'none';
+    this.superJumpFallbackRoot.addChild(this.superJumpFallbackGfx, this.superJumpFallbackLabel);
+    this.superJumpFallbackGfx.hitArea = new Rectangle(0, 0, SKILL_FALLBACK_BTN_W, SKILL_FALLBACK_BTN_H);
+    this.superJumpFallbackGfx.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.fireManualSuperJump();
+    });
+
+    this.pullUpFallbackRoot.position.set(
+      SKILL_FALLBACK_BTN_W + SKILL_PAIR_BTN_GAP_PX - SKILL_PULL_UP_NUDGE_LEFT_PX,
+      0,
+    );
+    this.pullUpFallbackGfx.cursor = 'pointer';
+    this.pullUpFallbackGfx.eventMode = 'none';
+    this.pullUpFallbackLabel = new Text({
+      text: 'PULL UP',
+      style: this.createNeonGoldTextStyle(14, 3),
+    });
+    this.pullUpFallbackLabel.anchor.set(0.5);
+    this.pullUpFallbackLabel.position.set(
+      SKILL_FALLBACK_BTN_W * 0.5,
+      SKILL_FALLBACK_BTN_H * 0.5,
+    );
+    this.pullUpFallbackLabel.eventMode = 'none';
+    this.pullUpFallbackRoot.addChild(this.pullUpFallbackGfx, this.pullUpFallbackLabel);
+    this.pullUpFallbackGfx.hitArea = new Rectangle(0, 0, SKILL_FALLBACK_BTN_W, SKILL_FALLBACK_BTN_H);
+    this.pullUpFallbackGfx.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.fireSuperTongue();
+    });
+  }
+
+  private updateSkillButtonArtMode(): void {
+    const useImage = this.skillButtonsUseImageArt && this.skillButtonTextures != null;
+    this.superJumpHudBtn.root.visible = useImage;
+    this.pullUpHudBtn.root.visible = useImage;
+    this.superJumpFallbackRoot.visible = !useImage;
+    this.pullUpFallbackRoot.visible = !useImage;
   }
 
   /**
    * Skill pair on `uiLayer` only — fixed to the camera (`scrollFactor` 0 equivalent).
-   * Y sits flush under the purple header bar bottom: `UI_SAFE_PAD_TOP + UI_HEADER_H` + {@link SKILL_PAIR_BELOW_HEADER_GAP_PX}.
+   * Centered under the meters/speed row; width auto-fits the HUD column without upscaling.
    */
   private layoutSkillPairHud(): void {
+    if (this.skillButtonsUseImageArt && this.skillButtonTextures) {
+      this.applySkillButtonArtLayout();
+    }
+
+    const useImage = this.skillButtonsUseImageArt && this.skillButtonTextures != null;
+    const pullUpGap = SKILL_PAIR_BTN_GAP_PX - SKILL_PULL_UP_NUDGE_LEFT_PX;
+    const pairLocalW = useImage
+      ? this.superJumpHudBtn.width + pullUpGap + this.pullUpHudBtn.width
+      : SKILL_FALLBACK_BTN_W * 2 + pullUpGap;
+    const pairScreenW = pairLocalW * PULL_UP_BTN_SCALE;
+
+    let centerX = this.width * 0.5;
+    let rowY = TIMER_CLIMB_HUD_ROW_Y + 22;
+    if (this.climbHudText) {
+      centerX = this.climbHudText.x + this.climbHudText.width * 0.5;
+      rowY = this.climbHudText.y + this.climbHudText.height + SKILL_PAIR_BELOW_CLIMB_GAP_PX;
+    }
+
     this.skillPairRoot.pivot.set(0, 0);
-    this.skillPairRoot.position.set(
-      SKILL_PAIR_HUD_X,
-      UI_SAFE_PAD_TOP + UI_HEADER_H + SKILL_PAIR_BELOW_HEADER_GAP_PX,
-    );
-    this.superJumpBtnGfx.hitArea = new Rectangle(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H);
-    this.superTongueBtnGfx.hitArea = new Rectangle(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H);
+    this.skillPairRoot.position.set(centerX - pairScreenW * 0.5 - SKILL_PAIR_SHIFT_LEFT_PX, rowY);
+
+    if (!useImage) {
+      this.pullUpFallbackRoot.position.set(
+        SKILL_FALLBACK_BTN_W + SKILL_PAIR_BTN_GAP_PX - SKILL_PULL_UP_NUDGE_LEFT_PX,
+        0,
+      );
+    }
   }
 
-  private drawHudSkillButton(gfx: Graphics, pulseT: number, cyanAccent: boolean): void {
+  /** Largest per-button width that fits under the meters/speed HUD without upscaling the PNG crop. */
+  private getSkillPairDisplayW(): number {
+    const maxCap =
+      this.width <= MOBILE_NARROW_UI_MAX_W
+        ? SKILL_BTN_DISPLAY_W_MAX_MOBILE
+        : SKILL_BTN_DISPLAY_W_MAX_DESKTOP;
+
+    const climb = this.climbHudText;
+    if (!climb) {
+      return maxCap;
+    }
+
+    const hudRight =
+      this.width - HEADER_PAUSE_BTN_SCREEN_MARGIN_X - this.headerPauseBtnDisplayW - 8;
+    const available = Math.max(0, hudRight - climb.x);
+    const fromSpace = Math.floor((available - SKILL_PAIR_BTN_GAP_PX) * 0.5);
+
+    return Math.max(
+      SKILL_BTN_DISPLAY_W_MIN,
+      Math.min(maxCap, fromSpace, SKILL_BTN_NATIVE_CROP_W),
+    );
+  }
+
+  private applySkillButtonArtLayout(): void {
+    if (!this.skillButtonTextures) {
+      return;
+    }
+    this.skillBtnDisplayW = this.getSkillPairDisplayW();
+    this.superJumpHudBtn.setTexture(
+      this.skillButtonTextures.superJump,
+      this.skillBtnDisplayW,
+    );
+    this.pullUpHudBtn.setTexture(this.skillButtonTextures.pullUp, this.skillBtnDisplayW);
+    this.superJumpHudBtn.root.position.set(0, 0);
+    this.pullUpHudBtn.root.position.set(
+      this.superJumpHudBtn.width + SKILL_PAIR_BTN_GAP_PX - SKILL_PULL_UP_NUDGE_LEFT_PX,
+      0,
+    );
+  }
+
+  private drawHudSkillButton(
+    gfx: Graphics,
+    w: number,
+    h: number,
+    pulseT: number,
+    cyanAccent: boolean,
+  ): void {
     gfx.clear();
     const pulse = 0.5 + 0.5 * Math.sin(pulseT * 6);
     const accent = cyanAccent
@@ -5130,28 +5498,45 @@ export class PlayScene implements Scene {
       : pulse > 0.5
         ? 0xffd700
         : 0xff9900;
-    gfx.roundRect(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H, 12).fill({
+    gfx.roundRect(0, 0, w, h, 12).fill({
       color: 0x2a0040,
       alpha: 0.92,
     });
-    gfx.roundRect(0, 0, PULL_UP_BTN_W, PULL_UP_BTN_H, 12).stroke({
+    gfx.roundRect(0, 0, w, h, 12).stroke({
       width: 3,
       color: accent,
       alpha: 0.95,
     });
-    gfx.roundRect(3, 3, PULL_UP_BTN_W - 6, PULL_UP_BTN_H - 6, 9).stroke({
+    gfx.roundRect(3, 3, w - 6, h - 6, 9).stroke({
       width: 1.4,
       color: accent,
       alpha: 0.4 + 0.3 * pulse,
     });
   }
 
-  private drawSuperJumpButton(): void {
-    this.drawHudSkillButton(this.superJumpBtnGfx, this.superTongueBtnPulse + 0.35, true);
+  private drawSuperJumpFallbackButton(): void {
+    this.drawHudSkillButton(
+      this.superJumpFallbackGfx,
+      SKILL_FALLBACK_BTN_W,
+      SKILL_FALLBACK_BTN_H,
+      this.superTongueBtnPulse + 0.35,
+      true,
+    );
   }
 
-  private drawSuperTongueButton(): void {
-    this.drawHudSkillButton(this.superTongueBtnGfx, this.superTongueBtnPulse, false);
+  private drawPullUpFallbackButton(): void {
+    this.drawHudSkillButton(
+      this.pullUpFallbackGfx,
+      SKILL_FALLBACK_BTN_W,
+      SKILL_FALLBACK_BTN_H,
+      this.superTongueBtnPulse,
+      false,
+    );
+  }
+
+  /** Top edge Y of the music HUD icon — matches {@link layoutHeaderPauseButton}. */
+  private getHeaderMusicBtnScreenY(): number {
+    return HEADER_PAUSE_BTN_SCREEN_Y + this.headerPauseBtnDisplayH + HEADER_HUD_BTN_GAP_PX;
   }
 
   /**
@@ -5181,11 +5566,13 @@ export class PlayScene implements Scene {
     this.superTongueBtnPulse += dt;
     if (this.skillPairAvailable) {
       this.syncSkillPairChildVisibility();
-      if (this.superJumpBtnRoot.visible) {
-        this.drawSuperJumpButton();
-      }
-      if (this.superTongueBtnRoot.visible) {
-        this.drawSuperTongueButton();
+      if (!this.skillButtonsUseImageArt) {
+        if (this.superJumpFallbackRoot.visible) {
+          this.drawSuperJumpFallbackButton();
+        }
+        if (this.pullUpFallbackRoot.visible) {
+          this.drawPullUpFallbackButton();
+        }
       }
     }
     this.tickSkillPairChainWindow();
@@ -5198,14 +5585,21 @@ export class PlayScene implements Scene {
     if (!this.skillPairAvailable) {
       return;
     }
+    const useImage = this.skillButtonsUseImageArt && this.skillButtonTextures != null;
     const sjOk =
       !this.skillSuperJumpSpent &&
       (!this.skillPullUpSpent || this.runTime <= this.skillChainWindowEnd);
-    this.superJumpBtnRoot.visible = sjOk;
-    this.superJumpBtnGfx.eventMode = sjOk ? 'static' : 'none';
     const puOk = !this.skillPullUpSpent;
-    this.superTongueBtnRoot.visible = puOk;
-    this.superTongueBtnGfx.eventMode = puOk ? 'static' : 'none';
+
+    this.superJumpHudBtn.root.visible = useImage && sjOk;
+    this.superJumpHudBtn.setInteractive(useImage && sjOk);
+    this.pullUpHudBtn.root.visible = useImage && puOk;
+    this.pullUpHudBtn.setInteractive(useImage && puOk);
+
+    this.superJumpFallbackRoot.visible = !useImage && sjOk;
+    this.superJumpFallbackGfx.eventMode = !useImage && sjOk ? 'static' : 'none';
+    this.pullUpFallbackRoot.visible = !useImage && puOk;
+    this.pullUpFallbackGfx.eventMode = !useImage && puOk ? 'static' : 'none';
   }
 
   private tickSkillPairChainWindow(): void {
@@ -5224,8 +5618,6 @@ export class PlayScene implements Scene {
   private expireSkillPairWithoutMegaJump(): void {
     this.pullUpJumpsAccum = 0;
     this.setSkillPairAvailable(false);
-    this.superTongueBtnRoot.visible = true;
-    this.superJumpBtnRoot.visible = true;
   }
 
   /** Streak reset path — called by expiry, non-climbing jumps, fall save, or death. */
@@ -5248,6 +5640,22 @@ export class PlayScene implements Scene {
 
   /** Show / hide the skill pair offer (`SUPER JUMP` + `PULL UP`). Does not clear grapple buff. */
   private setSkillPairAvailable(available: boolean): void {
+    if (available && !this.skillButtonTextures) {
+      void loadSkillButtonTextures().then((textures) => {
+        if (!textures) {
+          return;
+        }
+        this.skillButtonTextures = textures;
+        this.skillButtonsUseImageArt = true;
+        this.applySkillButtonArtLayout();
+        this.updateSkillButtonArtMode();
+        this.layoutSkillPairHud();
+        if (this.skillPairAvailable) {
+          this.skillPairRoot.visible = true;
+          this.syncSkillPairChildVisibility();
+        }
+      });
+    }
     if (available === this.skillPairAvailable) {
       return;
     }
@@ -5257,21 +5665,23 @@ export class PlayScene implements Scene {
       this.skillPullUpSpent = false;
       this.skillSuperJumpSpent = false;
       this.skillChainWindowEnd = 0;
-      this.superJumpBtnGfx.eventMode = 'none';
-      this.superTongueBtnGfx.eventMode = 'none';
+      this.superJumpHudBtn.setInteractive(false);
+      this.pullUpHudBtn.setInteractive(false);
+      this.superJumpFallbackGfx.eventMode = 'none';
+      this.pullUpFallbackGfx.eventMode = 'none';
       return;
     }
     this.skillPullUpSpent = false;
     this.skillSuperJumpSpent = false;
     this.skillChainWindowEnd = 0;
     this.superTongueBtnPulse = 0;
-    this.superJumpBtnRoot.visible = true;
-    this.superTongueBtnRoot.visible = true;
-    this.superJumpBtnGfx.eventMode = 'static';
-    this.superTongueBtnGfx.eventMode = 'static';
-    this.drawSuperJumpButton();
-    this.drawSuperTongueButton();
+    this.updateSkillButtonArtMode();
+    this.syncSkillPairChildVisibility();
     this.layoutSkillPairHud();
+    if (!this.skillButtonsUseImageArt) {
+      this.drawSuperJumpFallbackButton();
+      this.drawPullUpFallbackButton();
+    }
   }
 
   /**
@@ -5372,8 +5782,6 @@ export class PlayScene implements Scene {
   private finishSkillPairAfterMegaJump(): void {
     this.pullUpJumpsAccum = 0;
     this.setSkillPairAvailable(false);
-    this.superTongueBtnRoot.visible = true;
-    this.superJumpBtnRoot.visible = true;
   }
 
   /**
@@ -5437,15 +5845,50 @@ export class PlayScene implements Scene {
       fontSize: size,
       fontWeight: '800',
       fill: '#FFD700',
-      stroke: { color: '#5a3d00', width: strokeWidth },
+      stroke: { color: '#5a3d00', width: tunedUiStroke(strokeWidth) },
       letterSpacing: 1.1,
       dropShadow: {
         color: '#ffd700',
         alpha: 0.65,
-        blur: 6,
+        blur: tunedBlur(6),
         angle: Math.PI / 4,
         distance: 0,
       },
+    });
+  }
+
+  /** Floating top HUD labels — soft shadow, minimal glow, no neon frame. */
+  private createFloatingHudTextStyle(
+    size: number,
+    fill = '#fff4c8',
+    strokeColor = '#3d2800',
+    strokeWidth = 2.4,
+  ): TextStyle {
+    return new TextStyle({
+      fontFamily: 'Urbanist, Heebo, Orbitron, Arial Black, sans-serif',
+      fontSize: size,
+      fontWeight: '800',
+      fill,
+      stroke: { color: strokeColor, width: tunedUiStroke(strokeWidth) },
+      letterSpacing: 0.5,
+      dropShadow: {
+        color: '#000000',
+        alpha: 0.58,
+        blur: tunedBlur(5),
+        angle: Math.PI / 2,
+        distance: 2,
+      },
+    });
+  }
+
+  private drawFloatingHudChip(gfx: Graphics, w: number, h: number, radius: number): void {
+    gfx.clear();
+    gfx.roundRect(1.5, 2.5, w, h, radius).fill({ color: 0x000000, alpha: FLOATING_HUD_SHADOW_ALPHA });
+    gfx.roundRect(0, 0, w, h, radius).fill({ color: FLOATING_HUD_CHIP_FILL, alpha: FLOATING_HUD_CHIP_ALPHA });
+    gfx.roundRect(1, 1, w - 2, h - 2, Math.max(4, radius - 1)).stroke({
+      color: FLOATING_HUD_CHIP_STROKE,
+      width: 1,
+      alpha: FLOATING_HUD_CHIP_STROKE_ALPHA,
     });
   }
 
@@ -5457,7 +5900,7 @@ export class PlayScene implements Scene {
       fontSize: narrow ? 11 : 13,
       fontWeight: '800',
       fill: '#FFD700',
-      stroke: { color: '#5a3d00', width: narrow ? 1.2 : 1.6 },
+      stroke: { color: '#5a3d00', width: tunedUiStroke(narrow ? 1.2 : 1.6) },
       letterSpacing: narrow ? 0.2 : 0.4,
       wordWrap: true,
       wordWrapWidth: Math.max(40, wordWrapWidth),
@@ -5465,41 +5908,17 @@ export class PlayScene implements Scene {
       dropShadow: {
         color: '#ffd700',
         alpha: 0.55,
-        blur: 4,
+        blur: tunedBlur(4),
         angle: Math.PI / 4,
         distance: 0,
       },
     });
   }
 
-  private drawTopHeaderPanel(): void {
-    const w = this.width;
-    const y = UI_SAFE_PAD_TOP;
-    const r = 18;
-    this.headerPanel.clear();
-    this.headerPanel.roundRect(12, y, w - 24, UI_HEADER_H, r).fill({
-      color: UI_PANEL_PURPLE,
-      alpha: 0.42,
-    });
-    this.headerPanel.roundRect(12, y, w - 24, UI_HEADER_H, r).stroke({
-      color: UI_NEON_GREEN,
-      width: 2,
-      alpha: 0.66,
-    });
-    this.headerPanel.roundRect(15, y + 3, w - 30, UI_HEADER_H - 6, r - 3).fill({
-      color: 0x6f33a6,
-      alpha: 0.12,
-    });
-    if (!this.uiLayer.children.includes(this.headerPanel)) {
-      this.headerPanel.zIndex = 1000;
-      this.uiLayer.addChild(this.headerPanel);
-    }
-  }
-
   private drawCollectibleIcons(): void {
     this.collectibleHudGoldIcon.clear();
-    this.collectibleHudGoldIcon.circle(10, 0, 9).fill({ color: UI_GOLD, alpha: 0.9 });
-    this.collectibleHudGoldIcon.circle(10, 0, 9).stroke({ color: UI_NEON_GREEN, width: 1.5, alpha: 0.75 });
+    this.collectibleHudGoldIcon.circle(10, 0, 9).fill({ color: UI_GOLD, alpha: 0.92 });
+    this.collectibleHudGoldIcon.circle(10, 0, 9).stroke({ color: 0xfff0a8, width: 1.2, alpha: 0.45 });
     this.collectibleHudGoldIcon
       .moveTo(10, -5)
       .lineTo(12, -1)
@@ -5517,7 +5936,7 @@ export class PlayScene implements Scene {
     this.collectibleHudDiamondIcon.clear();
     const hudDiamond = [10, -9, 18, 0, 10, 10, 2, 0];
     this.collectibleHudDiamondIcon.poly(hudDiamond).fill({ color: 0x9fe8ff, alpha: 0.95 });
-    this.collectibleHudDiamondIcon.poly(hudDiamond).stroke({ color: UI_NEON_GREEN, width: 1.5, alpha: 0.82 });
+    this.collectibleHudDiamondIcon.poly(hudDiamond).stroke({ color: 0xd8f8ff, width: 1.2, alpha: 0.5 });
     this.collectibleHudDiamondIcon
       .moveTo(10, -8)
       .lineTo(10, 9)
@@ -5533,26 +5952,11 @@ export class PlayScene implements Scene {
       .lineTo(4, 3)
       .closePath()
       .fill({ color: 0x66ccff, alpha: 0.92 })
-      .stroke({ color: UI_NEON_GREEN, width: 1.5, alpha: 0.82 });
+      .stroke({ color: 0xb8ecff, width: 1.2, alpha: 0.45 });
     this.collectibleHudShieldIcon
       .roundRect(6.5, -4, 7, 7, 1.5)
       .fill({ color: 0x4060a0, alpha: 0.45 })
       .stroke({ color: 0xc8ffff, width: 1, alpha: 0.7 });
-  }
-
-  private drawHurryBanner(): void {
-    const w = 440;
-    const h = HURRY_BANNER_H;
-    const r = h * 0.5;
-    this.hurryBannerGfx.clear();
-    this.hurryBannerGfx.roundRect(0, 0, w, h, r).fill({ color: UI_PANEL_PURPLE, alpha: 0.94 });
-    this.hurryBannerGfx.roundRect(0, 0, w, h, r).stroke({ color: UI_NEON_GREEN, width: 2.2, alpha: 0.95 });
-    this.hurryBannerGfx.roundRect(3, 3, w - 6, h - 6, r - 3).stroke({
-      color: UI_NEON_GREEN,
-      width: 1,
-      alpha: 0.26,
-    });
-    this.hurryBannerText?.position.set(w * 0.5, h * 0.5);
   }
 
   private setupGameOverUi(): void {
@@ -5790,6 +6194,43 @@ export class PlayScene implements Scene {
     });
     this.pauseResumeLabel.anchor.set(0.5);
     this.pauseResumeLabel.eventMode = 'none';
+    this.pauseMenuBtn.eventMode = 'static';
+    this.pauseMenuBtn.cursor = 'pointer';
+    this.pauseMenuBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.pauseMenuBtn.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.returnToMainMenuFromPause();
+    });
+    this.pauseMenuLabel = new Text({
+      text: 'BACK TO MENU',
+      style: this.createNeonGoldTextStyle(18, 2),
+    });
+    this.pauseMenuLabel.anchor.set(0.5);
+    this.pauseMenuLabel.eventMode = 'none';
+    this.pauseLogoutBtn.eventMode = 'static';
+    this.pauseLogoutBtn.cursor = 'pointer';
+    this.pauseLogoutBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.pauseLogoutBtn.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.showLogoutConfirm();
+    });
+    this.pauseLogoutLabel = new Text({
+      text: 'LOG OUT',
+      style: new TextStyle({
+        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
+        fontSize: 11,
+        fontWeight: '800',
+        fill: '#f0a0a0',
+        stroke: { color: '#4a1515', width: 1.4 },
+        letterSpacing: 0.5,
+      }),
+    });
+    this.pauseLogoutLabel.anchor.set(0.5);
+    this.pauseLogoutLabel.eventMode = 'none';
     this.pauseTouchLockLabel = new Text({
       text: '',
       style: new TextStyle({
@@ -5818,6 +6259,10 @@ export class PlayScene implements Scene {
       this.pausePanel,
       this.pauseTitle,
       this.pauseTouchLockLabel,
+      this.pauseLogoutBtn,
+      this.pauseLogoutLabel,
+      this.pauseMenuBtn,
+      this.pauseMenuLabel,
       this.pauseResumeBtn,
       this.pauseResumeLabel,
     );
@@ -5831,7 +6276,7 @@ export class PlayScene implements Scene {
     this.pauseBackdrop.clear();
     this.pauseBackdrop.rect(0, 0, overlayW, overlayH).fill({ color: 0x000000, alpha: 0.62 });
     const panelW = Math.min(400, overlayW - 40);
-    const panelH = Math.min(360, overlayH - 72);
+    const panelH = Math.min(400, overlayH - 64);
     const px = (overlayW - panelW) * 0.5;
     const py = (overlayH - panelH) * 0.5;
     this.pausePanel.clear();
@@ -5847,12 +6292,23 @@ export class PlayScene implements Scene {
       this.pauseTouchLockLabel.style.wordWrapWidth = nw;
     }
     this.pauseTouchLockLabel?.position.set(overlayW * 0.5, py + 118);
-    const resumeW = Math.min(340, panelW - 28);
-    const resumeH = Math.max(PAUSE_RESUME_BTN_MIN_H, 60);
-    const resumeX = overlayW * 0.5 - resumeW * 0.5;
-    const resumeY = py + panelH - resumeH - 32;
-    this.drawOverlayButton(this.pauseResumeBtn, resumeX, resumeY, resumeW, resumeH);
-    this.pauseResumeBtn.hitArea = new Rectangle(resumeX, resumeY, resumeW, resumeH);
+    const btnW = Math.min(340, panelW - 28);
+    const resumeH = Math.max(PAUSE_RESUME_BTN_MIN_H, 56);
+    const menuH = 44;
+    const logoutH = STATUS_PANEL_LOGOUT_BTN_H_PX;
+    const btnGap = 10;
+    const resumeX = overlayW * 0.5 - btnW * 0.5;
+    const resumeY = py + panelH - resumeH - 28;
+    const menuY = resumeY - btnGap - menuH;
+    const logoutY = menuY - btnGap - logoutH;
+    this.drawOverlayButton(this.pauseLogoutBtn, resumeX, logoutY, btnW, logoutH);
+    this.pauseLogoutBtn.hitArea = new Rectangle(resumeX, logoutY, btnW, logoutH);
+    this.pauseLogoutLabel?.position.set(overlayW * 0.5, logoutY + logoutH * 0.5);
+    this.drawOverlayButton(this.pauseMenuBtn, resumeX, menuY, btnW, menuH);
+    this.pauseMenuBtn.hitArea = new Rectangle(resumeX, menuY, btnW, menuH);
+    this.pauseMenuLabel?.position.set(overlayW * 0.5, menuY + menuH * 0.5);
+    this.drawOverlayButton(this.pauseResumeBtn, resumeX, resumeY, btnW, resumeH);
+    this.pauseResumeBtn.hitArea = new Rectangle(resumeX, resumeY, btnW, resumeH);
     this.pauseResumeLabel?.position.set(overlayW * 0.5, resumeY + resumeH * 0.5);
     this.refreshPauseTouchLockLabel();
   }
@@ -5901,49 +6357,355 @@ export class PlayScene implements Scene {
       : 'נגישות — נעילת שליטה מכל המסך: כבוי (הקש להפעלה)';
   }
 
+  private getHeaderPauseBtnTargetDisplayPx(): number {
+    const base =
+      this.width <= MOBILE_NARROW_UI_MAX_W
+        ? HEADER_PAUSE_BTN_DISPLAY_SIZE_PX_MOBILE
+        : HEADER_PAUSE_BTN_DISPLAY_SIZE_PX_DESKTOP;
+    return base * HEADER_PAUSE_BTN_DISPLAY_SCALE;
+  }
+
+  private configureHeaderPauseButtonTexture(tex: Texture): void {
+    tex.source.scaleMode = 'linear';
+  }
+
+  private async loadHeaderHudButtonTextures(): Promise<void> {
+    await Promise.all([this.loadHeaderPauseButtonTexture(), this.loadHeaderMusicButtonTexture()]);
+  }
+
+  private async loadHeaderPauseButtonTexture(): Promise<void> {
+    if (this.headerPauseBtnTexture) {
+      return;
+    }
+    try {
+      const tex = await loadKeyedTrimmedTexture(PAUSE_BTN_TEXTURE_URL);
+      this.configureHeaderPauseButtonTexture(tex);
+      this.buildHeaderPauseBtnAlphaHitMask(tex);
+      this.headerPauseBtnTexture = tex;
+    } catch (err) {
+      console.warn('[PlayScene] pause button texture failed', PAUSE_BTN_TEXTURE_URL, err);
+    }
+  }
+
+  private async loadHeaderMusicButtonTexture(): Promise<void> {
+    if (this.headerMusicBtnTexture) {
+      return;
+    }
+    try {
+      const sheet = await loadKeyedTrimmedTexture(MUSIC_BTN_SHEET_URL);
+      this.configureHeaderPauseButtonTexture(sheet);
+      const frameH = Math.max(1, Math.round(sheet.height * 0.5));
+      const tex = new Texture({
+        source: sheet.source,
+        frame: new Rectangle(0, 0, sheet.width, frameH),
+      });
+      this.buildHeaderMusicBtnAlphaHitMask(tex);
+      this.headerMusicBtnTexture = tex;
+    } catch (err) {
+      console.warn('[PlayScene] music button texture failed', MUSIC_BTN_SHEET_URL, err);
+    }
+  }
+
+  /** Fit trimmed pause art to the same HUD target size as the old `buttons 2` coin. */
+  private computeHeaderPauseBtnBaseScale(tex: Texture): number {
+    const w = tex.width;
+    const h = tex.height;
+    if (w <= 0 || h <= 0) {
+      return 1;
+    }
+    const targetPx = this.getHeaderPauseBtnTargetDisplayPx();
+    return Math.min(targetPx / w, targetPx / h);
+  }
+
+  private buildHeaderPauseBtnAlphaHitMask(tex: Texture): void {
+    const w = tex.width;
+    const h = tex.height;
+    if (w <= 0 || h <= 0) {
+      this.headerPauseBtnHitAlpha = null;
+      this.headerPauseBtnHitW = 0;
+      this.headerPauseBtnHitH = 0;
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) {
+      this.headerPauseBtnHitAlpha = null;
+      return;
+    }
+    const resource = tex.source.resource;
+    if (resource instanceof HTMLCanvasElement || resource instanceof HTMLImageElement) {
+      ctx.drawImage(resource, 0, 0, w, h);
+    } else {
+      this.headerPauseBtnHitAlpha = null;
+      return;
+    }
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const alpha = new Uint8Array(w * h);
+    for (let i = 0; i < alpha.length; i += 1) {
+      alpha[i] = imageData.data[i * 4 + 3];
+    }
+    this.headerPauseBtnHitAlpha = alpha;
+    this.headerPauseBtnHitW = w;
+    this.headerPauseBtnHitH = h;
+  }
+
+  private buildHeaderMusicBtnAlphaHitMask(tex: Texture): void {
+    const w = tex.width;
+    const h = tex.height;
+    if (w <= 0 || h <= 0) {
+      this.headerMusicBtnHitAlpha = null;
+      this.headerMusicBtnHitW = 0;
+      this.headerMusicBtnHitH = 0;
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) {
+      this.headerMusicBtnHitAlpha = null;
+      return;
+    }
+    const resource = tex.source.resource;
+    if (resource instanceof HTMLCanvasElement || resource instanceof HTMLImageElement) {
+      ctx.drawImage(resource, tex.frame.x, tex.frame.y, w, h, 0, 0, w, h);
+    } else {
+      this.headerMusicBtnHitAlpha = null;
+      return;
+    }
+    const imageData = ctx.getImageData(0, 0, w, h);
+    const alpha = new Uint8Array(w * h);
+    for (let i = 0; i < alpha.length; i += 1) {
+      alpha[i] = imageData.data[i * 4 + 3];
+    }
+    this.headerMusicBtnHitAlpha = alpha;
+    this.headerMusicBtnHitW = w;
+    this.headerMusicBtnHitH = h;
+  }
+
+  /** Pixel-perfect hit (anchor top-right): pause only on visible button pixels. */
+  private testHeaderPauseBtnAlphaHit(localX: number, localY: number): boolean {
+    const alpha = this.headerPauseBtnHitAlpha;
+    const w = this.headerPauseBtnHitW;
+    const h = this.headerPauseBtnHitH;
+    if (!alpha || w <= 0 || h <= 0) {
+      return false;
+    }
+    const tx = Math.floor(localX + w);
+    const ty = Math.floor(localY);
+    if (tx < 0 || ty < 0 || tx >= w || ty >= h) {
+      return false;
+    }
+    return alpha[ty * w + tx] >= HEADER_PAUSE_BTN_HIT_ALPHA_THRESHOLD;
+  }
+
+  private testHeaderMusicBtnAlphaHit(localX: number, localY: number): boolean {
+    const alpha = this.headerMusicBtnHitAlpha;
+    const w = this.headerMusicBtnHitW;
+    const h = this.headerMusicBtnHitH;
+    if (!alpha || w <= 0 || h <= 0) {
+      return false;
+    }
+    const tx = Math.floor(localX + w);
+    const ty = Math.floor(localY);
+    if (tx < 0 || ty < 0 || tx >= w || ty >= h) {
+      return false;
+    }
+    return alpha[ty * w + tx] >= HEADER_PAUSE_BTN_HIT_ALPHA_THRESHOLD;
+  }
+
+  private refreshHeaderPauseBtnDisplayMetrics(multiplier = 1): void {
+    const tex = this.headerPauseBtn.texture;
+    const scale = this.headerPauseBtnBaseScale * multiplier;
+    if (tex && tex.width > 0 && tex.height > 0) {
+      this.headerPauseBtnDisplayW = tex.width * scale;
+      this.headerPauseBtnDisplayH = tex.height * scale;
+    } else {
+      this.headerPauseBtnDisplayW = this.getHeaderPauseBtnTargetDisplayPx() * multiplier;
+      this.headerPauseBtnDisplayH = this.getHeaderPauseBtnTargetDisplayPx() * multiplier;
+    }
+  }
+
   private setupHeaderPauseButton(): void {
-    this.headerPauseRoot.zIndex = 1001;
+    this.headerPauseRoot.zIndex = HEADER_PAUSE_BTN_Z_INDEX;
+    this.headerPauseBtn.anchor.set(1, 0);
+    this.headerPauseBtn.roundPixels = false;
     this.headerPauseBtn.eventMode = 'static';
     this.headerPauseBtn.cursor = 'pointer';
+    if (this.headerPauseBtnTexture) {
+      this.headerPauseBtn.texture = this.headerPauseBtnTexture;
+      this.configureHeaderPauseButtonTexture(this.headerPauseBtnTexture);
+    }
+    this.headerPauseBtn.hitArea = this.headerPauseBtnAlphaHitArea;
     this.headerPauseBtn.on('pointerdown', (event) => {
       event.stopPropagation();
+      this.headerPauseBtnPressed = true;
+      this.applyHeaderPauseBtnScale();
+    });
+    this.headerPauseBtn.on('pointerup', (event) => {
+      event.stopPropagation();
+      this.headerPauseBtnPressed = false;
+      this.applyHeaderPauseBtnScale();
+    });
+    this.headerPauseBtn.on('pointerupoutside', (event) => {
+      event.stopPropagation();
+      this.headerPauseBtnPressed = false;
+      this.applyHeaderPauseBtnScale();
+    });
+    this.headerPauseBtn.on('pointercancel', (event) => {
+      event.stopPropagation();
+      this.headerPauseBtnPressed = false;
+      this.applyHeaderPauseBtnScale();
+    });
+    this.headerPauseBtn.on('pointerover', () => {
+      this.headerPauseBtnHovered = true;
+      if (!this.headerPauseBtnPressed) {
+        this.applyHeaderPauseBtnScale();
+      }
+    });
+    this.headerPauseBtn.on('pointerout', () => {
+      this.headerPauseBtnHovered = false;
+      this.headerPauseBtnPressed = false;
+      this.applyHeaderPauseBtnScale();
     });
     this.headerPauseBtn.on('pointertap', (event) => {
       event.stopPropagation();
-      this.requestPause();
+      this.headerPauseBtnPressed = false;
+      this.headerPauseBtnHovered = false;
+      this.applyHeaderPauseBtnScale();
+      this.togglePauseFromHeaderButton();
     });
-    this.headerPauseIcon = new Text({
-      text: '||',
-      style: new TextStyle({
-        fontFamily: 'Orbitron, "Press Start 2P", Arial Black, sans-serif',
-        fontSize: 15,
-        fontWeight: '800',
-        fill: '#FFD700',
-        stroke: { color: '#4a3200', width: 2 },
-      }),
+    this.headerMusicBtn.anchor.set(1, 0);
+    this.headerMusicBtn.roundPixels = false;
+    this.headerMusicBtn.eventMode = 'static';
+    this.headerMusicBtn.cursor = 'pointer';
+    if (this.headerMusicBtnTexture) {
+      this.headerMusicBtn.texture = this.headerMusicBtnTexture;
+      this.configureHeaderPauseButtonTexture(this.headerMusicBtnTexture);
+    }
+    this.headerMusicBtn.hitArea = this.headerMusicBtnAlphaHitArea;
+    this.headerMusicBtn.on('pointerdown', (event) => {
+      event.stopPropagation();
+      this.headerMusicBtnPressed = true;
+      this.applyHeaderMusicBtnScale();
     });
-    this.headerPauseIcon.anchor.set(0.5);
-    this.headerPauseIcon.eventMode = 'none';
-    this.headerPauseRoot.addChild(this.headerPauseBtn, this.headerPauseIcon);
+    this.headerMusicBtn.on('pointerup', (event) => {
+      event.stopPropagation();
+      this.headerMusicBtnPressed = false;
+      this.applyHeaderMusicBtnScale();
+    });
+    this.headerMusicBtn.on('pointerupoutside', (event) => {
+      event.stopPropagation();
+      this.headerMusicBtnPressed = false;
+      this.applyHeaderMusicBtnScale();
+    });
+    this.headerMusicBtn.on('pointercancel', (event) => {
+      event.stopPropagation();
+      this.headerMusicBtnPressed = false;
+      this.applyHeaderMusicBtnScale();
+    });
+    this.headerMusicBtn.on('pointerover', () => {
+      this.headerMusicBtnHovered = true;
+      if (!this.headerMusicBtnPressed) {
+        this.applyHeaderMusicBtnScale();
+      }
+    });
+    this.headerMusicBtn.on('pointerout', () => {
+      this.headerMusicBtnHovered = false;
+      this.headerMusicBtnPressed = false;
+      this.applyHeaderMusicBtnScale();
+    });
+    this.headerMusicBtn.on('pointertap', (event) => {
+      event.stopPropagation();
+      this.headerMusicBtnPressed = false;
+      this.headerMusicBtnHovered = false;
+      this.applyHeaderMusicBtnScale();
+      this.toggleGameplayBgmMute();
+    });
+    this.headerPauseRoot.addChild(this.headerPauseBtn, this.headerMusicBtn);
     this.uiLayer.addChild(this.headerPauseRoot);
     this.layoutHeaderPauseButton();
   }
 
   private layoutHeaderPauseButton(): void {
-    const btnW = HEADER_PAUSE_BTN_W;
-    const btnH = HEADER_PAUSE_BTN_H;
-    const x = HEADER_PAUSE_LEFT_MARGIN_PX;
-    const y = UI_SAFE_PAD_TOP + UI_HEADER_H + HEADER_PAUSE_BELOW_HEADER_GAP_PX;
-    this.headerPauseBtn.clear();
-    this.headerPauseBtn.roundRect(0, 0, btnW, btnH, 8).fill({ color: UI_BG_BLACK, alpha: 0.48 });
-    this.headerPauseBtn.roundRect(0, 0, btnW, btnH, 8).stroke({
-      color: UI_NEON_GREEN,
-      width: 1.5,
-      alpha: 0.82,
-    });
-    this.headerPauseBtn.hitArea = new Rectangle(0, 0, btnW, btnH);
-    this.headerPauseRoot.position.set(x, y);
-    this.headerPauseIcon?.position.set(btnW * 0.5, btnH * 0.5);
+    const tex = this.headerPauseBtn.texture;
+    if (tex && tex.width > 0 && tex.height > 0) {
+      this.headerPauseBtnBaseScale = this.computeHeaderPauseBtnBaseScale(tex);
+    } else {
+      this.headerPauseBtnBaseScale = 1;
+    }
+    this.headerPauseRoot.position.set(0, 0);
+    this.headerPauseBtn.position.set(
+      this.width - HEADER_PAUSE_BTN_SCREEN_MARGIN_X,
+      HEADER_PAUSE_BTN_SCREEN_Y,
+    );
+    this.applyHeaderPauseBtnScale();
+    const musicTex = this.headerMusicBtn.texture;
+    if (musicTex && musicTex.width > 0 && musicTex.height > 0) {
+      this.headerMusicBtnBaseScale = this.computeHeaderPauseBtnBaseScale(musicTex);
+    } else {
+      this.headerMusicBtnBaseScale = 1;
+    }
+    this.headerMusicBtn.position.set(
+      this.width - HEADER_PAUSE_BTN_SCREEN_MARGIN_X,
+      this.getHeaderMusicBtnScreenY(),
+    );
+    this.applyHeaderMusicBtnScale();
+    this.layoutClimbHud();
+  }
+
+  private applyHeaderMusicBtnScale(): void {
+    let multiplier = 1;
+    if (this.headerMusicBtnPressed) {
+      multiplier = HEADER_PAUSE_BTN_PRESS_SCALE;
+    } else if (this.headerMusicBtnHovered) {
+      multiplier = HEADER_PAUSE_BTN_HOVER_SCALE;
+    }
+    this.headerMusicBtn.scale.set(this.headerMusicBtnBaseScale * multiplier);
+    const mutedAlpha = this.bgmMuted ? 0.52 : 1;
+    this.headerMusicBtn.alpha = mutedAlpha * (this.headerMusicBtnPressed ? 0.92 : 1);
+  }
+
+  private toggleGameplayBgmMute(): void {
+    this.bgmMuted = !this.bgmMuted;
+    if (this.bgm) {
+      this.bgm.volume = this.bgmMuted ? 0 : 0.2;
+      if (!this.bgmMuted && !this.paused && !this.gameOver) {
+        void this.bgm.play().catch(() => {
+          /* autoplay */
+        });
+      }
+    }
+    this.applyHeaderMusicBtnScale();
+  }
+
+  private applyHeaderPauseBtnScale(): void {
+    let multiplier = 1;
+    if (this.headerPauseBtnPressed) {
+      multiplier = HEADER_PAUSE_BTN_PRESS_SCALE;
+    } else if (this.headerPauseBtnHovered) {
+      multiplier = HEADER_PAUSE_BTN_HOVER_SCALE;
+    }
+    this.headerPauseBtn.scale.set(this.headerPauseBtnBaseScale * multiplier);
+    this.refreshHeaderPauseBtnDisplayMetrics(multiplier);
+  }
+
+  private updateHeaderPauseButtonFx(dt: number): void {
+    if (!this.headerPauseRoot.visible) {
+      return;
+    }
+    this.headerPauseGlowTimeSec += dt;
+    const wave =
+      0.5 +
+      0.5 * Math.sin((this.headerPauseGlowTimeSec * Math.PI * 2) / HEADER_PAUSE_BTN_GLOW_PULSE_SEC);
+    const blink = wave * wave;
+    // Soft pulse without GlowFilter blur (keeps pause art sharp).
+    this.headerPauseBtn.alpha = 0.9 + blink * 0.1;
+    if (!this.bgmMuted) {
+      this.headerMusicBtn.alpha = 0.9 + blink * 0.1;
+    }
   }
 
   private setupStatusPanel(): void {
@@ -6185,10 +6947,18 @@ export class PlayScene implements Scene {
     this.uiLayer.addChild(this.statusPanelRoot);
     this.setupLogoutConfirmOverlay();
     this.layoutStatusPanel();
+    if (!STATUS_PANEL_ENABLED) {
+      this.statusPanelRoot.visible = false;
+      this.statusPanelToggleHit.eventMode = 'none';
+    }
   }
 
   private layoutStatusPanel(): void {
-    const rowY = UI_SAFE_PAD_TOP + UI_HEADER_H + HEADER_PAUSE_BELOW_HEADER_GAP_PX;
+    if (!STATUS_PANEL_ENABLED) {
+      this.statusPanelRoot.visible = false;
+      return;
+    }
+    const rowY = FLOATING_HUD_SECOND_ROW_Y;
     const tw = STATUS_PANEL_TOGGLE_W_PX;
     const th = STATUS_PANEL_TOGGLE_H_PX;
     const margin = STATUS_PANEL_RIGHT_MARGIN_PX;
@@ -6241,12 +7011,7 @@ export class PlayScene implements Scene {
     }
 
     this.statusPanelToggleGfx.clear();
-    this.statusPanelToggleGfx.roundRect(0, 0, tw, th, 8).fill({ color: UI_BG_BLACK, alpha: 0.48 });
-    this.statusPanelToggleGfx.roundRect(0, 0, tw, th, 8).stroke({
-      color: UI_NEON_GREEN,
-      width: 1.5,
-      alpha: 0.82,
-    });
+    this.drawFloatingHudChip(this.statusPanelToggleGfx, tw, th, 10);
 
     if (!this.statusPanelExpanded) {
       const lineY1 = 10;
@@ -6430,7 +7195,7 @@ export class PlayScene implements Scene {
       `NICK  ${nick}`,
       `BEST HEIGHT  ${best.toLocaleString()} m`,
       `MAX COMBO   ${comboMax.toLocaleString()}`,
-      `RUN LOOT   ${this.runGoldCollected.toLocaleString()} gold · ${this.runDiamondCollected.toLocaleString()} gems · ${this.runPurpleMushroomsCollected.toLocaleString()} mushrooms`,
+      `RUN LOOT   ${this.runGoldCollected.toLocaleString()} gold · ${this.runDiamondCollected.toLocaleString()} gems`,
     ].join('\n');
     pts.text = `TOTAL PTS  ${totalPts.toLocaleString()}`;
 
@@ -6506,10 +7271,7 @@ export class PlayScene implements Scene {
     if (kind === 'gold') {
       return this.remoteBagGold;
     }
-    if (kind === 'diamond') {
-      return this.remoteBagDiamond;
-    }
-    return this.remoteBagPurpleMushrooms;
+    return this.remoteBagDiamond;
   }
 
   private renderBagIcon(gfx: Graphics, kind: BagItemKind, cx: number, cy: number, scale = 1): void {
@@ -6563,27 +7325,11 @@ export class PlayScene implements Scene {
       });
       return;
     }
-
-    /** Purple mushroom — compact cap + stem for YOUR BAG grid. */
-    const capY = cy - 4 * scale;
-    const rx = 8 * scale;
-    const ry = 5.2 * scale;
-    gfx.ellipse(cx, capY, rx + 3 * scale, ry + 2 * scale).fill({ color: 0xe9d5ff, alpha: 0.28 });
-    gfx
-      .ellipse(cx, capY, rx, ry)
-      .fill({ color: 0x9333ea, alpha: 0.96 })
-      .stroke({ width: 1.2 * scale, color: 0xfae8ff, alpha: 0.82 });
-    gfx.ellipse(cx - 2.8 * scale, capY - 2 * scale, rx * 0.32, ry * 0.3).fill({ color: 0xf5d0fe, alpha: 0.58 });
-    gfx
-      .roundRect(cx - 3 * scale, capY + ry - 1 * scale, 6 * scale, 8 * scale, 1.5 * scale)
-      .fill({ color: 0x6b21a8, alpha: 0.94 })
-      .stroke({ width: 1 * scale, color: 0xd8b4fe, alpha: 0.72 });
   }
 
   private renderStatusPanelBag(): void {
     this.ensureBagItemSlot('gold');
     this.ensureBagItemSlot('diamond');
-    this.ensureBagItemSlot('purpleMushroom');
 
     const slot = STATUS_PANEL_BAG_SLOT_PX;
     const gap = STATUS_PANEL_BAG_SLOT_GAP_PX;
@@ -7079,16 +7825,7 @@ export class PlayScene implements Scene {
 
   private async performLogoutAndReload(): Promise<void> {
     this.hideLogoutConfirm();
-    try {
-      await signOut(auth);
-    } catch {
-      /* still clear local */
-    }
-    clearGameUserSession();
-    clearSavedPlayerProfile();
-    if (typeof window !== 'undefined') {
-      window.location.reload();
-    }
+    await logoutAndReturnToLogin();
   }
 
   /**
@@ -7203,151 +7940,6 @@ export class PlayScene implements Scene {
     this.player.startAttack(this.player.direction);
   }
 
-  /**
-   * While the player is mid-swing AND inside the active hit window, sweep a forward-facing
-   * AABB through the enemy list and destroy any mushroom it overlaps. Iterates backwards so
-   * splicing during iteration is safe.
-   */
-  private tickPlayerAttackHitbox(): void {
-    if (!this.player.isAttackHitActive()) {
-      return;
-    }
-    if (this.mushroomEnemies.length === 0) {
-      return;
-    }
-
-    const pb = this.player.body;
-    const facing = this.player.direction;
-    const playerCx = pb.x + pb.width * 0.5;
-    const reach = PLAYER_ATTACK_REACH_PX;
-    const hx1 = facing >= 0 ? playerCx - 6 : playerCx - reach;
-    const hx2 = facing >= 0 ? playerCx + reach : playerCx + 6;
-    const hy1 = pb.y - PLAYER_ATTACK_VERT_PAD_PX;
-    const hy2 = pb.y + pb.height + PLAYER_ATTACK_VERT_PAD_PX;
-
-    const yCull = this.getCullBelowWorldY();
-    const halfW = MUSHROOM_HITBOX_W * 0.5;
-    for (let i = this.mushroomEnemies.length - 1; i >= 0; i -= 1) {
-      const enemy = this.mushroomEnemies[i];
-      const platform = this.platforms[enemy.platformIdx];
-      if (!platform) {
-        continue;
-      }
-      if (platform.y > yCull) {
-        continue;
-      }
-      const ex = platform.x + enemy.along * platform.width;
-      const ey = platform.y;
-      const ex1 = ex - halfW;
-      const ex2 = ex + halfW;
-      const ey1 = ey - MUSHROOM_HITBOX_H;
-      const ey2 = ey;
-      if (ex1 < hx2 && ex2 > hx1 && ey1 < hy2 && ey2 > hy1) {
-        this.destroyMushroomEnemy(i);
-      }
-    }
-  }
-
-  /**
-   * Tear down a single mushroom: remove it from the parallel `mushroomEnemies` /
-   * `mushroomEnemySprites` arrays and destroy its sprite. The enemy is gone for the rest
-   * of the run — the slot will be repopulated on the next `resetRun()` only.
-   */
-  private destroyMushroomEnemy(index: number): void {
-    if (index < 0 || index >= this.mushroomEnemies.length) {
-      return;
-    }
-    const enemy = this.mushroomEnemies[index];
-    if (enemy) {
-      const platform = this.platforms[enemy.platformIdx];
-      if (platform) {
-        const wx = platform.x + enemy.along * platform.width;
-        const wy = platform.y;
-        this.spawnMushroomDeathEffect(wx, wy + 2, enemy.direction);
-      }
-    }
-    const sprite = this.mushroomEnemySprites[index];
-    if (sprite) {
-      this.mushroomEnemyLayer.removeChild(sprite);
-      sprite.destroy();
-    }
-    this.mushroomEnemies.splice(index, 1);
-    this.mushroomEnemySprites.splice(index, 1);
-    this.runPurpleMushroomsCollected += 1;
-  }
-
-  private clearMushroomDeathEffects(): void {
-    for (const e of this.mushroomDeathEffects) {
-      e.sprite.destroy();
-    }
-    this.mushroomDeathEffects = [];
-  }
-
-  /** Mushroom-Die strip, then `blood.png` burst at the same world anchor as the live sprite. */
-  private spawnMushroomDeathEffect(wx: number, wy: number, direction: number): void {
-    if (this.mushroomDieTextures.length === 0) {
-      return;
-    }
-    const s = new Sprite(this.mushroomDieTextures[0]);
-    s.anchor.set(0.5, 1);
-    s.roundPixels = RENDER.pixelArt;
-    s.eventMode = 'none';
-    s.position.set(wx, wy);
-    const flip = direction < 0 ? -1 : 1;
-    s.scale.set(MUSHROOM_SPRITE_SCALE * flip, MUSHROOM_SPRITE_SCALE);
-    this.mushroomDeathFxLayer.addChild(s);
-    this.mushroomDeathEffects.push({ sprite: s, phase: 'die', timeInPhase: 0 });
-  }
-
-  private updateMushroomDeathEffects(dt: number): void {
-    if (this.mushroomDeathEffects.length === 0) {
-      return;
-    }
-    const dieFrameDur = 1 / MUSHROOM_DEATH_DIE_FPS;
-    const bloodFrameDur = 1 / MUSHROOM_DEATH_BLOOD_FPS;
-    const dieEnd = this.mushroomDieTextures.length * dieFrameDur;
-    const bloodEnd = this.bloodEffectTextures.length * bloodFrameDur;
-
-    for (let i = this.mushroomDeathEffects.length - 1; i >= 0; i -= 1) {
-      const e = this.mushroomDeathEffects[i];
-      e.timeInPhase += dt;
-
-      if (e.phase === 'die') {
-        const f = Math.min(
-          this.mushroomDieTextures.length - 1,
-          Math.floor(e.timeInPhase / dieFrameDur),
-        );
-        e.sprite.texture = this.mushroomDieTextures[f];
-        if (e.timeInPhase >= dieEnd) {
-          if (this.bloodEffectTextures.length > 0) {
-            e.phase = 'blood';
-            e.timeInPhase = 0;
-            e.sprite.texture = this.bloodEffectTextures[0];
-            e.sprite.anchor.set(0.5, 0.5);
-            e.sprite.position.set(
-              e.sprite.position.x,
-              e.sprite.position.y - MUSHROOM_HITBOX_H * 0.48,
-            );
-            e.sprite.scale.set(MUSHROOM_DEATH_BLOOD_SCALE, MUSHROOM_DEATH_BLOOD_SCALE);
-          } else {
-            e.sprite.destroy();
-            this.mushroomDeathEffects.splice(i, 1);
-          }
-        }
-      } else {
-        const f = Math.min(
-          this.bloodEffectTextures.length - 1,
-          Math.floor(e.timeInPhase / bloodFrameDur),
-        );
-        e.sprite.texture = this.bloodEffectTextures[f];
-        if (e.timeInPhase >= bloodEnd) {
-          e.sprite.destroy();
-          this.mushroomDeathEffects.splice(i, 1);
-        }
-      }
-    }
-  }
-
   private tickPlayerShield(dt: number): void {
     this.shieldSaveFlashTime = Math.max(0, this.shieldSaveFlashTime - dt);
   }
@@ -7373,6 +7965,23 @@ export class PlayScene implements Scene {
     this.redrawSpeedPulseOverlay();
   }
 
+  private syncHeaderPauseHudLayer(): void {
+    // Keep the pause coin tappable above the dim overlay so a second tap resumes.
+    this.headerPauseRoot.zIndex = this.paused ? HEADER_PAUSE_BTN_Z_INDEX_PAUSED : HEADER_PAUSE_BTN_Z_INDEX;
+    this.uiLayer.sortChildren();
+  }
+
+  private togglePauseFromHeaderButton(): void {
+    if (this.gameOver) {
+      return;
+    }
+    if (this.paused) {
+      this.resumeFromPause();
+      return;
+    }
+    this.requestPause();
+  }
+
   private requestPause(): void {
     if (this.gameOver || this.paused) {
       return;
@@ -7383,6 +7992,8 @@ export class PlayScene implements Scene {
     this.paused = true;
     this.pauseOverlay.visible = true;
     this.layoutPauseOverlay();
+    this.refreshPauseTouchLockLabel();
+    this.syncHeaderPauseHudLayer();
     this.bgm?.pause();
     this.sfx.endWallSlideLoop();
     this.wallSlideFasciaSfxStreamingMemo = false;
@@ -7394,9 +8005,21 @@ export class PlayScene implements Scene {
     }
     this.paused = false;
     this.pauseOverlay.visible = false;
+    this.syncHeaderPauseHudLayer();
     void this.bgm?.play().catch(() => {
       /* autoplay */
     });
+  }
+
+  private returnToMainMenuFromPause(): void {
+    if (!this.onBackToMenu) {
+      return;
+    }
+    this.paused = false;
+    this.pauseOverlay.visible = false;
+    this.hideLogoutConfirm();
+    this.stopBackgroundMusic();
+    void Promise.resolve(this.onBackToMenu());
   }
 
   private renderLeaderboardShell(entries: LeaderboardEntry[] = [], loading = false): void {
@@ -7555,8 +8178,6 @@ export class PlayScene implements Scene {
     this.recomputeDerivedTotalScore();
     const totalForLeaderboard = this.score;
     this.breakCombo();
-    const overlayHeightM = Math.max(0, Math.floor(this.peakClimbMetersThisRun));
-    this.scoreboard?.update(0, this.score, this.jumpCount, overlayHeightM, this.runTime, this.level);
     this.refreshGameOverScoreText();
     this.gameOverOverlay.visible = true;
     this.leaderboardOverlay.visible = false;
@@ -7577,14 +8198,17 @@ export class PlayScene implements Scene {
 
         const goldEarned = this.runGoldCollected;
         const diamondEarned = this.runDiamondCollected;
-        const purpleMushroomsEarned = this.runPurpleMushroomsCollected;
-
         try {
           await incrementUserBagBalances(
             user.uid,
             goldEarned,
             diamondEarned,
-            purpleMushroomsEarned,
+            0,
+          );
+          writeMenuBagCache(
+            this.remoteBagGold + goldEarned,
+            this.remoteBagDiamond + diamondEarned,
+            user.uid,
           );
         } catch (bagErr) {
           console.warn('[PlayScene] YOUR BAG persist failed — loot may not be saved', bagErr);
@@ -7669,7 +8293,7 @@ export class PlayScene implements Scene {
       (b) => {
         this.remoteBagGold = b.bagGold;
         this.remoteBagDiamond = b.bagDiamonds;
-        this.remoteBagPurpleMushrooms = b.purpleMushrooms;
+        writeMenuBagCache(b.bagGold, b.bagDiamonds, uid);
         if (this.statusPanelExpanded) {
           this.refreshStatusPanelContent();
         }
@@ -7724,56 +8348,6 @@ export class PlayScene implements Scene {
       });
   }
 
-  private setupAutoScrollHud(): void {
-    this.timerHudText = new Text({
-      text: '',
-      style: this.createNeonGoldTextStyle(38, 4),
-    });
-    this.timerHudText.anchor.set(0.5, 0);
-    this.timerHudText.zIndex = 1005;
-    this.uiLayer.addChild(this.timerHudText);
-
-    this.hurryBannerText = new Text({
-      text: 'HURRY UP!',
-      style: this.createNeonGoldTextStyle(26, 3),
-    });
-    this.hurryBannerText.anchor.set(0.5);
-    this.hurryBannerText.position.set(220, HURRY_BANNER_H * 0.5);
-    this.hurryBannerRoot.zIndex = 1007;
-    this.hurryBannerRoot.visible = false;
-    this.hurryBannerRoot.addChild(this.hurryBannerGfx, this.hurryBannerText);
-    this.uiLayer.addChild(this.hurryBannerRoot);
-    this.layoutAutoScrollHud();
-    this.refreshAutoScrollHud();
-  }
-
-  private layoutAutoScrollHud(): void {
-    if (this.timerHudText) {
-      const mobile = this.width <= MOBILE_NARROW_UI_MAX_W;
-      const timerX = mobile ? this.width * 0.37 : this.width * 0.5;
-      const timerScale = mobile ? 0.82 : 1;
-      this.timerHudText.scale.set(timerScale);
-      this.timerHudText.position.set(timerX, UI_HEADER_INFO_ROW_Y - 20);
-    }
-    this.hurryBannerRoot.position.set(-460, UI_SAFE_PAD_TOP + 8);
-    this.hurryBannerX = this.hurryBannerRoot.position.x;
-    this.drawHurryBanner();
-  }
-
-  private refreshAutoScrollHud(): void {
-    if (this.timerHudText) {
-      const totalSec = Math.floor(this.runTime);
-      const minutes = Math.floor(totalSec / 60)
-        .toString()
-        .padStart(2, '0');
-      const seconds = (totalSec % 60).toString().padStart(2, '0');
-      this.timerHudText.text = `${minutes}:${seconds}`;
-    }
-    if (this.hurryBannerText) {
-      this.hurryBannerRoot.visible = false;
-    }
-  }
-
   /**
    * Death-line art height when scaled to strip width `stripW` — entire texture visible, uniform scale.
    */
@@ -7806,19 +8380,14 @@ export class PlayScene implements Scene {
       const lineY = this.getLava2DisqualifyLineWorldY();
 
       this.deathZoneFallback.visible = false;
-      teethSprite.visible = true;
+      teethSprite.visible = false;
       poolSprite.visible = true;
       this.linePowerBaseY = layout.bottomWorldY;
-
-      teethSprite.texture = split.teeth;
-      teethSprite.position.set(x, lineY);
-      teethSprite.width = w;
-      teethSprite.height = teethH;
 
       poolSprite.texture = split.pool;
       poolSprite.position.set(x, bottom);
       poolSprite.width = w;
-      poolSprite.height = poolH;
+      poolSprite.height = poolH + teethH;
       return;
     }
 
@@ -7840,149 +8409,32 @@ export class PlayScene implements Scene {
     this.deathZoneFallback.rect(x, orangeTop, w, stripH).fill({ color: 0xffa621, alpha: 0.95 });
   }
 
-  /** Load fascia wall art — bones for rest, chains for slide; procedural fallback if both sets missing. */
+  /** Fascia wall PNGs disabled — invisible slabs; physics unchanged in {@link getViewportEdgeWallSlabsWorld}. */
   private async loadViewportFasciaBoneTextures(): Promise<void> {
-    const [boneLeft, boneRight, chainLeft, chainRight] = await Promise.allSettled([
-      Assets.load(WORLD_EDGE_WALL_BONE_LEFT_URL),
-      Assets.load(WORLD_EDGE_WALL_BONE_RIGHT_URL),
-      Assets.load(WORLD_EDGE_WALL_CHAIN_LEFT_URL),
-      Assets.load(WORLD_EDGE_WALL_CHAIN_RIGHT_URL),
-    ]);
-    if (boneLeft.status === 'fulfilled') {
-      this.viewportFasciaBoneTexLeft = boneLeft.value as Texture;
-    } else {
-      this.viewportFasciaBoneTexLeft = undefined;
-    }
-    if (boneRight.status === 'fulfilled') {
-      this.viewportFasciaBoneTexRight = boneRight.value as Texture;
-    } else {
-      this.viewportFasciaBoneTexRight = undefined;
-    }
-    if (chainLeft.status === 'fulfilled') {
-      this.viewportFasciaChainTexLeft = chainLeft.value as Texture;
-    } else {
-      this.viewportFasciaChainTexLeft = undefined;
-    }
-    if (chainRight.status === 'fulfilled') {
-      this.viewportFasciaChainTexRight = chainRight.value as Texture;
-    } else {
-      this.viewportFasciaChainTexRight = undefined;
-    }
-    if (!this.viewportFasciaBoneTexLeft || !this.viewportFasciaBoneTexRight) {
-      console.warn(
-        '[PlayScene] Fascia bone textures missing:',
-        WORLD_EDGE_WALL_BONE_LEFT_URL,
-        WORLD_EDGE_WALL_BONE_RIGHT_URL,
-      );
-    }
-    if (!this.viewportFasciaChainTexLeft || !this.viewportFasciaChainTexRight) {
-      console.warn(
-        '[PlayScene] Fascia chain textures missing:',
-        WORLD_EDGE_WALL_CHAIN_LEFT_URL,
-        WORLD_EDGE_WALL_CHAIN_RIGHT_URL,
-      );
-    }
+    this.viewportFasciaBoneTexLeft = undefined;
+    this.viewportFasciaBoneTexRight = undefined;
+    this.viewportFasciaChainTexLeft = undefined;
+    this.viewportFasciaChainTexRight = undefined;
   }
 
-  /** Load death-line image ({@link DEATH_LINE_IMAGE_URL}); on failure keep vector {@link deathZoneFallback}. */
+  /** `lava 2.png` removed — vector strip at viewport bottom only. */
   private async loadDeathZoneStrip(): Promise<void> {
-    this.deathZoneFallback.visible = true;
-    try {
-      const fullTex = (await Assets.load(DEATH_LINE_IMAGE_URL)) as Texture;
-      const source = fullTex.source;
-      this.deathHazardTextureStrip = new Texture({
-        source,
-        frame: new Rectangle(
-          DEATH_LAVA2_STRIP_FRAME.x,
-          DEATH_LAVA2_STRIP_FRAME.y,
-          DEATH_LAVA2_STRIP_FRAME.width,
-          DEATH_LAVA2_STRIP_FRAME.height,
-        ),
-      });
-      this.deathHazardTextureFull = new Texture({
-        source,
-        frame: new Rectangle(
-          DEATH_LAVA2_FULL_FRAME.x,
-          DEATH_LAVA2_FULL_FRAME.y,
-          DEATH_LAVA2_FULL_FRAME.width,
-          DEATH_LAVA2_FULL_FRAME.height,
-        ),
-      });
-      this.deathHazardTeethTextureStrip = this.createLava2PartTexture(
-        source,
-        DEATH_LAVA2_STRIP_FRAME,
-        DEATH_LAVA2_STRIP_DISQUALIFY_LOCAL_Y,
-        'teeth',
-      );
-      this.deathHazardPoolTextureStrip = this.createLava2PartTexture(
-        source,
-        DEATH_LAVA2_STRIP_FRAME,
-        DEATH_LAVA2_STRIP_DISQUALIFY_LOCAL_Y,
-        'pool',
-      );
-      this.deathHazardTeethTextureFull = this.createLava2PartTexture(
-        source,
-        DEATH_LAVA2_FULL_FRAME,
-        DEATH_LAVA2_FULL_DISQUALIFY_LOCAL_Y,
-        'teeth',
-      );
-      this.deathHazardPoolTextureFull = this.createLava2PartTexture(
-        source,
-        DEATH_LAVA2_FULL_FRAME,
-        DEATH_LAVA2_FULL_DISQUALIFY_LOCAL_Y,
-        'pool',
-      );
-
-      const vw = Math.max(1, this.worldWidthFromScreen());
-      const padSpan = 60;
-      const stripW = vw + padSpan;
-      const stripPoolTex = this.deathHazardPoolTextureStrip;
-      if (stripPoolTex) {
-        const poolH = this.deathHazardStripHeightForWidth(stripW, stripPoolTex);
-        const teethH = this.deathHazardStripHeightForWidth(
-          stripW,
-          this.deathHazardTeethTextureStrip ?? stripPoolTex,
-        );
-
-        const teeth = new Sprite(this.deathHazardTeethTextureStrip ?? stripPoolTex);
-        teeth.eventMode = 'none';
-        teeth.anchor.set(0, 1);
-        teeth.roundPixels = false;
-        teeth.width = stripW;
-        teeth.height = teethH;
-        this.deathHazardTeethSprite = teeth;
-        this.lavaTeethLayer.addChild(teeth);
-
-        const pool = new Sprite(stripPoolTex);
-        pool.eventMode = 'none';
-        pool.anchor.set(0, 1);
-        pool.roundPixels = false;
-        pool.width = stripW;
-        pool.height = poolH;
-        this.deathHazardPoolSprite = pool;
-        this.lavaPoolLayer.addChild(pool);
-
-        this.linePowerBaseY = this.cameraY + this.worldHeightFromScreen();
-        this.deathZoneFallback.visible = false;
+    this.deathHazardTextureStrip = undefined;
+    this.deathHazardTextureFull = undefined;
+    this.deathHazardTeethTextureStrip = undefined;
+    this.deathHazardPoolTextureStrip = undefined;
+    this.deathHazardTeethTextureFull = undefined;
+    this.deathHazardPoolTextureFull = undefined;
+    for (const sprite of [this.deathHazardTeethSprite, this.deathHazardPoolSprite]) {
+      if (!sprite) {
+        continue;
       }
-    } catch (e) {
-      console.warn('Failed to load death-line texture, falling back to vector lava', e);
-      this.deathHazardTextureStrip = undefined;
-      this.deathHazardTextureFull = undefined;
-      this.deathHazardTeethTextureStrip = undefined;
-      this.deathHazardPoolTextureStrip = undefined;
-      this.deathHazardTeethTextureFull = undefined;
-      this.deathHazardPoolTextureFull = undefined;
-      for (const sprite of [this.deathHazardTeethSprite, this.deathHazardPoolSprite]) {
-        if (!sprite) {
-          continue;
-        }
-        sprite.parent?.removeChild(sprite);
-        sprite.destroy({ texture: false });
-      }
-      this.deathHazardTeethSprite = null;
-      this.deathHazardPoolSprite = null;
+      sprite.parent?.removeChild(sprite);
+      sprite.destroy({ texture: false });
     }
+    this.deathHazardTeethSprite = null;
+    this.deathHazardPoolSprite = null;
+    this.deathZoneFallback.visible = true;
   }
 
   private tickAltitudePresentation(dt: number): void {
@@ -7998,7 +8450,6 @@ export class PlayScene implements Scene {
     this.spawnWindParticlesForAltitude(dt);
     this.refreshClimbHudText();
     this.refreshStatusPanelContent();
-    this.refreshAutoScrollHud();
   }
 
   private spawnWindParticlesForAltitude(dt: number): void {
@@ -9145,59 +9596,10 @@ export class PlayScene implements Scene {
 
   /**
    * Twin vertical fascia — same X extents as fascia physics + viewport clamp.
-   * Rest (0–4000m, 6000m+): frozen `bone 1`/`bone 2`. Slide (4000–6000m): scrolling `chain 1`/`chain 2`.
+   * Bone/chain PNG art disabled; slabs stay invisible (physics unchanged).
    */
   private drawWorldEdgeRestWalls(): void {
-    const fascia = this.getViewportEdgeWallSlabsWorld();
-    if (!fascia) {
-      this.hideViewportFasciaBoneTiles();
-      return;
-    }
-    const w = fascia.slabW;
-    const leftX = fascia.leftSlabLeftX;
-    const rightX = fascia.rightSlabLeftX;
-
-    const verticalPad = WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX;
-    const yTop = this.cameraY - verticalPad;
-    const stripH = verticalPad * 2 + Math.max(this.worldHeightFromScreen(), 1);
-
-    const useChains = this.isSlidePhase;
-    const tl = useChains
-      ? (this.viewportFasciaChainTexLeft ?? this.viewportFasciaBoneTexLeft)
-      : this.viewportFasciaBoneTexLeft;
-    const tr = useChains
-      ? (this.viewportFasciaChainTexRight ?? this.viewportFasciaBoneTexRight)
-      : this.viewportFasciaBoneTexRight;
-    const showingChains =
-      useChains && !!(this.viewportFasciaChainTexLeft && this.viewportFasciaChainTexRight);
-    const tileScaleMul = showingChains
-      ? WORLD_EDGE_CHAIN_TILE_SCALE_MUL
-      : WORLD_EDGE_BONE_TILE_SCALE_MUL;
-    const wallsReady = !!(tl && tr);
-
-    if (wallsReady && tl && tr) {
-      this.viewportFasciaBoneTileLeft = this.syncViewportFasciaBoneStripTile(
-        this.viewportFasciaBoneTileLeft,
-        tl,
-        leftX,
-        yTop,
-        w,
-        stripH,
-        tileScaleMul,
-      );
-      this.viewportFasciaBoneTileRight = this.syncViewportFasciaBoneStripTile(
-        this.viewportFasciaBoneTileRight,
-        tr,
-        rightX,
-        yTop,
-        w,
-        stripH,
-        tileScaleMul,
-      );
-    } else {
-      this.hideViewportFasciaBoneTiles();
-      this.drawViewportFasciaWallsProcedural(fascia, yTop, stripH);
-    }
+    this.hideViewportFasciaBoneTiles();
   }
 
   /** Vector fascia (when bone/chain PNGs are unavailable). */
@@ -9267,16 +9669,13 @@ export class PlayScene implements Scene {
   private drawCrystalPlatform(platform: Platform): void {
     if (platform.kind === 'rest' || platform.kind === 'spawn') {
       this.drawRestFloorPlatform(platform);
-      return;
-    }
-    if (!this.platformTexture) {
-      this.platformLayer
-        .roundRect(platform.x, platform.y, platform.width, platform.height, 6)
-        .fill({ color: 0x8c7ac2, alpha: 0.55 });
     }
   }
 
   private drawRestFloorPlatform(platform: Platform): void {
+    if (this.restPlatformMarshmallowSlices || this.restPlatformChocolateSlices) {
+      return;
+    }
     const spawnDeck = platform.kind === 'spawn';
     const h = Math.max(platform.height * 1.18, platform.height + 12);
     const tile = REST_FLOOR_TILE_PX;
@@ -9309,11 +9708,324 @@ export class PlayScene implements Scene {
       .fill({ color: spawnDeck ? 0xa8ffd8 : 0xc8ffff, alpha: 0.78 });
   }
 
-  private async loadPlatformSpriteCore(): Promise<void> {
-    this.platformTexture = await this.createCheckerTransparentTexture(crystalPlatformUrl);
+  private isPlatformSquashBouncePlatform(platform: Platform): boolean {
+    if (platform.kind === 'rest' || platform.kind === 'spawn') {
+      return false;
+    }
+    const m = this.getPlatformMeters(platform);
+    const L = PLATFORM_LEVEL_ART;
+    if (m >= L.marshmallow.minMeters && m < L.marshmallow.maxMeters) {
+      return this.marshmallowTextures.length > 0;
+    }
+    if (m >= L.chocolate.minMeters && m < L.chocolate.maxMeters) {
+      return this.chocolateTextures.length > 0;
+    }
+    return false;
   }
 
-  /** Rest-floor props + slime/volcano tiles — safe to defer on mobile until after first paint. */
+  private getPlatformSquashJuiceLayer(root: Container): PlatformJuiceLayer | undefined {
+    const juice = root.children.find((c) => c.label === PLATFORM_SQUASH_JUICE_LABEL);
+    return juice as PlatformJuiceLayer | undefined;
+  }
+
+  /** Landing on squash platforms [0, 4000) m — one squash per impact (`isBouncing` latch). */
+  private readonly onPlatformSquashLandCollider = (
+    previousBottom: number,
+    wasGrounded: boolean,
+    landedPlatform: Platform | undefined,
+  ): void => {
+    if (!landedPlatform || wasGrounded || !this.isPlatformSquashBouncePlatform(landedPlatform)) {
+      return;
+    }
+
+    const platformIndex = this.platforms.indexOf(landedPlatform);
+    if (platformIndex < 0) {
+      return;
+    }
+
+    const root = this.platformSprites[platformIndex];
+    const juice = root ? this.getPlatformSquashJuiceLayer(root) : undefined;
+    const platformSprite = juice?.children.find((c): c is Sprite => c instanceof Sprite);
+    if (!juice || !platformSprite) {
+      return;
+    }
+
+    if (getPlatformSpriteData(platformSprite, PLATFORM_SPRITE_DATA_IS_BOUNCING) === true) {
+      return;
+    }
+
+    const body = this.player.body;
+    const platform = landedPlatform;
+    const feetY = body.y + body.height;
+    const overlapX =
+      body.x + body.width * 0.42 > platform.x && body.x < platform.x + platform.width;
+
+    const playerTouchingDown =
+      body.grounded && body.vy >= 0 && overlapX && Math.abs(feetY - platform.y) <= 8;
+
+    const platformTouchingUp =
+      overlapX &&
+      previousBottom <= platform.y + STAIRS.stepPx &&
+      feetY >= platform.y - 4;
+
+    if (!playerTouchingDown || !platformTouchingUp) {
+      return;
+    }
+
+    setPlatformSpriteData(platformSprite, PLATFORM_SPRITE_DATA_IS_BOUNCING, true);
+    juice.isBouncing = true;
+    juice.bounceElapsedSec = 0;
+    juice.scale.set(1);
+  };
+
+  /** Squash/stretch on juice only — platform AABB stays fixed. */
+  private tickPlatformSquashJuice(dt: number): void {
+    const seg = PLATFORM_SQUASH_DURATION_MS / 1000;
+    const total = seg * 2;
+
+    for (const root of this.platformSprites) {
+      const juice = this.getPlatformSquashJuiceLayer(root);
+      if (!juice?.isBouncing || juice.bounceElapsedSec === undefined) {
+        continue;
+      }
+
+      const platformSprite = juice.children.find((c): c is Sprite => c instanceof Sprite);
+      juice.bounceElapsedSec += dt;
+      const elapsed = juice.bounceElapsedSec;
+
+      if (elapsed >= total) {
+        juice.scale.set(1);
+        juice.isBouncing = false;
+        juice.bounceElapsedSec = undefined;
+        if (platformSprite) {
+          setPlatformSpriteData(platformSprite, PLATFORM_SPRITE_DATA_IS_BOUNCING, false);
+        }
+        continue;
+      }
+
+      let sx = 1;
+      let sy = 1;
+      if (elapsed < seg) {
+        const t = elapsed / seg;
+        sx = 1 + (PLATFORM_SQUASH_SCALE_X - 1) * t;
+        sy = 1 + (PLATFORM_SQUASH_SCALE_Y - 1) * t;
+      } else {
+        const t = (elapsed - seg) / seg;
+        const ease = 1 - (1 - t) ** 2;
+        sx = PLATFORM_SQUASH_SCALE_X + (1 - PLATFORM_SQUASH_SCALE_X) * ease;
+        sy = PLATFORM_SQUASH_SCALE_Y + (1 - PLATFORM_SQUASH_SCALE_Y) * ease;
+      }
+      juice.scale.set(sx, sy);
+    }
+  }
+
+  private async loadPlatformSpriteCore(): Promise<void> {
+    await this.loadPlatformLevelTextures();
+    this.platformTexture = this.marshmallowTextures[0];
+  }
+
+  private async loadMarshmallowTextures(): Promise<void> {
+    try {
+      const canvas = await loadKeyedSheetCanvas(MARSHMELO_SHEET_URL, {
+        darkMaxChannel: PLATFORM_FOOD_SHEET_DARK_BG_MAX_CHANNEL,
+      });
+      if (!canvas) {
+        throw new Error('Failed to decode marshmallow sheet');
+      }
+      const marshmallowRows = extractPlatformFoodSheetFrameRows(canvas, MARSHMELO_ROW_BANDS, {
+        cellPadPx: 4,
+        boundsPadPx: 2,
+      });
+      const chocolateRows = extractPlatformFoodSheetFrameRows(canvas, CHOCOLATE_ROW_BANDS, {
+        cellPadPx: 6,
+        boundsPadPx: 4,
+      });
+      this.marshmallowTextures = marshmallowRows.flatMap((row) => row.textures);
+      this.chocolateTextures = chocolateRows.flatMap((row) => row.textures);
+      this.marshmallowFeetAnchorY = PLATFORM_LEVEL_DECK_ANCHOR_Y.marshmallow;
+      this.chocolateFeetAnchorY = PLATFORM_LEVEL_DECK_ANCHOR_Y.chocolate;
+    } catch {
+      this.marshmallowTextures = [];
+      this.chocolateTextures = [];
+      console.warn('Failed to load platform art:', MARSHMELO_SHEET_URL);
+    }
+  }
+
+  private getMarshmallowFrameIndex(platform: Platform): number {
+    const count = this.marshmallowTextures.length;
+    if (count === 0) {
+      return 0;
+    }
+    return Math.max(0, platform.stairId) % count;
+  }
+
+  private getChocolateFrameIndex(platform: Platform): number {
+    const count = this.chocolateTextures.length;
+    if (count === 0) {
+      return 0;
+    }
+    return Math.max(0, platform.stairId) % count;
+  }
+
+  private isMarshmallowTexture(tex: Texture): boolean {
+    return this.marshmallowTextures.includes(tex);
+  }
+
+  private isChocolateTexture(tex: Texture): boolean {
+    return this.chocolateTextures.includes(tex);
+  }
+
+  private platformArtTierForTexture(tex: Texture): 'marshmallow' | 'chocolate' | 'none' {
+    if (this.isChocolateTexture(tex)) {
+      return 'chocolate';
+    }
+    if (this.isMarshmallowTexture(tex)) {
+      return 'marshmallow';
+    }
+    return 'none';
+  }
+
+  private async loadPlatformLevelTextures(): Promise<void> {
+    await Promise.all([this.loadMarshmallowTextures(), this.loadRestPlatformSheetTextures()]);
+  }
+
+  /** Split `rest platform.png` into marshmallow (top) and chocolate (bottom) wide-deck strips. */
+  private async loadRestPlatformSheetTextures(): Promise<void> {
+    try {
+      const sheet = await this.loadTextureFromCandidates([REST_PLATFORM_SHEET_URL]);
+      sheet.source.scaleMode = RENDER.pixelArt ? 'nearest' : 'linear';
+      const w = Math.max(1, sheet.width);
+      const h = Math.max(1, sheet.height);
+      const splitY = Math.min(REST_PLATFORM_SHEET_SPLIT_Y, h - 1);
+      this.restPlatformMarshmallowSlices = this.buildRestPlatformStripSlices(
+        sheet.source,
+        new Rectangle(0, 0, w, splitY),
+      );
+      this.restPlatformChocolateSlices = this.buildRestPlatformStripSlices(
+        sheet.source,
+        new Rectangle(0, splitY, w, h - splitY),
+      );
+    } catch {
+      this.restPlatformMarshmallowSlices = undefined;
+      this.restPlatformChocolateSlices = undefined;
+      console.warn('Failed to load rest platform art:', REST_PLATFORM_SHEET_URL);
+    }
+  }
+
+  private buildRestPlatformStripSlices(
+    source: Texture['source'],
+    frame: Rectangle,
+  ): RestPlatformStripSlices {
+    const cap = Math.min(
+      REST_PLATFORM_END_CAP_TEX_PX,
+      Math.max(32, Math.floor(frame.width * 0.18)),
+    );
+    const midW = Math.max(1, frame.width - cap * 2);
+    const full = new Texture({ source, frame });
+    return {
+      full,
+      leftCap: new Texture({
+        source,
+        frame: new Rectangle(frame.x, frame.y, cap, frame.height),
+      }),
+      center: new Texture({
+        source,
+        frame: new Rectangle(frame.x + cap, frame.y, midW, frame.height),
+      }),
+      rightCap: new Texture({
+        source,
+        frame: new Rectangle(frame.x + cap + midW, frame.y, cap, frame.height),
+      }),
+    };
+  }
+
+  /** Marshmallow strip [0, 5000) m; chocolate strip [5000, 10000) m (same bands as stair art). */
+  private pickRestPlatformSlices(platformM: number): RestPlatformStripSlices | undefined {
+    const L = PLATFORM_LEVEL_ART;
+    if (
+      platformM >= L.chocolate.minMeters &&
+      platformM < L.chocolate.maxMeters &&
+      this.restPlatformChocolateSlices
+    ) {
+      return this.restPlatformChocolateSlices;
+    }
+    if (platformM >= L.chocolate.maxMeters && this.restPlatformChocolateSlices) {
+      return this.restPlatformChocolateSlices;
+    }
+    return this.restPlatformMarshmallowSlices;
+  }
+
+  /**
+   * 9-slice rest deck — end caps at uniform scale (no stretch blur); center repeats horizontally.
+   */
+  private syncRestFloorPlatformSprite(index: number, root: Container, platform: Platform): void {
+    const slices = this.pickRestPlatformSlices(this.getPlatformMeters(platform));
+    if (!slices) {
+      root.visible = false;
+      return;
+    }
+
+    root.visible = true;
+    root.position.set(platform.x, platform.y);
+    this.platformSpriteModes[index] = 'rest-tile';
+
+    const visualH = Math.max(platform.height * 1.18, platform.height + 12);
+    const scale = visualH / Math.max(1, slices.full.height);
+    const capW = slices.leftCap.width * scale;
+    const centerW = Math.max(0, platform.width - capW * 2);
+
+    let left = root.children.find(
+      (c): c is Sprite => c instanceof Sprite && c.label === 'rest-floor-left',
+    );
+    let center = root.children.find(
+      (c): c is TilingSprite => c instanceof TilingSprite && c.label === 'rest-floor-center',
+    );
+    let right = root.children.find(
+      (c): c is Sprite => c instanceof Sprite && c.label === 'rest-floor-right',
+    );
+
+    const rebuild =
+      !left ||
+      !center ||
+      !right ||
+      left.texture !== slices.leftCap ||
+      center.texture !== slices.center ||
+      right.texture !== slices.rightCap;
+
+    if (rebuild) {
+      root.removeChildren().forEach((c) => c.destroy());
+      left = new Sprite(slices.leftCap);
+      left.label = 'rest-floor-left';
+      left.anchor.set(0, 0);
+      left.eventMode = 'none';
+
+      center = new TilingSprite({ texture: slices.center, width: centerW, height: visualH });
+      center.label = 'rest-floor-center';
+      center.eventMode = 'none';
+
+      right = new Sprite(slices.rightCap);
+      right.label = 'rest-floor-right';
+      right.anchor.set(0, 0);
+      right.eventMode = 'none';
+
+      root.addChild(left, center, right);
+    }
+
+    left!.width = capW;
+    left!.height = visualH;
+    left!.position.set(0, 0);
+
+    center!.width = centerW;
+    center!.height = visualH;
+    center!.tileScale.set(scale);
+    center!.position.set(capW, 0);
+
+    right!.width = capW;
+    right!.height = visualH;
+    right!.position.set(platform.width - capW, 0);
+  }
+
+  /** Rest-floor props — safe to defer on mobile until after first paint. */
   private async loadPlatformSpriteDecorAndAltTextures(): Promise<void> {
     try {
       this.restFloorHouseTexture = await this.loadTextureFromCandidates(REST_FLOOR_HOUSE_CANDIDATES);
@@ -9340,19 +10052,6 @@ export class PlayScene implements Scene {
       this.restFloorSuppliesTexture = undefined;
       this.restFloorSupplyTextures = [];
       console.warn('Failed to load rest floor supplies asset:', REST_FLOOR_SUPPLIES_URL);
-    }
-    try {
-      // Slime tier uses hand-painted grass/dirt tiles (from `spring_.png`); do not run
-      // `createEdgeDarkTransparentTexture` — dark soil pixels touch the edges and would be
-      // flood-cleared, corrupting the GPU texture.
-      this.platformTextureSlime = (await Assets.load<Texture>(slimePlatformUrl)) as Texture;
-    } catch {
-      this.platformTextureSlime = undefined;
-    }
-    try {
-      this.platformTextureVolcano = await this.createEdgeDarkTransparentTexture(volcanoPlatformUrl);
-    } catch {
-      this.platformTextureVolcano = undefined;
     }
   }
 
@@ -9603,7 +10302,10 @@ export class PlayScene implements Scene {
   }
 
   private createPlatformSprites(): void {
-    if (!this.platformTexture) {
+    const hasStairArt =
+      this.marshmallowTextures.length > 0 || this.chocolateTextures.length > 0;
+    const hasRestArt = !!(this.restPlatformMarshmallowSlices || this.restPlatformChocolateSlices);
+    if (!hasStairArt && !hasRestArt) {
       return;
     }
 
@@ -9645,69 +10347,112 @@ export class PlayScene implements Scene {
     tex: Texture,
     artMul: number,
   ): void {
-    let sprite = root.children.find((c): c is Sprite => c instanceof Sprite);
-    if (this.platformSpriteModes[index] !== 'legacy' || !sprite) {
+    const useSquashJuice = this.isPlatformLevelPngTexture(tex);
+    let juice = useSquashJuice ? this.getPlatformSquashJuiceLayer(root) : undefined;
+    let sprite =
+      juice?.children.find((c): c is Sprite => c instanceof Sprite) ??
+      root.children.find((c): c is Sprite => c instanceof Sprite);
+
+    const needsRebuild =
+      this.platformSpriteModes[index] !== 'legacy' ||
+      !sprite ||
+      (useSquashJuice && !juice) ||
+      (sprite &&
+        this.platformArtTierForTexture(tex) !== this.platformArtTierForTexture(sprite.texture));
+
+    if (needsRebuild) {
       root.removeChildren().forEach((child) => child.destroy());
-      sprite = new Sprite(tex);
-      sprite.anchor.set(0.5);
-      root.addChild(sprite);
+      if (useSquashJuice) {
+        juice = new Container() as PlatformJuiceLayer;
+        juice.label = PLATFORM_SQUASH_JUICE_LABEL;
+        juice.isBouncing = false;
+        juice.scale.set(1);
+        sprite = new Sprite(tex);
+        setPlatformSpriteData(sprite, PLATFORM_SPRITE_DATA_IS_BOUNCING, false);
+        juice.addChild(sprite);
+        root.addChild(juice);
+      } else {
+        sprite = new Sprite(tex);
+        sprite.anchor.set(0.5);
+        root.addChild(sprite);
+        juice = undefined;
+      }
       this.platformSpriteModes[index] = 'legacy';
       this.platformSpriteCols[index] = -1;
-    } else if (sprite.texture !== tex) {
+    } else if (sprite && sprite.texture !== tex) {
       sprite.texture = tex;
     }
+
     if (!sprite) {
       return;
     }
-    sprite.roundPixels = RENDER.pixelArt;
-    let scaleMul = artMul;
-    if (tex === this.platformTextureSlime) {
-      const w = Math.max(1, platform.width);
-      const beadR = this.beadBridgeBeadRadius(platform);
-      const targetTilePx = 2 * beadR;
-      scaleMul = (targetTilePx * tex.width) / (SLIME_PLATFORM_TILE_PX * w);
-    }
-    sprite.width = platform.width * scaleMul;
-    sprite.scale.y = Math.abs(sprite.scale.x);
-    sprite.position.set(platform.width * 0.5, platform.height * 0.5 + 6);
+
     root.position.set(platform.x, platform.y);
     root.alpha = 0.98;
+    root.mask = null;
 
-    const isSlime = tex === this.platformTextureSlime;
-    if (isSlime) {
-      const tw = tex.width;
-      const th = tex.height;
-      const sw = sprite.width;
-      const sh = (th / tw) * sw;
-      const cx = platform.width * 0.5;
-      const cy = platform.height * 0.5 + 6;
-      const halfH = sh * 0.5;
-      const top = cy - halfH;
-      const bottom = cy + halfH;
-      const maskY = Math.min(0, top);
-      const maskH = Math.max(platform.height, bottom) - maskY;
-
-      let maskGfx = root.children.find(
-        (c): c is Graphics => c instanceof Graphics && c.label === 'slime-platform-mask',
-      );
-      if (!maskGfx) {
-        maskGfx = new Graphics();
-        maskGfx.label = 'slime-platform-mask';
-        maskGfx.eventMode = 'none';
-        root.addChildAt(maskGfx, 0);
-      }
-      maskGfx.clear();
-      maskGfx.rect(0, maskY, platform.width, maskH).fill({ color: 0xffffff });
-      root.mask = maskGfx;
+    sprite.roundPixels = RENDER.pixelArt;
+    const isLevelPng = this.isPlatformLevelPngTexture(tex);
+    const spriteWorldW = this.getPlatformSpriteWorldWidth(platform);
+    sprite.width = spriteWorldW * artMul;
+    sprite.scale.y = Math.abs(sprite.scale.x);
+    if (isLevelPng) {
+      sprite.anchor.set(0.5, this.getPlatformDeckAnchorY(tex));
+      sprite.position.set(platform.width * 0.5, 0);
     } else {
-      root.mask = null;
-      for (const c of [...root.children]) {
-        if (c instanceof Graphics && c.label === 'slime-platform-mask') {
-          root.removeChild(c);
-          c.destroy();
-        }
+      sprite.anchor.set(0.5);
+      sprite.position.set(platform.width * 0.5, platform.height * 0.5 + 6);
+    }
+
+    if (juice?.isBouncing || juice?.bounceElapsedSec !== undefined) {
+      return;
+    }
+
+    for (const c of [...root.children]) {
+      if (c instanceof Graphics && c.label === 'slime-platform-mask') {
+        root.removeChild(c);
+        c.destroy();
       }
     }
+  }
+
+  /**
+   * `platforms marshmelo.png` — marshmallow [0, 5000) m, chocolate [5000, 10000) m; sequential by `stairId`.
+   */
+  private pickPlatformLevelTexture(platformM: number, platform: Platform): Texture | undefined {
+    const L = PLATFORM_LEVEL_ART;
+    if (
+      platformM >= L.chocolate.minMeters &&
+      platformM < L.chocolate.maxMeters &&
+      this.chocolateTextures.length > 0
+    ) {
+      return this.chocolateTextures[this.getChocolateFrameIndex(platform)];
+    }
+    if (
+      platformM >= L.marshmallow.minMeters &&
+      platformM < L.marshmallow.maxMeters &&
+      this.marshmallowTextures.length > 0
+    ) {
+      return this.marshmallowTextures[this.getMarshmallowFrameIndex(platform)];
+    }
+    if (platformM >= L.chocolate.maxMeters && this.chocolateTextures.length > 0) {
+      return this.chocolateTextures[this.getChocolateFrameIndex(platform)];
+    }
+    return this.marshmallowTextures[0] ?? this.chocolateTextures[0];
+  }
+
+  private getPlatformDeckAnchorY(tex: Texture): number {
+    if (this.isChocolateTexture(tex)) {
+      return this.chocolateFeetAnchorY;
+    }
+    if (this.isMarshmallowTexture(tex)) {
+      return this.marshmallowFeetAnchorY;
+    }
+    return 1;
+  }
+
+  private isPlatformLevelPngTexture(tex: Texture): boolean {
+    return this.isMarshmallowTexture(tex) || this.isChocolateTexture(tex);
   }
 
   /** Same bead radius as `syncBeadBridgePlatformSprite` (visual sizing only). */
@@ -9804,267 +10549,6 @@ export class PlayScene implements Scene {
     root.scale.set(1);
     root.position.set(platform.x, platform.y);
     root.alpha = 0.98;
-  }
-
-  /**
-   * Load and slice the three mushroom strips (idle / run / attack) into per-frame textures.
-   * Each strip is a single 64-px tall row of 80×80 frames placed left-to-right; we reuse the
-   * same `TextureSource` and just hand each frame a unique source rectangle.
-   */
-  private async loadMushroomTextures(): Promise<void> {
-    try {
-      const [idleSheet, runSheet, attackSheet, dieSheet, bloodSheet] = (await Promise.all([
-        Assets.load(MUSHROOM_IDLE_URL),
-        Assets.load(MUSHROOM_RUN_URL),
-        Assets.load(MUSHROOM_ATTACK_URL),
-        Assets.load(MUSHROOM_DIE_URL),
-        Assets.load(BLOOD_SHEET_URL),
-      ])) as Texture[];
-
-      const slice = (sheet: Texture, count: number): Texture[] => {
-        const out: Texture[] = [];
-        const source = sheet.source;
-        for (let i = 0; i < count; i += 1) {
-          out.push(
-            new Texture({
-              source,
-              frame: new Rectangle(
-                i * MUSHROOM_FRAME_W,
-                0,
-                MUSHROOM_FRAME_W,
-                MUSHROOM_FRAME_H,
-              ),
-            }),
-          );
-        }
-        return out;
-      };
-
-      this.mushroomIdleTextures = slice(idleSheet, MUSHROOM_IDLE_FRAME_COUNT);
-      this.mushroomRunTextures = slice(runSheet, MUSHROOM_RUN_FRAME_COUNT);
-      this.mushroomAttackTextures = slice(attackSheet, MUSHROOM_ATTACK_FRAME_COUNT);
-
-      const dieSource = dieSheet.source;
-      const dieFrameCount = Math.min(
-        MUSHROOM_DIE_FRAME_COUNT,
-        Math.max(1, Math.floor(dieSource.width / MUSHROOM_FRAME_W)),
-      );
-      this.mushroomDieTextures = [];
-      for (let i = 0; i < dieFrameCount; i += 1) {
-        this.mushroomDieTextures.push(
-          new Texture({
-            source: dieSource,
-            frame: new Rectangle(i * MUSHROOM_FRAME_W, 0, MUSHROOM_FRAME_W, MUSHROOM_FRAME_H),
-          }),
-        );
-      }
-
-      const bloodSource = bloodSheet.source;
-      const cellW = Math.max(1, Math.floor(bloodSource.width / BLOOD_SHEET_COLS));
-      const cellH = Math.max(1, Math.floor(bloodSource.height / BLOOD_SHEET_COLS));
-      this.bloodEffectTextures = [];
-      for (let i = 0; i < BLOOD_EFFECT_FRAME_COUNT; i += 1) {
-        const col = i % BLOOD_SHEET_COLS;
-        const row = Math.floor(i / BLOOD_SHEET_COLS);
-        this.bloodEffectTextures.push(
-          new Texture({
-            source: bloodSource,
-            frame: new Rectangle(col * cellW, row * cellH, cellW, cellH),
-          }),
-        );
-      }
-    } catch {
-      this.mushroomIdleTextures = [];
-      this.mushroomRunTextures = [];
-      this.mushroomAttackTextures = [];
-      this.mushroomDieTextures = [];
-      this.bloodEffectTextures = [];
-    }
-  }
-
-  private pickMushroomFrames(state: MushroomEnemyState): Texture[] {
-    if (state === 'idle' && this.mushroomIdleTextures.length > 0) {
-      return this.mushroomIdleTextures;
-    }
-    if (state === 'attack' && this.mushroomAttackTextures.length > 0) {
-      return this.mushroomAttackTextures;
-    }
-    return this.mushroomRunTextures;
-  }
-
-  /**
-   * (Re)spawn the enemy roster from scratch. Mushrooms are bound to fixed platform indices
-   * (every Nth slot starting at `MUSHROOM_PLATFORM_START_INDEX`) so the recycled stair pool
-   * automatically carries enemies with it as the player climbs.
-   */
-  private spawnMushroomEnemies(): void {
-    for (const sprite of this.mushroomEnemySprites) {
-      sprite.destroy();
-    }
-    this.mushroomEnemySprites = [];
-    this.mushroomEnemies = [];
-    this.mushroomEnemyLayer.removeChildren();
-
-    if (this.mushroomRunTextures.length === 0) {
-      return;
-    }
-
-    for (
-      let i = MUSHROOM_PLATFORM_START_INDEX;
-      i < this.platforms.length;
-      i += MUSHROOM_PLATFORM_STRIDE
-    ) {
-      const platform = this.platforms[i];
-      if (!platform || !this.canMushroomOccupyPlatform(platform)) {
-        continue;
-      }
-      const enemy: MushroomEnemy = {
-        platformIdx: i,
-        along: 0.3 + Math.random() * 0.4,
-        direction: Math.random() < 0.5 ? -1 : 1,
-        state: 'run',
-        animTime: Math.random() * 0.6,
-        edgePauseLeft: 0,
-      };
-      this.mushroomEnemies.push(enemy);
-
-      const sprite = new Sprite(this.mushroomRunTextures[0]);
-      sprite.anchor.set(0.5, 1);
-      sprite.roundPixels = RENDER.pixelArt;
-      sprite.scale.set(MUSHROOM_SPRITE_SCALE);
-      sprite.eventMode = 'none';
-      this.mushroomEnemyLayer.addChild(sprite);
-      this.mushroomEnemySprites.push(sprite);
-    }
-  }
-
-  /**
-   * Per-frame enemy tick: walk / edge-flip AI, animation, sync to platform. Player **body** overlap
-   * kills the mushroom (no HP loss) — same death VFX as a melee hit.
-   */
-  private updateMushroomEnemies(dt: number): void {
-    if (this.mushroomEnemies.length === 0 || this.gameOver) {
-      return;
-    }
-
-    const pb = this.player.body;
-    const playerCx = pb.x + pb.width * 0.5;
-    const playerGrounded = pb.grounded;
-    const yCull = this.getCullBelowWorldY();
-
-    for (let i = 0; i < this.mushroomEnemies.length; i += 1) {
-      const enemy = this.mushroomEnemies[i];
-      const platform = this.platforms[enemy.platformIdx];
-      const sprite = this.mushroomEnemySprites[i];
-      if (!platform || !sprite) {
-        continue;
-      }
-      if (platform.y > yCull) {
-        sprite.visible = false;
-        continue;
-      }
-      if (!this.canMushroomOccupyPlatform(platform)) {
-        sprite.visible = false;
-        continue;
-      }
-      sprite.visible = true;
-
-      enemy.animTime += dt;
-      if (enemy.edgePauseLeft > 0) {
-        enemy.edgePauseLeft = Math.max(0, enemy.edgePauseLeft - dt);
-      }
-
-      const onSamePlatform =
-        playerGrounded && this.currentGroundPlatform === platform;
-      const enemyCx = platform.x + enemy.along * platform.width;
-      const closeToPlayer =
-        onSamePlatform && Math.abs(enemyCx - playerCx) < MUSHROOM_ATTACK_RANGE_PX;
-
-      let nextState: MushroomEnemyState;
-      if (closeToPlayer) {
-        nextState = 'attack';
-      } else if (enemy.edgePauseLeft > 0) {
-        nextState = 'idle';
-      } else {
-        nextState = 'run';
-      }
-      if (nextState !== enemy.state) {
-        enemy.state = nextState;
-        enemy.animTime = 0;
-      }
-
-      if (enemy.state === 'run') {
-        const widthPx = Math.max(1, platform.width);
-        const alongDelta = (MUSHROOM_WALK_SPEED_PX * dt) / widthPx;
-        enemy.along += alongDelta * enemy.direction;
-        if (enemy.along <= MUSHROOM_EDGE_MARGIN) {
-          enemy.along = MUSHROOM_EDGE_MARGIN;
-          enemy.direction = 1;
-          enemy.edgePauseLeft = MUSHROOM_EDGE_PAUSE_SEC;
-        } else if (enemy.along >= 1 - MUSHROOM_EDGE_MARGIN) {
-          enemy.along = 1 - MUSHROOM_EDGE_MARGIN;
-          enemy.direction = -1;
-          enemy.edgePauseLeft = MUSHROOM_EDGE_PAUSE_SEC;
-        }
-      }
-
-      const frames = this.pickMushroomFrames(enemy.state);
-      if (frames.length > 0) {
-        const idx = Math.floor(enemy.animTime * MUSHROOM_ANIM_FPS) % frames.length;
-        sprite.texture = frames[idx];
-      }
-
-      const wx = platform.x + enemy.along * platform.width;
-      const wy = platform.y;
-      sprite.position.set(wx, wy + 2);
-      sprite.scale.x = MUSHROOM_SPRITE_SCALE * enemy.direction;
-      sprite.scale.y = MUSHROOM_SPRITE_SCALE;
-    }
-
-    for (let i = this.mushroomEnemies.length - 1; i >= 0; i -= 1) {
-      const enemy = this.mushroomEnemies[i];
-      const platform = this.platforms[enemy.platformIdx];
-      const sprite = this.mushroomEnemySprites[i];
-      if (!platform || !sprite || !sprite.visible || !this.canMushroomOccupyPlatform(platform)) {
-        continue;
-      }
-      if (platform.y > yCull) {
-        continue;
-      }
-      const wx = platform.x + enemy.along * platform.width;
-      const wy = platform.y;
-      if (this.mushroomHitsPlayer(wx, wy)) {
-        this.destroyMushroomEnemy(i);
-        this.sfx.play('collect_coin', 0.38);
-      }
-    }
-  }
-
-  private canMushroomOccupyPlatform(platform: Platform): boolean {
-    if (platform.kind === 'rest' || platform.kind === 'spawn') {
-      return false;
-    }
-    const clearPx = REST_FLOOR_MONSTER_CLEAR_METERS * 12;
-    return !this.platforms.some(
-      (p) =>
-        (p.kind === 'rest' || p.kind === 'spawn') && Math.abs(p.y - platform.y) <= clearPx,
-    );
-  }
-
-  /** AABB hit between a tight mushroom hitbox (centered on `wx`, anchored above `wy`) and the player body. */
-  private mushroomHitsPlayer(wx: number, wy: number): boolean {
-    const halfW = MUSHROOM_HITBOX_W * 0.5;
-    const ex1 = wx - halfW;
-    const ex2 = wx + halfW;
-    const ey1 = wy - MUSHROOM_HITBOX_H;
-    const ey2 = wy;
-    const pb = this.player.body;
-    return (
-      ex1 < pb.x + pb.width &&
-      ex2 > pb.x &&
-      ey1 < pb.y + pb.height &&
-      ey2 > pb.y
-    );
   }
 
   private async createCheckerTransparentTexture(url: string): Promise<Texture> {
@@ -10247,9 +10731,31 @@ export class PlayScene implements Scene {
     this.worldMaxY = WORLD_BOUNDS_Y + WORLD_BOUNDS_H;
   }
 
+  private updateCameraJuice(dt: number): void {
+    const spring = 220;
+    const damp = 16;
+    const accel = -this.cameraJuiceY * spring - this.cameraJuiceVelY * damp;
+    this.cameraJuiceVelY += accel * dt;
+    this.cameraJuiceY += this.cameraJuiceVelY * dt;
+    if (Math.abs(this.cameraJuiceY) < 0.04 && Math.abs(this.cameraJuiceVelY) < 0.04) {
+      this.cameraJuiceY = 0;
+      this.cameraJuiceVelY = 0;
+    }
+  }
+
+  private pulseCameraJuiceJump(): void {
+    this.cameraJuiceVelY -= 1.4;
+  }
+
+  private pulseCameraJuiceLanding(impactVy: number): void {
+    const strength = Math.min(1, impactVy / 520);
+    this.cameraJuiceVelY += 2.2 + strength * 2.5;
+    this.shakeTime = Math.max(this.shakeTime, 0.07 + strength * 0.05);
+  }
+
   private applyCameraTransform(): void {
     this.gameShake.scale.set(this.getCameraZoom());
-    this.gameShake.position.set(this.shakeOffsetX, this.shakeOffsetY);
+    this.gameShake.position.set(this.shakeOffsetX, this.shakeOffsetY + this.cameraJuiceY);
     this.uiLayer.scale.set(1);
     this.uiLayer.position.set(0, 0);
   }

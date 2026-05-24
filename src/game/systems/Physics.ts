@@ -553,7 +553,9 @@ export class Physics {
       return undefined;
     }
 
-    for (const platform of platforms) {
+    /** Highest surface first (smallest `y`) so wide low decks do not steal landings on stairs above. */
+    const byTopFirst = [...platforms].sort((a, b) => a.y - b.y);
+    for (const platform of byTopFirst) {
       const wasAbove = previousBottom <= platform.y;
       const overlapsX =
         body.x + body.width * 0.42 > platform.x && body.x < platform.x + platform.width;

@@ -9,6 +9,18 @@ export const PLAY_SCENE = {
   stairPlatformScale: 2.1,
 } as const;
 
+/**
+ * Uniform normal-stair sizing (mobile portrait). Walkable width is fixed; sprite art uses
+ * {@link spriteWorldWidthPx} so PNG scale stays constant when hitbox width changes.
+ */
+export const PLATFORM_SIZING = {
+  uniformBaseWidth: 162,
+  normalWorldWidthPx: 318,
+  spriteWorldWidthPx: 318,
+  /** Cap vs visible world width minus spawn margins. */
+  maxViewportWidthFraction: 0.46,
+} as const;
+
 export const RENDER = {
   /**
    * When true, clamp the app ticker to `maxTickerFps` so high-refresh mobile displays don’t run
@@ -122,6 +134,21 @@ export const PHYSICS = {
   viewportFasciaIntoWallVxDampPerSec: 0,
   /** Separate from world bounds — soft bounce while camera viewport clamps player X ({@link PlayScene}). */
   viewportClampWallRestitution: 0.2,
+  // —— Rest fascia: Icy Tower wall kicks (normal movement; kick whenever speed/charge warrants) ——
+  icyRunChargeMax: 1100,
+  icyRunChargeDecayPerSec: 2.2,
+  /** Same-direction input builds charge (× |vx| per second). */
+  icyRunChargeBuildPerSec: 0.72,
+  icyWallKickMinVx: 480,
+  icyWallKickRestitution: 1.22,
+  icyWallKickMinImpactVx: 56,
+  icyWallKickSpeedForMax: 680,
+  icyWallKickMinVy: 290,
+  icyWallKickMaxVy: 820,
+  icyWallKickDiagonalVyPerVxMin: 0.62,
+  icyWallKickDiagonalVyPerVxMax: 1.22,
+  /** Min seconds between wall kicks (stops clamp double-fire, allows chains). */
+  icyWallKickCooldownSec: 0.07,
   /** Subpixel slack so fascia assist still engages when the viewport clamp leaves the AABB flush with a slab inner edge. */
   viewportFasciaOverlapEpsPx: 0.75,
   /**
@@ -221,26 +248,22 @@ export const STAIRS = {
    */
   safetyStairBufferDrops: 3,
   /**
+   * Slide segment: while airborne and falling faster than this (y-down vy), do not recycle stairs
+   * so platforms stay visible under a drop off the fascia wall.
+   */
+  slideFallPauseRecycleVy: 120,
+  /**
    * Game over when feet fall more than this far **past** the top of the Nth next-lower stair (`safetyStairBufferDrops`).
    */
   fallPastLastSafetyStairPx: 175,
   /**
-   * From this HUD altitude (meters), switch to slime platform art and apply `slimePlatformArtScale`.
+   * @deprecated Use {@link PLATFORM_LEVEL_ART} JPEG tiers in `PlayScene` instead.
+   * Kept for save-data / docs compatibility.
    */
   slimePlatformAfterMeters: 1000,
-  /**
-   * Legacy multiplier for slime tier (volcano/storm still use fixed scales).
-   * Grass/dirt art scales per stair to match bead-bridge diameter; see `PlayScene.syncLegacyPlatformSprite`.
-   */
   slimePlatformArtScale: 0.72,
-  /**
-   * Volcanic / lava platform art from this HUD altitude (meters).
-   */
   volcanoPlatformAfterMeters: 2000,
   volcanoPlatformArtScale: 0.72,
-  /**
-   * Storm / electric crystal platform art from this HUD altitude (meters).
-   */
   stormPlatformAfterMeters: 3000,
   stormPlatformArtScale: 0.72,
   /**
@@ -249,6 +272,21 @@ export const STAIRS = {
   compactPlatformArtAfterMeters: 1000,
   compactPlatformArtScale: 0.72,
 };
+
+/**
+ * Stair PNG art (`public/assets/Platforms/`) — half-open HUD ranges `[minMeters, maxMeters)`.
+ * `platforms marshmelo.png` — marshmallow grid [0, 5000) m; chocolate grid [5000, 10000) m.
+ */
+export const PLATFORM_LEVEL_ART = {
+  marshmallow: { minMeters: 0, maxMeters: 5000 },
+  chocolate: { minMeters: 5000, maxMeters: 10000 },
+} as const;
+
+/** Walkable deck anchor — center of stair art aligns with physics landing (`platform.y`). */
+export const PLATFORM_LEVEL_DECK_ANCHOR_Y = {
+  marshmallow: 0.5,
+  chocolate: 0.5,
+} as const;
 
 /**
  * Stair deck thickness in world px — `{@link STAIRS.platformHeight}` × `{@link PLAY_SCENE.stairPlatformScale}`.
@@ -288,9 +326,31 @@ export const COLLECTIBLES = {
   collectDurationSec: 0.4,
   collectRisePx: 80,
   /** Soft glow rings (px beyond main shape). */
-  glowOuterPx: 6,
-  glowMidPx: 3,
+  glowOuterPx: 5,
+  glowMidPx: 2,
 };
+
+/** Global bloom/blur vs HUD legibility (0.8 = 20% less glow, 1.2 = 20% sharper UI). */
+export const VISUAL_TUNING = {
+  bloomBlurScale: 0.8,
+  uiReadabilityScale: 1.2,
+} as const;
+
+export function tunedBlur(px: number): number {
+  return Math.max(0, px * VISUAL_TUNING.bloomBlurScale);
+}
+
+export function tunedBloom(value: number): number {
+  return value * VISUAL_TUNING.bloomBlurScale;
+}
+
+export function tunedUiAlpha(alpha: number): number {
+  return Math.min(1, alpha * VISUAL_TUNING.uiReadabilityScale);
+}
+
+export function tunedUiStroke(px: number): number {
+  return px * VISUAL_TUNING.uiReadabilityScale;
+}
 
 /** Hyper scoreboard: punch, bloom, shake. */
 export const SCORE_UI = {

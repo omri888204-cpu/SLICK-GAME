@@ -58,7 +58,7 @@ const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 /** Realtime Database — leaderboard code uses child paths only (e.g. `leaderboard/`), never the DB root. */
 export const rtdb = getDatabase(app);
 
-/** Email/password Auth — persisted via {@link setPersistence}(browserLocalPersistence) in landing gate bootstrap. */
+/** Email/password Auth — add LAN dev hosts (e.g. `192.168.1.74`) under Firebase Console → Authentication → Settings → Authorized domains. */
 export const auth = getAuth(app);
 
 export { app, firebaseConfig };

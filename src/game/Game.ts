@@ -1,6 +1,5 @@
 import { Application, TextureStyle } from 'pixi.js';
 import { RENDER } from '../config/game.config';
-import { BootScene } from './scenes/BootScene';
 import { MenuScene } from './scenes/MenuScene';
 import { PlayScene } from './scenes/PlayScene';
 import {
@@ -8,11 +7,16 @@ import {
   LEADERBOARD_PURGE_CONFIRM_LOG,
   tryOneTimeScheduledLeaderboardPurge,
 } from './services/leaderboard';
+import {
+  runMandatoryLandingGate,
+} from './landing/runLandingGate';
+import { fadeOutMenuHandoffOverlay, type MenuPlayHandoff } from './ui/MenuPlayTransition';
 import type { Scene } from './scenes/Scene';
 
 export class Game {
   private readonly app = new Application();
   private activeScene?: Scene;
+  private pendingMenuHandoff: MenuPlayHandoff | null = null;
   private baseWidth = 0;
   private baseHeight = 0;
   private root?: HTMLElement;
@@ -76,18 +80,71 @@ export class Game {
       };
     }
 
-    await this.changeScene(
-      new BootScene(() => this.changeScene(new MenuScene(() => this.changeScene(new PlayScene())))),
-    );
+    await runMandatoryLandingGate(root);
+
+    await this.changeScene(this.createMenuScene());
+  }
+
+  private createMenuScene(): MenuScene {
+    return new MenuScene((handoff) => {
+      this.pendingMenuHandoff = handoff;
+      return this.changeScene(this.createPlayScene());
+    });
+  }
+
+  private createPlayScene(): PlayScene {
+    return new PlayScene({
+      menuHandoff: true,
+      onBackToMenu: () => this.returnToMainMenu(),
+    });
+  }
+
+  private async returnToMainMenu(): Promise<void> {
+    this.pendingMenuHandoff = null;
+    await this.changeScene(this.createMenuScene());
   }
 
   async changeScene(scene: Scene): Promise<void> {
     this.activeScene?.destroy();
+    const handoffOverlay = this.pendingMenuHandoff?.fadeOverlay ?? null;
     this.app.stage.removeChildren();
 
+    if (handoffOverlay) {
+      this.pendingMenuHandoff = null;
+      this.app.stage.addChild(handoffOverlay);
+    }
+
     this.activeScene = scene;
-    await scene.init(this.app);
-    scene.resize(this.app.screen.width, this.app.screen.height);
+    try {
+      await scene.init(this.app);
+      scene.resize(this.app.screen.width, this.app.screen.height);
+
+      if (handoffOverlay) {
+        this.app.stage.addChild(handoffOverlay);
+        if (this.activeScene instanceof PlayScene) {
+          this.activeScene.beginMenuSkyDropIntro();
+        }
+      }
+    } catch (err) {
+      console.error('[Game] scene init failed', err);
+      throw err;
+    } finally {
+      if (handoffOverlay) {
+        try {
+          await fadeOutMenuHandoffOverlay(
+            handoffOverlay,
+            (fn) => this.app.ticker.add(fn),
+            (fn) => this.app.ticker.remove(fn),
+          );
+        } catch (fadeErr) {
+          console.error('[Game] menu handoff fade failed', fadeErr);
+          handoffOverlay.destroy({ children: true });
+        }
+        if (this.activeScene instanceof PlayScene) {
+          this.activeScene.finishMenuSkyDropIntro();
+        }
+      }
+    }
   }
 
   destroy(): void {

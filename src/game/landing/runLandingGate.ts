@@ -6,6 +6,7 @@ import {
   setPersistence,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signOut,
   type User,
 } from 'firebase/auth';
 import { auth } from '../../firebase.js';
@@ -23,7 +24,48 @@ import {
   saveSelectedCharacterSkin,
 } from '../services/playerProfile';
 import { createKeyedLogoObjectUrl } from '../utils/logoTexture';
-import slickLogoUrl from '../../assets/ui/slick-logo.png';
+import { MAIN_LOGO_ALT, MAIN_LOGO_URL } from '../constants/mainLogo';
+import { markBackgroundMusicUnlocked } from '../audio/BackgroundMusic';
+import { clearGameUserSession } from '../services/userSession';
+import { clearSavedPlayerProfile } from '../services/playerProfile';
+
+/** Set before reload so boot shows email/password login instead of anonymous auto-sign-in. */
+export const REQUIRE_LOGIN_AFTER_LOGOUT_KEY = 'sky-climber:require-login';
+
+export function markRequireLoginAfterLogout(): void {
+  try {
+    sessionStorage.setItem(REQUIRE_LOGIN_AFTER_LOGOUT_KEY, '1');
+  } catch {
+    /* private mode */
+  }
+}
+
+export function consumeRequireLoginAfterLogout(): boolean {
+  try {
+    const flagged = sessionStorage.getItem(REQUIRE_LOGIN_AFTER_LOGOUT_KEY) === '1';
+    if (flagged) {
+      sessionStorage.removeItem(REQUIRE_LOGIN_AFTER_LOGOUT_KEY);
+    }
+    return flagged;
+  } catch {
+    return false;
+  }
+}
+
+/** Sign out, clear cached profile, reload into the existing login gate. */
+export async function logoutAndReturnToLogin(): Promise<void> {
+  markRequireLoginAfterLogout();
+  try {
+    await signOut(auth);
+  } catch {
+    /* still return to login */
+  }
+  clearGameUserSession();
+  clearSavedPlayerProfile();
+  if (typeof window !== 'undefined') {
+    window.location.reload();
+  }
+}
 
 export const CHARACTER_PRESETS = [
   { id: 'chromatic', label: 'Chromatic', hint: 'Vivid default' },
@@ -46,6 +88,10 @@ function qs<T extends HTMLElement>(root: HTMLElement, sel: string): T {
     throw new Error(`Missing ${sel}`);
   }
   return el as T;
+}
+
+function isRegisteredLoginUser(user: User): boolean {
+  return !user.isAnonymous;
 }
 
 /**
@@ -81,9 +127,16 @@ export async function runMandatoryLandingGate(root: HTMLElement): Promise<void> 
   };
 
   try {
-    if (initialUser) {
+    if (initialUser && isRegisteredLoginUser(initialUser)) {
       await settleSession(initialUser);
     } else {
+      if (initialUser?.isAnonymous) {
+        try {
+          await signOut(auth);
+        } catch {
+          /* show login anyway */
+        }
+      }
       await showAuthScreens(shell, settleSession);
     }
   } finally {
@@ -181,15 +234,15 @@ async function showAuthScreens(
   shell: HTMLElement,
   settleSession: (user: User) => Promise<void>,
 ): Promise<void> {
-  const logoSrc = await createKeyedLogoObjectUrl(slickLogoUrl);
+  const logoSrc = await createKeyedLogoObjectUrl(MAIN_LOGO_URL);
   if (logoSrc.startsWith('blob:')) {
     shell.setAttribute('data-auth-logo-blob-url', logoSrc);
   }
 
   shell.innerHTML = `
     <div class="sk-landing__panel">
-      <div class="sk-landing__brand" role="img" aria-label="SLICK">
-        <img class="sk-landing__logo" src="${logoSrc}" alt="SLICK" decoding="async" />
+      <div class="sk-landing__brand" role="img" aria-label="${MAIN_LOGO_ALT}">
+        <img class="sk-landing__logo" src="${logoSrc}" alt="${MAIN_LOGO_ALT}" decoding="async" />
       </div>
       <div class="sk-landing__tabs">
         <button type="button" class="sk-landing__tab sk-landing__tab--on" data-tab="login">LOG IN</button>
@@ -237,6 +290,7 @@ async function showAuthScreens(
 
   return new Promise<void>((resolve) => {
     qs<HTMLButtonElement>(shell, '[data-action="login"]').addEventListener('click', () => {
+      markBackgroundMusicUnlocked();
       void (async (): Promise<void> => {
         err.textContent = '';
         try {
@@ -254,6 +308,7 @@ async function showAuthScreens(
     });
 
     qs<HTMLButtonElement>(shell, '[data-action="signup"]').addEventListener('click', () => {
+      markBackgroundMusicUnlocked();
       void (async (): Promise<void> => {
         err.textContent = '';
         const email = suEmail.value.trim();
@@ -279,6 +334,7 @@ async function showAuthScreens(
     });
 
     qs<HTMLButtonElement>(shell, '[data-action="google"]').addEventListener('click', () => {
+      markBackgroundMusicUnlocked();
       void (async (): Promise<void> => {
         err.textContent = '';
         try {

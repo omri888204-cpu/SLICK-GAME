@@ -1,9 +1,17 @@
 import { Assets, Texture } from 'pixi.js';
 
-const DARK_BG_MAX_CHANNEL = 42;
+export const DARK_BG_MAX_CHANNEL = 42;
+/** Stricter edge key for character sheets — avoids eating dark line art in limb gaps. */
+export const CHARACTER_SHEET_DARK_BG_MAX_CHANNEL = 18;
+/** Platform food sheets (chocolate) — keeps dark brown pixels; default 42 punches holes. */
+export const PLATFORM_FOOD_SHEET_DARK_BG_MAX_CHANNEL = 12;
 const CHECKER_BACKGROUND_COLOR_SPREAD = 10;
 
-function isDarkEdgeBackgroundPixel(pixels: Uint8ClampedArray, pixelIndex: number): boolean {
+function isDarkEdgeBackgroundPixel(
+  pixels: Uint8ClampedArray,
+  pixelIndex: number,
+  darkMaxChannel: number,
+): boolean {
   const dataIndex = pixelIndex * 4;
   const red = pixels[dataIndex];
   const green = pixels[dataIndex + 1];
@@ -13,7 +21,7 @@ function isDarkEdgeBackgroundPixel(pixels: Uint8ClampedArray, pixelIndex: number
     return true;
   }
 
-  return Math.max(red, green, blue) <= DARK_BG_MAX_CHANNEL;
+  return Math.max(red, green, blue) <= darkMaxChannel;
 }
 
 function isCheckerBackgroundPixel(pixels: Uint8ClampedArray, pixelIndex: number): boolean {
@@ -37,6 +45,8 @@ function removeConnectedDarkEdgeBackground(
   pixels: Uint8ClampedArray,
   width: number,
   height: number,
+  darkMaxChannel: number = DARK_BG_MAX_CHANNEL,
+  horizontalEdgesOnly = false,
 ): void {
   const visited = new Uint8Array(width * height);
   const queue: number[] = [];
@@ -53,14 +63,16 @@ function removeConnectedDarkEdgeBackground(
 
     visited[pixelIndex] = 1;
 
-    if (isDarkEdgeBackgroundPixel(pixels, pixelIndex)) {
+    if (isDarkEdgeBackgroundPixel(pixels, pixelIndex, darkMaxChannel)) {
       queue.push(pixelIndex);
     }
   };
 
-  for (let x = 0; x < width; x += 1) {
-    enqueue(x, 0);
-    enqueue(x, height - 1);
+  if (!horizontalEdgesOnly) {
+    for (let x = 0; x < width; x += 1) {
+      enqueue(x, 0);
+      enqueue(x, height - 1);
+    }
   }
 
   for (let y = 0; y < height; y += 1) {
@@ -85,6 +97,7 @@ function removeConnectedCheckerBackground(
   pixels: Uint8ClampedArray,
   width: number,
   height: number,
+  horizontalEdgesOnly = false,
 ): void {
   const visited = new Uint8Array(width * height);
   const queue: number[] = [];
@@ -106,9 +119,11 @@ function removeConnectedCheckerBackground(
     }
   };
 
-  for (let x = 0; x < width; x += 1) {
-    enqueue(x, 0);
-    enqueue(x, height - 1);
+  if (!horizontalEdgesOnly) {
+    for (let x = 0; x < width; x += 1) {
+      enqueue(x, 0);
+      enqueue(x, height - 1);
+    }
   }
 
   for (let y = 0; y < height; y += 1) {
@@ -140,6 +155,18 @@ function applyLogoEdgeKeying(
   removeConnectedDarkEdgeBackground(imageData.data, width, height);
   removeConnectedCheckerBackground(imageData.data, width, height);
   context.putImageData(imageData, 0, 0);
+}
+
+/** Flood-fill key black / checkerboard from image edges (in-place alpha). */
+export function keyImageDataFromEdges(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+  darkMaxChannel: number = DARK_BG_MAX_CHANNEL,
+  horizontalEdgesOnly = false,
+): void {
+  removeConnectedDarkEdgeBackground(pixels, width, height, darkMaxChannel, horizontalEdgesOnly);
+  removeConnectedCheckerBackground(pixels, width, height, horizontalEdgesOnly);
 }
 
 /**
@@ -206,4 +233,81 @@ export async function loadLogoTextureTransparent(url: string): Promise<Texture> 
   applyLogoEdgeKeying(image, context, canvas.width, canvas.height);
 
   return Texture.from(canvas);
+}
+
+function opaquePixelBounds(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+): { x: number; y: number; w: number; h: number } | null {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (pixels[(y * width + x) * 4 + 3] > 12) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY) {
+    return null;
+  }
+  return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+}
+
+/** Edge-keyed load + tight crop to visible pixels (in-memory only — PNG file untouched). */
+export async function loadKeyedTrimmedTexture(url: string): Promise<Texture> {
+  const image = new Image();
+  image.crossOrigin = 'anonymous';
+  image.src = url;
+  try {
+    await image.decode();
+  } catch {
+    return Assets.load<Texture>(url);
+  }
+
+  const w = image.naturalWidth;
+  const h = image.naturalHeight;
+  if (w === 0 || h === 0) {
+    return Assets.load<Texture>(url);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) {
+    return Assets.load<Texture>(url);
+  }
+
+  applyLogoEdgeKeying(image, context, w, h);
+  const bounds = opaquePixelBounds(context.getImageData(0, 0, w, h).data, w, h);
+  if (!bounds) {
+    const texture = Texture.from(canvas);
+    texture.source.scaleMode = 'linear';
+    return texture;
+  }
+
+  const trimmed = document.createElement('canvas');
+  trimmed.width = bounds.w;
+  trimmed.height = bounds.h;
+  const trimmedCtx = trimmed.getContext('2d');
+  if (!trimmedCtx) {
+    const texture = Texture.from(canvas);
+    texture.source.scaleMode = 'linear';
+    return texture;
+  }
+
+  trimmedCtx.imageSmoothingEnabled = true;
+  trimmedCtx.imageSmoothingQuality = 'high';
+  trimmedCtx.drawImage(canvas, bounds.x, bounds.y, bounds.w, bounds.h, 0, 0, bounds.w, bounds.h);
+  const texture = Texture.from(trimmed);
+  texture.source.scaleMode = 'linear';
+  return texture;
 }
