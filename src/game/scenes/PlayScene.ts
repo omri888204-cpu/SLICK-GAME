@@ -349,6 +349,8 @@ const PLAYER_WORLD_Z_INDEX = 40;
 const PLAYER_BEHIND_LAVA_Z_INDEX = 22;
 const LAVA_TEETH_LAYER_Z_INDEX = 23;
 const LAVA_LAYER_Z_INDEX = 25;
+/** Stairs above death-zone art (25) but below the player (40) so they stay visible on disqualify. */
+const PLATFORM_SPRITE_LAYER_Z_INDEX = 28;
 /** Always above player (40) so molten pool covers the avatar on overlap. */
 const LAVA_POOL_LAYER_Z_INDEX = 45;
 /** Gameplay BGM — `public/assets/game music/Gummy Moon Arcade.mp3`. */
@@ -1617,14 +1619,14 @@ export class PlayScene implements Scene {
       this.lavaPoolLayer,
     );
     this.jelly.zIndex = 0;
-    this.platformSpriteLayer.zIndex = 4;
+    this.platformSpriteLayer.zIndex = PLATFORM_SPRITE_LAYER_Z_INDEX;
     this.platformLayer.zIndex = 3;
     this.viewportFasciaBoneLayer.zIndex = 3;
     this.viewportFasciaBoneLayer.eventMode = 'none';
     this.viewportFasciaBoneLayer.sortableChildren = false;
     this.restFloorPropLayer.zIndex = REST_FLOOR_HOUSE_DEPTH;
     this.restFloorPropLayer.sortableChildren = true;
-    /** Stairs drift behind the death-zone art; ripples + collectibles sit under power line so coins/diamonds don’t paint over it. */
+    /** Ripples + collectibles sit under the death strip so coins/diamonds don’t paint over it. */
     this.rippleLayer.zIndex = 22;
     this.collectiblesGfx.zIndex = 23;
     this.lavaTeethLayer.zIndex = LAVA_TEETH_LAYER_Z_INDEX;
@@ -1703,6 +1705,8 @@ export class PlayScene implements Scene {
       this.updateScreenShake(dt);
       this.refreshGameOverScoreText();
       this.updateScoreSavedHint(dt);
+      this.drawDynamicWorld();
+      this.applyCameraTransform();
       return;
     }
     if (this.paused) {
@@ -1996,6 +2000,8 @@ export class PlayScene implements Scene {
     this.maybeTriggerFarSkyTextureMilestones();
 
     this.updateRestFloorHoldState();
+    /** Before camera scroll — otherwise auto-scroll outruns a fall into the disqualify row and stairs vanish off-screen. */
+    this.checkFallGameOver();
     this.updateCamera(dt);
     this.maybeAdvanceScrollSpeedTierFeedback();
     this.maybeRebaseWorldVerticalOrigin();
@@ -2006,7 +2012,6 @@ export class PlayScene implements Scene {
     this.maybeRunPeriodicPoolMaintenance();
     this.cullDisposableWorldFarBelowViewport();
     this.syncPlatformSpritesFromPlatforms();
-    this.checkFallGameOver();
     this.updateRipples(dt);
     this.updateDiamondShineSparks(dt);
     this.updateCollectibles(dt);
@@ -2583,7 +2588,7 @@ export class PlayScene implements Scene {
    * Steps that scroll below visible area move to the top with a new stairId so climbing is endless.
    */
   private recycleStairsOffscreen(): void {
-    if (this.shouldPausePlatformGeneration()) {
+    if (this.gameOver || this.shouldPausePlatformGeneration()) {
       return;
     }
     if (this.shouldPauseStairRecycleDuringSlideFall()) {
@@ -3904,8 +3909,9 @@ export class PlayScene implements Scene {
     return b.x + b.width * 0.42 > deck.x && b.x < deck.x + deck.width;
   }
 
+  /** First grounded jump off Floor 0 — ends {@link cameraFrozenUntilFirstFloor0Jump}. */
   private maybeEndFloor0IntroCameraFreeze(): void {
-    if (!this.cameraFrozenUntilFirstFloor0Jump || !this.isPlayerGroundedOnFloor0SpawnDeck()) {
+    if (!this.cameraFrozenUntilFirstFloor0Jump) {
       return;
     }
     this.cameraFrozenUntilFirstFloor0Jump = false;
@@ -3927,6 +3933,14 @@ export class PlayScene implements Scene {
       return;
     }
     if (this.isRestFloorHolding()) {
+      const maxCamX = Math.max(0, this.worldWidth - viewportW);
+      this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
+      this.cameraScrollVelocityPx = 0;
+      this.world.position.set(-this.cameraX, -this.cameraY);
+      this.layoutBackground();
+      return;
+    }
+    if (this.gameOver) {
       const maxCamX = Math.max(0, this.worldWidth - viewportW);
       this.cameraX = Math.max(0, Math.min(this.cameraX, maxCamX));
       this.cameraScrollVelocityPx = 0;
@@ -8160,6 +8174,7 @@ export class PlayScene implements Scene {
       return;
     }
     this.gameOver = true;
+    this.cameraScrollVelocityPx = 0;
     this.sfx.endWallSlideLoop();
     this.wallSlideFasciaSfxStreamingMemo = false;
     this.peakComboThisRun = Math.max(this.peakComboThisRun, this.comboCount);
@@ -8192,6 +8207,9 @@ export class PlayScene implements Scene {
     this.touchControlPointerId = null;
     this.input?.setTouchFollowAxis(0);
     this.touchControlsLayer.visible = false;
+    this.syncPlatformSpritesFromPlatforms();
+    this.drawDynamicWorld();
+    this.applyCameraTransform();
     if (!this.deathSubmitted) {
       this.deathSubmitted = true;
       void (async () => {
