@@ -75,6 +75,7 @@ import { auth } from '../../firebase.js';
 import { logoutAndReturnToLogin } from '../landing/runLandingGate';
 import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
 import { InputManager } from '../systems/InputManager';
+import { GummySideDecor, type GummyPickResult, type GummySideDecorPickLayout } from '../systems/GummySideDecor';
 import { Physics } from '../systems/Physics';
 import {
   extractNormalizedRowFrames,
@@ -121,6 +122,8 @@ type TouchPointerTrack = {
   startMs: number;
   lastActivityMs: number;
   swipeHandled: boolean;
+  /** Short tap on a side gummy — defer collect to pointerup. */
+  gummyTapPending: number | null;
 };
 
 type TouchRipple = {
@@ -358,6 +361,8 @@ const LAVA_TEETH_LAYER_Z_INDEX = 23;
 const LAVA_LAYER_Z_INDEX = 25;
 /** Stairs above death-zone art (25) but below the player (40) so they stay visible on disqualify. */
 const PLATFORM_SPRITE_LAYER_Z_INDEX = 28;
+/** Coins/diamonds on platform decks — above PNG stair art, below tongue/player. */
+const COLLECTIBLES_LAYER_Z_INDEX = 36;
 /** Always above player (40) so molten pool covers the avatar on overlap. */
 const LAVA_POOL_LAYER_Z_INDEX = 45;
 /** Gameplay BGM — `public/assets/game music/Gummy Moon Arcade.mp3`. */
@@ -964,6 +969,8 @@ const TOUCH_LOCK_RADIUS_PX = 120;
 const TOUCH_ACTION_RETRIGGER_MS = 110;
 /** Auto-release a stuck touch lock when finger stops updating (mobile missed pointerup). */
 const TOUCH_STALE_LOCK_MS = 1000;
+/** Max finger travel to still count as a gummy tap (px). */
+const GUMMY_TAP_MAX_DRAG_PX = 42;
 /** localStorage: accessibility — steer from first touch anywhere on screen (no “near character” gate). */
 const LS_TOUCH_GLOBAL_STEERING = 'sky_climber_touch_global_steering';
 
@@ -1108,6 +1115,7 @@ export class PlayScene implements Scene {
   private jelly = new Graphics();
   private fxLayer = new Graphics();
   /** Viewport fascia — `bone 1`/`bone 2` (rest), `chain 1`/`chain 2` (slide 4000–6000m). */
+  private gummySideDecor = new GummySideDecor();
   private viewportFasciaBoneLayer = new Container();
   private viewportFasciaBoneTexLeft?: Texture;
   private viewportFasciaBoneTexRight?: Texture;
@@ -1628,7 +1636,7 @@ export class PlayScene implements Scene {
     this.lavaPoolLayer.sortableChildren = true;
     preloadSkillButtonAssets();
     const quickMobile = isQuickStartMobileDevice();
-    const [, , , , , , , , skillButtonTextures] = await Promise.all([
+    const [, , , , , , , , , skillButtonTextures] = await Promise.all([
       quickMobile ? this.loadPlatformSpriteCore() : this.loadPlatformSprite(),
       this.player.load(),
       this.sfx.load(),
@@ -1637,6 +1645,7 @@ export class PlayScene implements Scene {
       quickMobile ? this.loadBackgroundTextureEssentialForQuickMobile() : this.loadBackgroundTexture(),
       this.loadStaticTeset3BackgroundLayer(),
       this.loadPhotoroomStaticMidForegroundSprites(),
+      this.gummySideDecor.load(),
       loadSkillButtonTextures(),
     ]);
 
@@ -1657,6 +1666,7 @@ export class PlayScene implements Scene {
       this.jelly,
       this.platformSpriteLayer,
       this.platformLayer,
+      this.gummySideDecor.root,
       this.viewportFasciaBoneLayer,
       this.restFloorPropLayer,
       this.lavaTeethLayer,
@@ -1673,14 +1683,15 @@ export class PlayScene implements Scene {
     this.jelly.zIndex = 0;
     this.platformSpriteLayer.zIndex = PLATFORM_SPRITE_LAYER_Z_INDEX;
     this.platformLayer.zIndex = 3;
+    this.gummySideDecor.root.zIndex = 4;
     this.viewportFasciaBoneLayer.zIndex = 3;
     this.viewportFasciaBoneLayer.eventMode = 'none';
     this.viewportFasciaBoneLayer.sortableChildren = false;
     this.restFloorPropLayer.zIndex = REST_FLOOR_HOUSE_DEPTH;
     this.restFloorPropLayer.sortableChildren = true;
-    /** Ripples + collectibles sit under the death strip so coins/diamonds don’t paint over it. */
+    /** Ripples stay under the death strip; collectibles render above platform PNG art. */
     this.rippleLayer.zIndex = 22;
-    this.collectiblesGfx.zIndex = 23;
+    this.collectiblesGfx.zIndex = COLLECTIBLES_LAYER_Z_INDEX;
     this.lavaTeethLayer.zIndex = LAVA_TEETH_LAYER_Z_INDEX;
     this.lavaLayer.zIndex = LAVA_LAYER_Z_INDEX;
     this.lavaPoolLayer.zIndex = LAVA_POOL_LAYER_Z_INDEX;
@@ -1716,6 +1727,8 @@ export class PlayScene implements Scene {
     this.input = new InputManager(app);
     this.input.attach();
     this.setupTouchControlsOverlay(app);
+    app.stage.on('pointerup', this.handlePointerUpGummyCollect);
+    app.stage.on('pointerupoutside', this.handlePointerUpGummyCollect);
     this.setupClimbHud(app);
     this.setupComboHud(skillButtonTextures);
     this.setupGameOverUi();
@@ -1833,13 +1846,31 @@ export class PlayScene implements Scene {
         this.grapple.phase = 'pull';
         this.grapple.pullStartX = this.player.body.x + this.player.body.width * 0.5;
         this.grapple.pullStartY = this.player.body.y + this.player.body.height * 0.5;
-        this.player.body.vy = Math.min(this.player.body.vy, pullVyCap);
-        this.player.body.grounded = false;
+        if (this.grapple.targetKind !== 'gummy') {
+          this.player.body.vy = Math.min(this.player.body.vy, pullVyCap);
+          this.player.body.grounded = false;
+        }
         this.sfx.play('tongue_hit', 0.95);
       }
     }
 
-    if (this.grapple?.phase === 'pull') {
+    if (this.grapple?.phase === 'pull' && this.grapple.targetKind === 'gummy') {
+      const placementId = this.grapple.gummyPlacementId;
+      if (placementId === undefined) {
+        this.grapple = null;
+      } else {
+        const mouth = this.getMouthWorld();
+        const tip = this.gummySideDecor.pullToward(placementId, mouth.x, mouth.y, dt);
+        if (tip) {
+          this.grapple.targetX = tip.x;
+          this.grapple.targetY = tip.y;
+        } else {
+          this.sfx.play('collect_coin', 0.88);
+          this.grapple = null;
+          this.onGummyBearCollected();
+        }
+      }
+    } else if (this.grapple?.phase === 'pull') {
       const body = this.player.body;
       const hookPlatform = this.platforms.find((platform) => platform.stairId === this.grapple?.hookStairId);
       if (!hookPlatform) {
@@ -1869,7 +1900,8 @@ export class PlayScene implements Scene {
     }
 
     const axis = this.input?.getHorizontalAxis() ?? 0;
-    const pulling = this.grapple?.phase === 'pull';
+    const pulling =
+      this.grapple?.phase === 'pull' && this.grapple.targetKind !== 'gummy';
     const axisScale = pulling ? 0 : 1;
     const jumpArcAssistActive = this.jumpArcAssistTime > 0 && !this.player.body.grounded;
     const effectiveAxis = jumpArcAssistActive ? 0 : axis;
@@ -2068,6 +2100,10 @@ export class PlayScene implements Scene {
     ) {
       this.comboLastJumpTime = this.runTime;
     }
+    /** Side gummy tongue — don't let the combo chain expire mid extend/pull. */
+    if (this.grapple?.targetKind === 'gummy' && this.comboCount > 0) {
+      this.comboLastJumpTime = this.runTime;
+    }
     this.tickComboHud(dt);
 
     this.maybeTriggerFarSkyTextureMilestones();
@@ -2118,6 +2154,7 @@ export class PlayScene implements Scene {
     this.recomputeDerivedTotalScore();
     this.updateLevelProgress();
     this.syncCollectibleHudPosition();
+    this.syncGummySideDecor();
 
     const time = this.photoroomOscTimeMs;
     this.syncPhotoroomTeset12ScreenAnchoredOscillation(time);
@@ -2198,6 +2235,8 @@ export class PlayScene implements Scene {
       this.input?.clearTouchHolds();
     }
     this.input?.destroy();
+    this.app?.stage.off('pointerup', this.handlePointerUpGummyCollect);
+    this.app?.stage.off('pointerupoutside', this.handlePointerUpGummyCollect);
     this.player.rotation = 0;
     this.clearPlatformSprites();
     this.uiLayer.destroy({ children: true });
@@ -2208,6 +2247,7 @@ export class PlayScene implements Scene {
     this.tongueArmature?.dispose(true);
     this.tongueArmature = null;
     this.tongueDbReady = false;
+    this.gummySideDecor.destroy();
     this.gameShake.destroy({ children: true });
     this.leaderboardUnsubscribe?.();
     this.leaderboardUnsubscribe = null;
@@ -2260,12 +2300,95 @@ export class PlayScene implements Scene {
       hookStairId: hit.platform.stairId,
       pullStartX: this.player.body.x + this.player.body.width * 0.5,
       pullStartY: this.player.body.y + this.player.body.height * 0.5,
+      targetKind: 'platform',
     };
     /** Super Tongue buff window grants follow-up grapples at zero cooldown (recipe B). */
     this.grappleCooldown = this.superTongueBuffTime > 0 ? 0 : GRAPPLE.cooldownSec;
     this.grappleReloadingLogged = false;
     this.player.onGrappleLaunch();
     this.sfx.play('tongue_shoot', 0.88);
+  }
+
+  /** Pull-up skill unlocked and unused — one side gummy per Pull Up offer. */
+  private canCollectGummyWithTongue(): boolean {
+    return (
+      this.skillPairAvailable &&
+      !this.skillPullUpSpent &&
+      !this.grapple &&
+      this.gameplayUnlocked &&
+      !this.gameOver &&
+      !this.paused &&
+      !this.gameOverOverlay.visible
+    );
+  }
+
+  private beginGummyGrapple(placementId: number, worldX: number, worldY: number): void {
+    if (!this.canCollectGummyWithTongue()) {
+      return;
+    }
+    if (!this.gummySideDecor.markCollecting(placementId, worldX, worldY)) {
+      return;
+    }
+    this.grapple = {
+      phase: 'extend',
+      targetX: worldX,
+      targetY: worldY,
+      extendT: 0,
+      hookStairId: -1,
+      pullStartX: this.player.body.x + this.player.body.width * 0.5,
+      pullStartY: this.player.body.y + this.player.body.height * 0.5,
+      targetKind: 'gummy',
+      gummyPlacementId: placementId,
+    };
+    this.player.onGrappleLaunch();
+    this.sfx.play('tongue_shoot', 0.88);
+  }
+
+  private getGummySideDecorPickLayout(): GummySideDecorPickLayout | null {
+    const fascia = this.getViewportEdgeWallSlabsWorld();
+    if (!fascia) {
+      return null;
+    }
+    return {
+      leftCenterX: fascia.leftSlabLeftX + fascia.slabW * 0.5,
+      rightCenterX: fascia.rightSlabLeftX + fascia.slabW * 0.5,
+      cameraY: this.cameraY,
+      viewportH: this.worldHeightFromScreen(),
+      cullBelowY: this.getCullBelowWorldY(),
+    };
+  }
+
+  private screenToWorld(screenX: number, screenY: number): { x: number; y: number } {
+    const zoom = this.getCameraZoom();
+    const shakeY = this.shakeOffsetY + this.cameraJuiceY;
+    return {
+      x: (screenX - this.shakeOffsetX) / zoom + this.cameraX,
+      y: (screenY - shakeY) / zoom + this.cameraY,
+    };
+  }
+
+  private pickGummyAtScreen(screenX: number, screenY: number): GummyPickResult | null {
+    if (!this.gummySideDecor.isReady) {
+      return null;
+    }
+    const layout = this.getGummySideDecorPickLayout();
+    if (!layout) {
+      return null;
+    }
+    const world = this.screenToWorld(screenX, screenY);
+    return this.gummySideDecor.pickAtWorld(world.x, world.y, layout);
+  }
+
+  private tryCollectGummyAtScreen(screenX: number, screenY: number): boolean {
+    if (!this.canCollectGummyWithTongue()) {
+      return false;
+    }
+    const pick = this.pickGummyAtScreen(screenX, screenY);
+    if (!pick) {
+      return false;
+    }
+    this.beginGummyGrapple(pick.id, pick.worldX, pick.worldY);
+    return true;
   }
 
   private triggerGrappleAction(): void {
@@ -2450,6 +2573,26 @@ export class PlayScene implements Scene {
     this.comboLastJumpY = currentY;
     this.comboLastJumpTime = this.runTime;
 
+    if (this.comboCount >= 2) {
+      const wordTier = comboStreakToWordTier(this.comboCount);
+      this.comboBadge?.bumpTo(this.comboCount);
+      this.comboSynth?.resume();
+      this.comboSynth?.play(wordTier);
+    }
+  }
+
+  /** One gummy per Pull Up — spend the offer, hide skills until {@link PULL_UP_JUMPS_REQUIRED} jumps. */
+  private onGummyBearCollected(): void {
+    if (!this.skillPairAvailable) {
+      return;
+    }
+    this.closeSkillPairOffer();
+    this.comboLastJumpTime = this.runTime;
+    if (this.comboCount <= 0) {
+      this.comboCount = 1;
+    } else {
+      this.comboCount += 1;
+    }
     if (this.comboCount >= 2) {
       const wordTier = comboStreakToWordTier(this.comboCount);
       this.comboBadge?.bumpTo(this.comboCount);
@@ -3402,8 +3545,9 @@ export class PlayScene implements Scene {
       this.levelUpFloatText.visible = false;
     }
     this.createPlatforms();
-    this.spawnCollectibleField();
+    this.gummySideDecor.reset(this.getFloorZeroTopY(), spawnSessionId);
     this.initializeRunSpawn(spawnSessionId);
+    this.spawnCollectibleField();
     if (!preserveMenuHandoff) {
       this.gameplayUnlocked = true;
     } else {
@@ -3432,6 +3576,7 @@ export class PlayScene implements Scene {
     this.drawStaticWorld();
     this.drawDynamicWorld();
     this.applyCameraTransform();
+    this.syncGummySideDecor();
   }
 
   private checkFallGameOver(): void {
@@ -3827,6 +3972,8 @@ export class PlayScene implements Scene {
     for (const w of this.windParticles) {
       w.y += deltaY;
     }
+
+    this.gummySideDecor.shiftWorldY(deltaY);
 
     this.world.position.set(-this.cameraX, -this.cameraY);
     this.layoutBackground();
@@ -5385,6 +5532,7 @@ export class PlayScene implements Scene {
     this.drawLevelUpParticles();
     this.drawComboSuperJumpParticles();
     this.drawShieldSaveEffect();
+    this.world.sortChildren();
   }
 
   private getMouthWorld(): { x: number; y: number } {
@@ -5799,6 +5947,9 @@ export class PlayScene implements Scene {
   }
 
   private tickSkillPairChainWindow(): void {
+    if (this.grapple?.targetKind === 'gummy') {
+      return;
+    }
     if (
       !this.skillPullUpSpent ||
       this.skillSuperJumpSpent ||
@@ -5810,10 +5961,18 @@ export class PlayScene implements Scene {
     this.expireSkillPairWithoutMegaJump();
   }
 
-  /** Pull-up spent but mega jump never fired before the chain timer expired. */
+  /**
+   * Pull-up spent but mega jump never fired before the chain timer expired.
+   * Reopens both buttons inside the same unlock era — only mega jump ends the offer.
+   */
   private expireSkillPairWithoutMegaJump(): void {
-    this.pullUpJumpsAccum = 0;
-    this.setSkillPairAvailable(false);
+    if (this.grapple?.targetKind === 'gummy') {
+      return;
+    }
+    this.skillPullUpSpent = false;
+    this.skillSuperJumpSpent = false;
+    this.skillChainWindowEnd = 0;
+    this.syncSkillPairChildVisibility();
   }
 
   /** Streak reset path — called by expiry, non-climbing jumps, fall save, or death. */
@@ -5975,9 +6134,14 @@ export class PlayScene implements Scene {
     this.maybeIncrementPullUpJumpCounter();
   }
 
-  private finishSkillPairAfterMegaJump(): void {
+  /** Hide skill pair until {@link PULL_UP_JUMPS_REQUIRED} grounded jumps rebuild the offer. */
+  private closeSkillPairOffer(): void {
     this.pullUpJumpsAccum = 0;
     this.setSkillPairAvailable(false);
+  }
+
+  private finishSkillPairAfterMegaJump(): void {
+    this.closeSkillPairOffer();
   }
 
   /**
@@ -9025,6 +9189,17 @@ export class PlayScene implements Scene {
     }
   }
 
+  /** Desktop / non-touch: click a side gummy while moving on keyboard. */
+  private readonly handlePointerUpGummyCollect = (event: FederatedPointerEvent): void => {
+    if (this.input?.isTouchControlsActive()) {
+      return;
+    }
+    if (this.gameOver || this.leaderboardOverlay.visible || this.paused || !this.gameplayUnlocked) {
+      return;
+    }
+    this.tryCollectGummyAtScreen(event.global.x, event.global.y);
+  };
+
   private setupTouchControlsOverlay(app: Application): void {
     if (!this.input?.isTouchControlsActive()) {
       return;
@@ -9154,9 +9329,18 @@ export class PlayScene implements Scene {
       startMs: now,
       lastActivityMs: now,
       swipeHandled: false,
+      gummyTapPending: null,
     });
+    const track = this.touchPointers.get(pointerId)!;
+    if (this.canCollectGummyWithTongue()) {
+      const pick = this.pickGummyAtScreen(event.global.x, event.global.y);
+      if (pick) {
+        track.gummyTapPending = pick.id;
+      }
+    }
     const takeLock =
-      this.touchGlobalAnywhereLock || this.isTouchNearChameleon(event.global.x, event.global.y);
+      track.gummyTapPending === null &&
+      (this.touchGlobalAnywhereLock || this.isTouchNearChameleon(event.global.x, event.global.y));
     if (takeLock) {
       this.touchControlPointerId = pointerId;
       this.noteTouchPointerActivity(pointerId);
@@ -9178,9 +9362,16 @@ export class PlayScene implements Scene {
     p.lastX = event.global.x;
     p.lastY = event.global.y;
     p.side = p.lastX < this.width * 0.5 ? 'left' : 'right';
+    if (p.gummyTapPending !== null) {
+      const drag = Math.hypot(p.lastX - p.startX, p.lastY - p.startY);
+      if (drag > GUMMY_TAP_MAX_DRAG_PX) {
+        p.gummyTapPending = null;
+      }
+    }
     this.noteTouchPointerActivity(event.pointerId);
     const takeLock =
-      this.touchGlobalAnywhereLock || this.isTouchNearChameleon(p.lastX, p.lastY);
+      p.gummyTapPending === null &&
+      (this.touchGlobalAnywhereLock || this.isTouchNearChameleon(p.lastX, p.lastY));
     if (this.touchControlPointerId === null && takeLock) {
       this.touchControlPointerId = event.pointerId;
     }
@@ -9198,6 +9389,27 @@ export class PlayScene implements Scene {
     }
     const canGameplay = !this.gameOver && !this.leaderboardOverlay.visible && !this.paused;
     if (canGameplay && this.input?.isTouchControlsActive()) {
+      const p = this.touchPointers.get(event.pointerId);
+      if (p && p.gummyTapPending !== null) {
+        const drag = Math.hypot(p.lastX - p.startX, p.lastY - p.startY);
+        if (drag <= GUMMY_TAP_MAX_DRAG_PX) {
+          const pick =
+            this.pickGummyAtScreen(p.startX, p.startY) ??
+            this.pickGummyAtScreen(p.lastX, p.lastY);
+          if (pick && pick.id === p.gummyTapPending) {
+            this.beginGummyGrapple(pick.id, pick.worldX, pick.worldY);
+            this.releaseTouchPointer(event.pointerId);
+            return;
+          }
+        }
+      }
+      if (
+        this.tryCollectGummyAtScreen(event.global.x, event.global.y) ||
+        (p && this.tryCollectGummyAtScreen(p.startX, p.startY))
+      ) {
+        this.releaseTouchPointer(event.pointerId);
+        return;
+      }
       this.tryHandleSwipeUp(event.pointerId, true);
     }
     this.releaseTouchPointer(event.pointerId);
@@ -9319,6 +9531,30 @@ export class PlayScene implements Scene {
     this.collectibleHudRoot.position.set(26, UI_HEADER_INFO_ROW_Y);
   }
 
+  /** Viewport fascia gummy bears — X tracks camera, Y is world-fixed. */
+  private syncGummySideDecor(): void {
+    if (!this.gummySideDecor.isReady) {
+      return;
+    }
+    const layout = this.getGummySideDecorPickLayout();
+    if (!layout) {
+      this.gummySideDecor.root.visible = false;
+      return;
+    }
+    this.gummySideDecor.root.visible = true;
+    const canTap = this.canCollectGummyWithTongue();
+    this.gummySideDecor.sync({
+      ...layout,
+      runTimeSec: this.runTime,
+      interactive: canTap,
+      onBearTap: canTap
+        ? (id, x, y) => {
+            this.beginGummyGrapple(id, x, y);
+          }
+        : undefined,
+    });
+  }
+
   private layoutCollectibleHud(): void {
     this.syncCollectibleHudPosition();
     const g = COLLECTIBLE_LINES_HALF_GAP_PX;
@@ -9384,6 +9620,9 @@ export class PlayScene implements Scene {
         continue;
       }
       const p = this.platforms[i];
+      if (p.kind !== 'normal') {
+        continue;
+      }
       const innerW = p.width - 2 * margin - 2 * r;
       if (innerW < 4) {
         continue;
@@ -9625,11 +9864,14 @@ export class PlayScene implements Scene {
         const go = COLLECTIBLES.glowOuterPx;
         const gm = COLLECTIBLES.glowMidPx;
         this.collectiblesGfx
+          .ellipse(cx, cy, rx + go + 4, ry + go + 4)
+          .fill({ color: 0xff8800, alpha: 0.14 * alphaMul });
+        this.collectiblesGfx
           .ellipse(cx, cy, rx + go, ry + go)
-          .fill({ color: 0xffaa33, alpha: 0.1 * alphaMul });
+          .fill({ color: 0xffaa33, alpha: 0.22 * alphaMul });
         this.collectiblesGfx
           .ellipse(cx, cy, rx + gm, ry + gm)
-          .fill({ color: 0xffcc55, alpha: 0.2 * alphaMul });
+          .fill({ color: 0xffcc55, alpha: 0.34 * alphaMul });
         this.collectiblesGfx
           .ellipse(cx, cy, rx, ry)
           .fill({ color: 0xffd24a, alpha: alphaMul })

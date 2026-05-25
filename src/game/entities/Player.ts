@@ -689,12 +689,7 @@ export class Player extends Container {
       ALIVE.tailSkew *
       (this.walkBlend + ALIVE.tailIdleInfluence) *
       this.direction;
-    if (beastMode) {
-      const flash = Math.sin(this.idleTime * 34) > 0;
-      this.bodySprite.tint = flash ? 0xffffff : 0xffb13d;
-    } else {
-      this.bodySprite.tint = 0xffffff;
-    }
+    this.bodySprite.tint = 0xffffff;
 
     this.silhouette.texture = texture;
     this.silhouette.width = width + 5;

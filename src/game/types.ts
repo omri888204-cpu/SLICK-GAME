@@ -38,4 +38,7 @@ export type ActiveGrapple = {
   hookStairId: number;
   pullStartX: number;
   pullStartY: number;
+  /** Default/platform pull — `gummy` pulls a side bear toward the mouth. */
+  targetKind?: 'platform' | 'gummy';
+  gummyPlacementId?: number;
 };

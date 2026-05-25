@@ -315,28 +315,28 @@ export const COLLECTIBLES = {
   diamondSpawnChance: 0.24,
   /** One pickup per platform slot; capped by stair pool size. */
   maxActive: 16,
-  coinRadius: 15,
-  diamondRadius: 17,
+  coinRadius: 18,
+  diamondRadius: 20,
   shieldRadius: 18,
   /** Pixels above platform top surface (negative Y = toward sky in spawn math: y = platform.y - this). */
-  aboveSurfacePx: 8,
+  aboveSurfacePx: 32,
   /** Keep pickups inset from platform left/right edges. */
   platformEdgeMarginPx: 24,
   /** Fake “coin spin”: horizontal scale oscillates (Hz). */
   coinSpinHz: 0.5,
   coinMinScaleX: 0.2,
   /** Idle bob amplitude (px), visual only. */
-  bobAmplitudePx: 2.6,
+  bobAmplitudePx: 3.2,
   bobHz: 2.2,
   diamondPulseHz: 2.6,
-  diamondPulseScale: 0.12,
-  diamondAlphaMin: 0.68,
+  diamondPulseScale: 0.14,
+  diamondAlphaMin: 0.78,
   diamondAlphaMax: 1,
   collectDurationSec: 0.4,
   collectRisePx: 80,
   /** Soft glow rings (px beyond main shape). */
-  glowOuterPx: 5,
-  glowMidPx: 2,
+  glowOuterPx: 8,
+  glowMidPx: 4,
 };
 
 /** Global bloom/blur vs HUD legibility (0.8 = 20% less glow, 1.2 = 20% sharper UI). */
