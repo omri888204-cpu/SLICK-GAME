@@ -10,6 +10,7 @@ import {
   FIGHTER_FRAME_SIZE,
   FIGHTER_SHEETS,
   fighterSheetUrl,
+  PLAYER_AVATAR_SCALE,
   PLAYER_SKIN,
   type PlayerSkinName,
   type SkinFeetAnchors,
@@ -34,7 +35,7 @@ export enum PlayerState {
   Attack,
 }
 
-const PLAYER_DISPLAY_SCALE = 1.15;
+const PLAYER_DISPLAY_SCALE = 1.15 * PLAYER_AVATAR_SCALE;
 const FIGHTER_DISPLAY_WIDTH = 235 * PLAYER_DISPLAY_SCALE;
 /** Nudge feet onto the platform deck when grounded (positive = down into surface). */
 const GROUNDED_FEET_SINK_PX = 0;
@@ -59,7 +60,7 @@ export const PLAYER_ATTACK_DURATION_SEC = 0.4;
 export const PLAYER_ATTACK_HIT_WINDOW_START = 0.18;
 export const PLAYER_ATTACK_HIT_WINDOW_END = 0.78;
 
-const PLAYER_SCALE = 0.45785088;
+const PLAYER_SCALE = 0.45785088 * PLAYER_AVATAR_SCALE;
 const PLAYER_BODY_WIDTH = 70 * PLAYER_SCALE;
 const PLAYER_BODY_HEIGHT = 96 * PLAYER_SCALE;
 

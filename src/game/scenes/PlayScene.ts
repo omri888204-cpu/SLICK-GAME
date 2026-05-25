@@ -77,6 +77,7 @@ import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
 import { InputManager } from '../systems/InputManager';
 import { Physics } from '../systems/Physics';
 import {
+  extractNormalizedRowFrames,
   extractPlatformFoodSheetFrameRows,
   loadKeyedSheetCanvas,
   type SheetRowBand,
@@ -118,6 +119,7 @@ type TouchPointerTrack = {
   swipeBaselineY: number;
   swipeBaselineX: number;
   startMs: number;
+  lastActivityMs: number;
   swipeHandled: boolean;
 };
 
@@ -276,6 +278,8 @@ const PLATFORM_SQUASH_SCALE_Y = 0.7;
 const PLATFORM_SQUASH_DURATION_MS = 150;
 const PLATFORM_SQUASH_JUICE_LABEL = 'platform-squash-juice';
 const BG_TESET_DIR_URL = `${GAME_ASSETS}/${encodeURIComponent('backgroud teset')}`;
+/** Candy stair grid from 10000 m — replaces marshmelo/chocolate art at 10k+ HUD. */
+const STAIRS_10000_SHEET_URL = `${BG_TESET_DIR_URL}/${encodeURIComponent('stairs 10000.png')}`;
 /** Bottom death hazard — full `lava 2.png` scaled to viewport width (see {@link drawBottomDeathLine}). */
 const DEATH_LINE_IMAGE_URL = `${BG_TESET_DIR_URL}/${encodeURIComponent('lava 2.png')}`;
 const CANDY_BG_URL = `${BG_TESET_DIR_URL}/${encodeURIComponent('canndy.png')}?v=20260521`;
@@ -682,6 +686,8 @@ const PLATFORM_EDGE_PADDING_PX = 8;
 const CAMERA_ZOOM = 0.5;
 const MOBILE_CAMERA_ZOOM = 0.42;
 const CAMERA_PLAYER_SCREEN_Y_RATIO = 0.62;
+/** Feet sit slightly above Floor 0 deck top so the first physics frame does not look like a harsh drop. */
+const FLOOR0_SPAWN_SURFACE_OFFSET_PX = 2;
 /** Menu handoff: in-game fall duration — synced with white overlay {@link MENU_PLAY_TRANSITION.fadeOutSec}. */
 const MENU_SKY_DROP_INTRO_SEC = MENU_PLAY_TRANSITION.fadeOutSec;
 const MENU_SKY_DROP_FALL_VIEWPORT_RATIO = 0.82;
@@ -956,6 +962,8 @@ const TOUCH_SWIPE_UPWARD_RATIO_MIN = 0.4;
 const TOUCH_FOLLOW_DISTANCE_PX = 70;
 const TOUCH_LOCK_RADIUS_PX = 120;
 const TOUCH_ACTION_RETRIGGER_MS = 110;
+/** Auto-release a stuck touch lock when finger stops updating (mobile missed pointerup). */
+const TOUCH_STALE_LOCK_MS = 1000;
 /** localStorage: accessibility — steer from first touch anywhere on screen (no “near character” gate). */
 const LS_TOUCH_GLOBAL_STEERING = 'sky_climber_touch_global_steering';
 
@@ -1040,6 +1048,11 @@ export class PlayScene implements Scene {
   private menuSkyDropIntroStartY = 0;
   private menuSkyDropIntroTargetY = 0;
   private gameplayUnlocked = true;
+  /** Run-start spawn resolved — gravity/physics stay off until this is true. */
+  private initialFloorConfirmed = false;
+  /** Guards duplicate spawn bootstrap within the same reset pass. */
+  private runSpawnSessionId = 0;
+  private runSpawnLastCompletedSessionId = -1;
   private gameplayActive = false;
   private app?: Application;
   private input?: InputManager;
@@ -1257,6 +1270,7 @@ export class PlayScene implements Scene {
   private touchFeedbackLayer = new Graphics();
   private touchPointers = new Map<number, TouchPointerTrack>();
   private touchControlPointerId: number | null = null;
+  private touchControlLastActivityMs = 0;
   private touchRipples: TouchRipple[] = [];
   private touchLastJumpMs = 0;
   private collectibleHudGoldText?: Text;
@@ -1349,6 +1363,9 @@ export class PlayScene implements Scene {
   /** Chocolate frames — HUD [5000, 10000) m. */
   private chocolateTextures: Texture[] = [];
   private chocolateFeetAnchorY = 1;
+  /** Candy stair frames — HUD [10000, ∞) m (`stairs 10000.png`). */
+  private stairs10000Textures: Texture[] = [];
+  private stairs10000FeetAnchorY = 1;
   /** `rest platform.png` top strip — wide rest/spawn decks [0, 5000) m. */
   private restPlatformMarshmallowSlices?: RestPlatformStripSlices;
   /** `rest platform.png` bottom strip — wide rest/spawn decks [5000, 10000) m. */
@@ -1546,15 +1563,15 @@ export class PlayScene implements Scene {
 
   /** Starts the 2s sky fall in sync with the menu white overlay fade-out. */
   beginMenuSkyDropIntro(): void {
-    if (!this.fromMenuHandoff || this.gameplayUnlocked) {
+    if (!this.fromMenuHandoff || this.gameplayUnlocked || !this.initialFloorConfirmed) {
       return;
     }
-    const deck = this.platforms[0];
-    if (!deck || deck.kind !== 'spawn') {
+    const deck = this.findFloor0Platform();
+    if (!deck) {
       return;
     }
 
-    this.snapPlayerOntoStairZero();
+    this.snapPlayerToFloor0(deck, false);
     this.menuSkyDropIntroTargetY = this.player.body.y;
     const fallPx = this.worldHeightFromScreen() * MENU_SKY_DROP_FALL_VIEWPORT_RATIO;
     this.menuSkyDropIntroStartY = this.menuSkyDropIntroTargetY - fallPx;
@@ -1576,21 +1593,24 @@ export class PlayScene implements Scene {
     }
 
     this.menuSkyDropIntroActive = false;
-    this.snapPlayerOntoStairZero();
+    const deck = this.findFloor0Platform() ?? this.platforms[0] ?? null;
+    if (deck) {
+      this.snapPlayerToFloor0(deck, false);
+      this.lastLandedPlatform = deck;
+      this.currentGroundPlatform = deck;
+    } else {
+      this.snapPlayerOntoStairZero();
+    }
     this.player.body.vx = 0;
     this.player.body.vy = 0;
     this.player.body.grounded = true;
+    this.fromMenuHandoff = false;
     this.gameplayUnlocked = true;
     this.player.onLand(480);
     this.sfx.play('player_land', 0.72);
     this.pulseCameraJuiceLanding(480);
     this.touchControlsLayer.visible = true;
     this.attackBtnRoot.visible = true;
-    const deck = this.platforms[0];
-    if (deck) {
-      this.lastLandedPlatform = deck;
-      this.currentGroundPlatform = deck;
-    }
   }
 
   async init(app: Application): Promise<void> {
@@ -1673,6 +1693,7 @@ export class PlayScene implements Scene {
     this.wallSparkParticleRoot.blendMode = 'add';
     this.wallSparkParticleRoot.eventMode = 'none';
     this.player.zIndex = PLAYER_WORLD_Z_INDEX;
+    this.player.eventMode = 'none';
     this.levelUpFloatText = new Text({
       text: 'LEVEL UP!',
       style: new TextStyle({
@@ -1732,6 +1753,7 @@ export class PlayScene implements Scene {
     // Use real frame delta on mobile — capping to 1/30s made slow frames *lose* time so drifting
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
+    this.tickTouchStaleLockWatch();
     this.updateHeaderPauseButtonFx(dt);
     if (this.gameOver) {
       this.updateScreenShake(dt);
@@ -1747,6 +1769,25 @@ export class PlayScene implements Scene {
       return;
     }
     this.runTime += dt;
+
+    if (!this.initialFloorConfirmed) {
+      this.updateCamera(dt);
+      this.drawDynamicWorld();
+      this.player.update(dt, 0, false, null, false, this.fallShields > 0, false);
+      this.applyCameraTransform();
+      this.updateScreenShake(dt);
+      this.syncPlayerDepthRelativeToLava();
+      this.tickAltitudePresentation(dt);
+      this.tickDeathLavaLift(dt);
+      if (this.atmosphereManager?.isReady) {
+        this.atmosphereManager.update({
+          dt,
+          cameraY: this.cameraY,
+          climbMeters: this.getHudClimbMeters(),
+        });
+      }
+      return;
+    }
 
     if (!this.gameplayUnlocked) {
       this.tickMenuSkyDropIntro(dt);
@@ -2145,11 +2186,15 @@ export class PlayScene implements Scene {
     if (this.input?.isTouchControlsActive()) {
       this.app?.stage.off('pointerdown', this.handleTouchPointerDown);
       this.app?.stage.off('pointermove', this.handleTouchPointerMove);
-      this.app?.stage.off('pointerup', this.handleTouchPointerUpOrCancel);
-      this.app?.stage.off('pointerupoutside', this.handleTouchPointerUpOrCancel);
-      this.app?.stage.off('pointercancel', this.handleTouchPointerUpOrCancel);
+      this.app?.stage.off('pointerup', this.handleTouchPointerEnd);
+      this.app?.stage.off('pointerupoutside', this.handleTouchPointerEnd);
+      this.app?.stage.off('pointercancel', this.handleTouchPointerEnd);
+      this.app?.stage.off('pointerout', this.handleTouchPointerEnd);
+      window.removeEventListener('blur', this.handleTouchWindowBlur);
+      document.removeEventListener('visibilitychange', this.handleTouchVisibilityChange);
       this.touchPointers.clear();
       this.touchControlPointerId = null;
+      this.touchControlLastActivityMs = 0;
       this.input?.clearTouchHolds();
     }
     this.input?.destroy();
@@ -2582,23 +2627,17 @@ export class PlayScene implements Scene {
       worldWidthFromScreen: this.worldWidthFromScreen(),
       poolCount: STAIRS.poolCount,
     });
-    const baseY = seed.baseY;
-    let y = baseY;
+    let y = this.getFloorZeroTopY();
     const layoutCamX = seed.layoutCamX;
 
     for (let index = 0; index < STAIRS.poolCount; index += 1) {
-      const baseWidth = PLATFORM_SIZING.uniformBaseWidth;
-      const platform: Platform = {
-        x: 0,
+      const platform: Platform = this.platformSystem.createInitialPlatform({
         y,
-        width: 0,
-        height: STAIRS.platformHeight,
-        baseWidth,
-        driftDir: Math.random() < 0.5 ? -1 : 1,
-        driftVx: 0,
         stairId: index,
-        kind: index === 0 ? 'spawn' : 'normal',
-      };
+        platformHeight: STAIRS.platformHeight,
+        uniformBaseWidth: PLATFORM_SIZING.uniformBaseWidth,
+        isSpawn: index === 0,
+      });
       this.applyResponsivePlatformWidth(platform);
       if (index === 0) {
         /** Wide Floor 0 deck — span comes from {@link getFloorZeroSpawnPlatformBounds}; skip narrow stair centering. */
@@ -3003,6 +3042,136 @@ export class PlayScene implements Scene {
     this.icyRunChargePxPerSec = Math.min(PHYSICS.icyRunChargeMax, charge);
   }
 
+  /** World Y of Floor 0 deck top — feet sit on-screen at {@link CAMERA_PLAYER_SCREEN_Y_RATIO} with `cameraY = 0`. */
+  private getFloorZeroTopY(): number {
+    return Math.round(this.worldHeightFromScreen() * CAMERA_PLAYER_SCREEN_Y_RATIO);
+  }
+
+  private isPlatformInFloor0SpawnRange(platform: Platform): boolean {
+    const targetY = this.getFloorZeroTopY();
+    const rangePx = Math.max(48, this.worldHeightFromScreen() * 0.12);
+    return Math.abs(platform.y - targetY) <= rangePx;
+  }
+
+  private findFloor0Platform(logFound = false): Platform | null {
+    const spawnDeck = this.platforms.find((p) => p.kind === 'spawn' && p.stairId === 0);
+    if (spawnDeck) {
+      if (logFound) {
+        console.log('[spawn] floor0 found');
+      }
+      return spawnDeck;
+    }
+    const stairZero = this.platforms.find((p) => p.stairId === 0);
+    if (stairZero && this.isPlatformInFloor0SpawnRange(stairZero)) {
+      stairZero.kind = 'spawn';
+      if (logFound) {
+        console.log('[spawn] floor0 found');
+      }
+      return stairZero;
+    }
+    return null;
+  }
+
+  private createEmergencyFloor0Platform(): Platform {
+    const bounds = this.getFloorZeroSpawnPlatformBounds();
+    const platform = this.platformSystem.createInitialPlatform({
+      y: this.getFloorZeroTopY(),
+      stairId: 0,
+      platformHeight: STAIRS.platformHeight,
+      uniformBaseWidth: PLATFORM_SIZING.uniformBaseWidth,
+      isSpawn: true,
+    });
+    this.applyResponsivePlatformWidth(platform);
+    platform.x = bounds.x;
+    platform.width = bounds.width;
+    platform.kind = 'spawn';
+    this.updatePlatformBodyFromScale(platform);
+    if (this.platforms.length === 0) {
+      this.platforms.push(platform);
+      this.createPlatformSprites();
+    } else {
+      this.platforms[0] = platform;
+    }
+    console.log('[spawn] emergency platform created');
+    return platform;
+  }
+
+  private resolveFloor0ForSpawn(): Platform {
+    let floor0 = this.findFloor0Platform(true);
+    if (!floor0) {
+      floor0 = this.createEmergencyFloor0Platform();
+    }
+    floor0.y = this.getFloorZeroTopY();
+    const bounds = this.getFloorZeroSpawnPlatformBounds();
+    floor0.x = bounds.x;
+    floor0.width = bounds.width;
+    floor0.kind = 'spawn';
+    floor0.stairId = 0;
+    this.updatePlatformBodyFromScale(floor0);
+    this.centerStairZeroUnderCamera();
+    return floor0;
+  }
+
+  private snapPlayerToFloor0(floor0: Platform, logSnap = true): void {
+    const b = this.player.body;
+    b.x = Math.round(floor0.x + floor0.width * 0.5 - b.width * 0.5);
+    b.y = Math.round(floor0.y - b.height - FLOOR0_SPAWN_SURFACE_OFFSET_PX);
+    b.vx = 0;
+    b.vy = 0;
+    b.grounded = true;
+    if (logSnap) {
+      console.log('[spawn] player snapped to floor0');
+    }
+  }
+
+  /** Camera only — call after player spawn Y is resolved. */
+  private layoutRunStartCameraFromSpawn(): void {
+    const viewportW = this.worldWidthFromScreen();
+    const maxCamX = Math.max(0, this.worldWidth - viewportW);
+    this.cameraX = Math.max(0, Math.min((this.worldWidth - viewportW) * 0.5, maxCamX));
+    this.cameraY = 0;
+    this.cameraScrollVelocityPx = 0;
+    this.world.position.set(-this.cameraX, -this.cameraY);
+    this.layoutBackground();
+  }
+
+  private applyPlayerSpawnLandingState(floor0: Platform): void {
+    this.restWallBounceAppliedThisFrame = false;
+    this.restWallChainEligible = true;
+    this.icyRunChargePxPerSec = 0;
+    this.restWallKickCooldownUntil = 0;
+    this.player.hasTouchedPlatformSinceLastSlide = true;
+    this.grapple = null;
+    this.grappleCooldown = 0;
+    this.grappleReleaseDampingLeft = 0;
+    this.grappleReloadingLogged = false;
+    this.lastScoredStairId = floor0.stairId;
+    this.lastScoredLandWorldTopY = floor0.y;
+    this.lastLandedPlatform = floor0;
+    this.currentGroundPlatform = floor0;
+    this.player.update(0, 0, false, null, false, this.fallShields > 0);
+  }
+
+  /**
+   * Single entry for run-start spawn: resolve Floor 0, snap Mobi, then initialize camera.
+   * Idempotent per {@link runSpawnSessionId} to prevent duplicate bootstrap.
+   */
+  private initializeRunSpawn(sessionId: number): void {
+    if (sessionId === this.runSpawnLastCompletedSessionId) {
+      return;
+    }
+    const floor0 = this.resolveFloor0ForSpawn();
+    this.snapPlayerToFloor0(floor0);
+    this.layoutRunStartCameraFromSpawn();
+    this.syncPlatformSpritesFromPlatforms();
+    this.applyPlayerSpawnLandingState(floor0);
+    this.initialFloorConfirmed = true;
+    this.runSpawnLastCompletedSessionId = sessionId;
+    this.climbBaselineY = this.player.body.y;
+    this.fasciaRestWallStripePhaseAnchorWorldYTop =
+      this.cameraY - WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX;
+  }
+
   /** After camera snap, keep the starting stair centered in the safe view band. */
   private centerStairZeroUnderCamera(): void {
     const p = this.platforms[0];
@@ -3010,7 +3179,6 @@ export class PlayScene implements Scene {
       return;
     }
     this.applyResponsivePlatformWidth(p);
-    /** Wide Floor 0 deck — X/width already tied to camera in {@link getFloorZeroSpawnPlatformBounds}. */
     if (p.kind === 'spawn') {
       return;
     }
@@ -3025,14 +3193,11 @@ export class PlayScene implements Scene {
    * pixels above the deck — exact feet-on-surface made the first physics frames look like a harsh drop/land.
    */
   private snapPlayerOntoStairZero(): void {
-    const p = this.platforms[0];
-    if (!p) {
+    const floor0 = this.findFloor0Platform() ?? this.platforms[0];
+    if (!floor0) {
       return;
     }
-    const b = this.player.body;
-    b.x = Math.round(p.x + p.width * 0.5 - b.width * 0.5);
-    /** Feet on deck top — physics resolves landing on the same frame. */
-    b.y = Math.round(p.y - b.height);
+    this.snapPlayerToFloor0(floor0, false);
   }
 
   private tickMenuSkyDropIntro(dt: number): void {
@@ -3088,7 +3253,9 @@ export class PlayScene implements Scene {
 
   private syncPlatformSpritesFromPlatforms(): void {
     const hasStairArt =
-      this.marshmallowTextures.length > 0 || this.chocolateTextures.length > 0;
+      this.marshmallowTextures.length > 0 ||
+      this.chocolateTextures.length > 0 ||
+      this.stairs10000Textures.length > 0;
     const hasRestArt = !!(this.restPlatformMarshmallowSlices || this.restPlatformChocolateSlices);
     if (!hasStairArt && !hasRestArt) {
       return;
@@ -3126,6 +3293,7 @@ export class PlayScene implements Scene {
   }
 
   private resetRun(opts?: { pickNewBgm?: boolean }): void {
+    const preserveMenuHandoff = this.fromMenuHandoff;
     this.gameOver = false;
     this.player.zIndex = PLAYER_WORLD_Z_INDEX;
     this.deathLavaLiftDisplayFactor = 0;
@@ -3178,8 +3346,15 @@ export class PlayScene implements Scene {
     this.runTime = 0;
     this.menuSkyDropIntroActive = false;
     this.menuSkyDropIntroElapsedSec = 0;
-    this.fromMenuHandoff = false;
-    this.gameplayUnlocked = true;
+    this.initialFloorConfirmed = false;
+    this.runSpawnSessionId += 1;
+    const spawnSessionId = this.runSpawnSessionId;
+    if (preserveMenuHandoff) {
+      this.gameplayUnlocked = false;
+    } else {
+      this.fromMenuHandoff = false;
+      this.gameplayUnlocked = true;
+    }
     this.photoroomOscTimeMs = 0;
     this.paused = false;
     this.pauseOverlay.visible = false;
@@ -3228,13 +3403,13 @@ export class PlayScene implements Scene {
     }
     this.createPlatforms();
     this.spawnCollectibleField();
-    this.resetPlayer();
-    this.snapCameraToPlayer();
-    this.centerStairZeroUnderCamera();
-    this.snapPlayerOntoStairZero();
-    this.fasciaRestWallStripePhaseAnchorWorldYTop =
-      this.cameraY - WORLD_EDGE_FASCIA_STRIP_VERTICAL_PAD_PX;
-    this.climbBaselineY = this.player.body.y;
+    this.initializeRunSpawn(spawnSessionId);
+    if (!preserveMenuHandoff) {
+      this.gameplayUnlocked = true;
+    } else {
+      this.touchControlsLayer.visible = false;
+      this.attackBtnRoot.visible = false;
+    }
     console.log(
       `1000m Rest Floor Y: ${this.getRestFloorTopY(REST_FLOOR_HOUSE_METERS).toFixed(2)}`,
     );
@@ -3777,6 +3952,12 @@ export class PlayScene implements Scene {
   }
 
   private resetPlayer(): void {
+    const floor0 = this.findFloor0Platform() ?? this.platforms[0];
+    if (floor0) {
+      this.snapPlayerToFloor0(floor0, false);
+      this.applyPlayerSpawnLandingState(floor0);
+      return;
+    }
     this.snapPlayerOntoStairZero();
     this.player.body.vx = 0;
     this.player.body.vy = 0;
@@ -8857,12 +9038,102 @@ export class PlayScene implements Scene {
     this.uiLayer.addChild(this.touchControlsLayer);
     app.stage.on('pointerdown', this.handleTouchPointerDown);
     app.stage.on('pointermove', this.handleTouchPointerMove);
-    app.stage.on('pointerup', this.handleTouchPointerUpOrCancel);
-    app.stage.on('pointerupoutside', this.handleTouchPointerUpOrCancel);
-    app.stage.on('pointercancel', this.handleTouchPointerUpOrCancel);
+    app.stage.on('pointerup', this.handleTouchPointerEnd);
+    app.stage.on('pointerupoutside', this.handleTouchPointerEnd);
+    app.stage.on('pointercancel', this.handleTouchPointerEnd);
+    app.stage.on('pointerout', this.handleTouchPointerEnd);
+    window.addEventListener('blur', this.handleTouchWindowBlur);
+    document.addEventListener('visibilitychange', this.handleTouchVisibilityChange);
   }
 
+  private releaseTouchPointer(pointerId: number): void {
+    const hadControl = this.touchControlPointerId === pointerId;
+    this.touchPointers.delete(pointerId);
+    if (hadControl) {
+      this.touchControlPointerId = null;
+      this.touchControlLastActivityMs = 0;
+      this.input?.setTouchFollowAxis(0);
+      console.log('[Touch] input unlocked');
+    }
+  }
+
+  private resetTouchInputState(reason: 'stale' | 'timeout' | 'blur' | 'visibility'): void {
+    const hadState = this.touchControlPointerId !== null || this.touchPointers.size > 0;
+    if (reason === 'stale' || reason === 'timeout') {
+      console.log('[Touch] reset stale pointer');
+    }
+    this.touchPointers.clear();
+    this.touchControlPointerId = null;
+    this.touchControlLastActivityMs = 0;
+    this.input?.clearTouchHolds();
+    this.input?.setTouchFollowAxis(0);
+    if (hadState) {
+      console.log('[Touch] input unlocked');
+    }
+  }
+
+  private noteTouchPointerActivity(pointerId: number): void {
+    const now = performance.now();
+    this.touchControlLastActivityMs = now;
+    const track = this.touchPointers.get(pointerId);
+    if (track) {
+      track.lastActivityMs = now;
+    }
+  }
+
+  private tickTouchStaleLockWatch(): void {
+    if (!this.input?.isTouchControlsActive() || this.touchControlPointerId === null) {
+      return;
+    }
+    const track = this.touchPointers.get(this.touchControlPointerId);
+    if (!track) {
+      this.resetTouchInputState('stale');
+      return;
+    }
+    const now = performance.now();
+    const lastActivity = Math.max(track.lastActivityMs, track.startMs, this.touchControlLastActivityMs);
+    if (now - lastActivity >= TOUCH_STALE_LOCK_MS) {
+      this.resetTouchInputState('timeout');
+    }
+  }
+
+  private shouldFinalizeTouchPointer(event: FederatedPointerEvent): boolean {
+    if (event.type === 'pointerout') {
+      return event.buttons === 0;
+    }
+    return true;
+  }
+
+  private readonly handleTouchWindowBlur = (): void => {
+    this.resetTouchInputState('blur');
+  };
+
+  private readonly handleTouchVisibilityChange = (): void => {
+    if (document.visibilityState === 'hidden') {
+      this.resetTouchInputState('visibility');
+    }
+  };
+
   private readonly handleTouchPointerDown = (event: FederatedPointerEvent): void => {
+    console.log('[Touch] pointerdown');
+    const pointerId = event.pointerId;
+
+    if (this.touchPointers.has(pointerId)) {
+      console.log('[Touch] reset stale pointer');
+      this.releaseTouchPointer(pointerId);
+    }
+
+    if (this.touchControlPointerId !== null && this.touchControlPointerId !== pointerId) {
+      const staleControl = !this.touchPointers.has(this.touchControlPointerId);
+      if (staleControl) {
+        console.log('[Touch] reset stale pointer');
+      }
+      this.releaseTouchPointer(this.touchControlPointerId);
+      if (!staleControl) {
+        this.touchPointers.delete(this.touchControlPointerId);
+      }
+    }
+
     if (this.gameOver || this.leaderboardOverlay.visible || this.paused) {
       return;
     }
@@ -8870,10 +9141,7 @@ export class PlayScene implements Scene {
       return;
     }
     event.preventDefault();
-    const pointerId = event.pointerId;
-    if (this.touchPointers.has(pointerId)) {
-      return;
-    }
+    const now = performance.now();
     const side = event.global.x < this.width * 0.5 ? 'left' : 'right';
     this.touchPointers.set(pointerId, {
       side,
@@ -8883,21 +9151,20 @@ export class PlayScene implements Scene {
       lastY: event.global.y,
       swipeBaselineY: event.global.y,
       swipeBaselineX: event.global.x,
-      startMs: performance.now(),
+      startMs: now,
+      lastActivityMs: now,
       swipeHandled: false,
     });
     const takeLock =
       this.touchGlobalAnywhereLock || this.isTouchNearChameleon(event.global.x, event.global.y);
-    if (this.touchControlPointerId === null && takeLock) {
+    if (takeLock) {
       this.touchControlPointerId = pointerId;
+      this.noteTouchPointerActivity(pointerId);
     }
     this.spawnTouchRipple(event.global.x, event.global.y, 0.26);
   };
 
   private readonly handleTouchPointerMove = (event: FederatedPointerEvent): void => {
-    if (this.gameOver || this.leaderboardOverlay.visible || this.paused) {
-      return;
-    }
     if (!this.input?.isTouchControlsActive()) {
       return;
     }
@@ -8905,9 +9172,13 @@ export class PlayScene implements Scene {
     if (!p) {
       return;
     }
+    if (this.gameOver || this.leaderboardOverlay.visible || this.paused) {
+      return;
+    }
     p.lastX = event.global.x;
     p.lastY = event.global.y;
     p.side = p.lastX < this.width * 0.5 ? 'left' : 'right';
+    this.noteTouchPointerActivity(event.pointerId);
     const takeLock =
       this.touchGlobalAnywhereLock || this.isTouchNearChameleon(p.lastX, p.lastY);
     if (this.touchControlPointerId === null && takeLock) {
@@ -8916,19 +9187,20 @@ export class PlayScene implements Scene {
     this.tryHandleSwipeUp(event.pointerId, false);
   };
 
-  private readonly handleTouchPointerUpOrCancel = (event: FederatedPointerEvent): void => {
-    if (this.gameOver || this.leaderboardOverlay.visible || this.paused) {
+  private readonly handleTouchPointerEnd = (event: FederatedPointerEvent): void => {
+    if (!this.shouldFinalizeTouchPointer(event)) {
       return;
     }
-    if (!this.input?.isTouchControlsActive()) {
-      return;
+    if (event.type === 'pointercancel') {
+      console.log('[Touch] pointercancel');
+    } else {
+      console.log('[Touch] pointerup');
     }
-    this.tryHandleSwipeUp(event.pointerId, true);
-    this.touchPointers.delete(event.pointerId);
-    if (this.touchControlPointerId === event.pointerId) {
-      this.touchControlPointerId = null;
-      this.input?.setTouchFollowAxis(0);
+    const canGameplay = !this.gameOver && !this.leaderboardOverlay.visible && !this.paused;
+    if (canGameplay && this.input?.isTouchControlsActive()) {
+      this.tryHandleSwipeUp(event.pointerId, true);
     }
+    this.releaseTouchPointer(event.pointerId);
   };
 
   private applyTouchHoldState(): void {
@@ -8947,8 +9219,7 @@ export class PlayScene implements Scene {
     }
     const touch = this.touchPointers.get(this.touchControlPointerId);
     if (!touch) {
-      this.touchControlPointerId = null;
-      this.input.setTouchFollowAxis(0);
+      this.resetTouchInputState('stale');
       return;
     }
     const zoom = this.getCameraZoom();
@@ -9739,6 +10010,9 @@ export class PlayScene implements Scene {
     if (m >= L.chocolate.minMeters && m < L.chocolate.maxMeters) {
       return this.chocolateTextures.length > 0;
     }
+    if (m >= L.stairs10000.minMeters) {
+      return this.stairs10000Textures.length > 0;
+    }
     return false;
   }
 
@@ -9886,6 +10160,14 @@ export class PlayScene implements Scene {
     return Math.max(0, platform.stairId) % count;
   }
 
+  private getStairs10000FrameIndex(platform: Platform): number {
+    const count = this.stairs10000Textures.length;
+    if (count === 0) {
+      return 0;
+    }
+    return Math.max(0, platform.stairId) % count;
+  }
+
   private isMarshmallowTexture(tex: Texture): boolean {
     return this.marshmallowTextures.includes(tex);
   }
@@ -9894,7 +10176,14 @@ export class PlayScene implements Scene {
     return this.chocolateTextures.includes(tex);
   }
 
-  private platformArtTierForTexture(tex: Texture): 'marshmallow' | 'chocolate' | 'none' {
+  private isStairs10000Texture(tex: Texture): boolean {
+    return this.stairs10000Textures.includes(tex);
+  }
+
+  private platformArtTierForTexture(tex: Texture): 'marshmallow' | 'chocolate' | 'stairs10000' | 'none' {
+    if (this.isStairs10000Texture(tex)) {
+      return 'stairs10000';
+    }
     if (this.isChocolateTexture(tex)) {
       return 'chocolate';
     }
@@ -9905,7 +10194,31 @@ export class PlayScene implements Scene {
   }
 
   private async loadPlatformLevelTextures(): Promise<void> {
-    await Promise.all([this.loadMarshmallowTextures(), this.loadRestPlatformSheetTextures()]);
+    await Promise.all([
+      this.loadMarshmallowTextures(),
+      this.loadStairs10000Textures(),
+      this.loadRestPlatformSheetTextures(),
+    ]);
+  }
+
+  private async loadStairs10000Textures(): Promise<void> {
+    try {
+      const canvas = await loadKeyedSheetCanvas(STAIRS_10000_SHEET_URL, {
+        darkMaxChannel: PLATFORM_FOOD_SHEET_DARK_BG_MAX_CHANNEL,
+      });
+      if (!canvas) {
+        throw new Error('Failed to decode stairs 10000 sheet');
+      }
+      const h = canvas.height;
+      const splitY = Math.floor(h * 0.51);
+      const topRow = extractNormalizedRowFrames(canvas, 0, splitY, 3);
+      const bottomRow = extractNormalizedRowFrames(canvas, splitY, h, 3);
+      this.stairs10000Textures = [...topRow.textures, ...bottomRow.textures];
+      this.stairs10000FeetAnchorY = PLATFORM_LEVEL_DECK_ANCHOR_Y.stairs10000;
+    } catch {
+      this.stairs10000Textures = [];
+      console.warn('Failed to load platform art:', STAIRS_10000_SHEET_URL);
+    }
   }
 
   /** Split `rest platform.png` into marshmallow (top) and chocolate (bottom) wide-deck strips. */
@@ -10322,7 +10635,9 @@ export class PlayScene implements Scene {
 
   private createPlatformSprites(): void {
     const hasStairArt =
-      this.marshmallowTextures.length > 0 || this.chocolateTextures.length > 0;
+      this.marshmallowTextures.length > 0 ||
+      this.chocolateTextures.length > 0 ||
+      this.stairs10000Textures.length > 0;
     const hasRestArt = !!(this.restPlatformMarshmallowSlices || this.restPlatformChocolateSlices);
     if (!hasStairArt && !hasRestArt) {
       return;
@@ -10436,10 +10751,16 @@ export class PlayScene implements Scene {
   }
 
   /**
-   * `platforms marshmelo.png` — marshmallow [0, 5000) m, chocolate [5000, 10000) m; sequential by `stairId`.
+   * Marshmallow [0, 5000) m; chocolate [5000, 10000) m; stairs 10000 at 10k+ — sequential by `stairId`.
    */
   private pickPlatformLevelTexture(platformM: number, platform: Platform): Texture | undefined {
     const L = PLATFORM_LEVEL_ART;
+    if (
+      platformM >= L.stairs10000.minMeters &&
+      this.stairs10000Textures.length > 0
+    ) {
+      return this.stairs10000Textures[this.getStairs10000FrameIndex(platform)];
+    }
     if (
       platformM >= L.chocolate.minMeters &&
       platformM < L.chocolate.maxMeters &&
@@ -10454,13 +10775,17 @@ export class PlayScene implements Scene {
     ) {
       return this.marshmallowTextures[this.getMarshmallowFrameIndex(platform)];
     }
-    if (platformM >= L.chocolate.maxMeters && this.chocolateTextures.length > 0) {
-      return this.chocolateTextures[this.getChocolateFrameIndex(platform)];
-    }
-    return this.marshmallowTextures[0] ?? this.chocolateTextures[0];
+    return (
+      this.stairs10000Textures[0] ??
+      this.marshmallowTextures[0] ??
+      this.chocolateTextures[0]
+    );
   }
 
   private getPlatformDeckAnchorY(tex: Texture): number {
+    if (this.isStairs10000Texture(tex)) {
+      return this.stairs10000FeetAnchorY;
+    }
     if (this.isChocolateTexture(tex)) {
       return this.chocolateFeetAnchorY;
     }
@@ -10471,7 +10796,11 @@ export class PlayScene implements Scene {
   }
 
   private isPlatformLevelPngTexture(tex: Texture): boolean {
-    return this.isMarshmallowTexture(tex) || this.isChocolateTexture(tex);
+    return (
+      this.isMarshmallowTexture(tex) ||
+      this.isChocolateTexture(tex) ||
+      this.isStairs10000Texture(tex)
+    );
   }
 
   /** Same bead radius as `syncBeadBridgePlatformSprite` (visual sizing only). */

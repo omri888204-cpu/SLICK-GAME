@@ -2,12 +2,15 @@ import { Container, Sprite, Texture, TilingSprite } from 'pixi.js';
 import { CandyAtmosphereFx } from './CandyAtmosphereFx';
 import {
   buildLayerBackgroundLayout,
+  BACKGROUND_TIER_2_SWITCH_METERS,
   BACKGROUND_TIER_SWITCH_METERS,
   CANDY_LAYER1_SKY_HIGH_URL,
   CANDY_LAYER1_SKY_URL,
   CANDY_LAYER2_MIDDLE_HIGH_URL,
+  CANDY_LAYER2_MIDDLE_ULTRA_URL,
   CANDY_LAYER2_MIDDLE_URL,
   CANDY_LAYER3_FRONT_HIGH_URL,
+  CANDY_LAYER3_FRONT_ULTRA_URL,
   CANDY_LAYER3_FRONT_URL,
   coverScaleForTexture,
   FRONT_WALL_CAMERA_PARALLAX,
@@ -38,8 +41,8 @@ export type CandyAtmosphereUpdate = {
 
 /**
  * - layer 11 / back 5000: slow ambient tile scroll (switches at 5k m)
- * - layer2 / 5000 factory: static midground (switches at 5k m)
- * - loop wall 2 / 5000 wall: climbs with camera — walls rise slowly as the player goes up
+ * - layer2 / 5000 factory / castle 10000: static midground (switches at 5k / 10k m)
+ * - loop wall 2 / 5000 wall / 10000 walls: climbs with camera — walls rise slowly as the player goes up
  */
 export class CandyAtmosphereManager {
   readonly root = new Container();
@@ -59,10 +62,12 @@ export class CandyAtmosphereManager {
   private frontWallTileScale = 1;
   private frontTexLow: Texture | null = null;
   private frontTexHigh: Texture | null = null;
-  private activeFrontWallTier: 'low' | 'high' = 'low';
+  private frontTexUltra: Texture | null = null;
+  private activeFrontWallTier: 'low' | 'high' | 'ultra' = 'low';
   private middleTexLow: Texture | null = null;
   private middleTexHigh: Texture | null = null;
-  private activeMiddleTier: 'low' | 'high' = 'low';
+  private middleTexUltra: Texture | null = null;
+  private activeMiddleTier: 'low' | 'high' | 'ultra' = 'low';
 
   constructor(parent: Container) {
     this.root.sortableChildren = true;
@@ -78,8 +83,16 @@ export class CandyAtmosphereManager {
     this.unload();
 
     try {
-      const [skyTexLow, skyTexHigh, middleTexLow, middleTexHigh, frontTexLow, frontTexHigh] =
-        await Promise.all([
+      const [
+        skyTexLow,
+        skyTexHigh,
+        middleTexLow,
+        middleTexHigh,
+        middleTexUltra,
+        frontTexLow,
+        frontTexHigh,
+        frontTexUltra,
+      ] = await Promise.all([
           prepareStaticBackgroundTexture(CANDY_LAYER1_SKY_URL, {
             verticalRepeat: true,
             nearestScale: true,
@@ -89,18 +102,34 @@ export class CandyAtmosphereManager {
           }),
           prepareStaticBackgroundTexture(CANDY_LAYER2_MIDDLE_URL),
           prepareStaticBackgroundTexture(CANDY_LAYER2_MIDDLE_HIGH_URL),
+          prepareStaticBackgroundTexture(CANDY_LAYER2_MIDDLE_ULTRA_URL),
           prepareStaticBackgroundTexture(CANDY_LAYER3_FRONT_URL, { verticalRepeat: true }),
           prepareStaticBackgroundTexture(CANDY_LAYER3_FRONT_HIGH_URL, { verticalRepeat: true }),
+          prepareStaticBackgroundTexture(CANDY_LAYER3_FRONT_ULTRA_URL, {
+            verticalRepeat: true,
+            centerBandEdgeKeyMarginRatio: 0.2,
+          }),
         ]);
-      this.textures.push(skyTexLow, skyTexHigh, middleTexLow, middleTexHigh, frontTexLow, frontTexHigh);
+      this.textures.push(
+        skyTexLow,
+        skyTexHigh,
+        middleTexLow,
+        middleTexHigh,
+        middleTexUltra,
+        frontTexLow,
+        frontTexHigh,
+        frontTexUltra,
+      );
       this.skyTexLow = skyTexLow;
       this.skyTexHigh = skyTexHigh;
       this.activeSkyTier = 'low';
       this.middleTexLow = middleTexLow;
       this.middleTexHigh = middleTexHigh;
+      this.middleTexUltra = middleTexUltra;
       this.activeMiddleTier = 'low';
       this.frontTexLow = frontTexLow;
       this.frontTexHigh = frontTexHigh;
+      this.frontTexUltra = frontTexUltra;
       this.activeFrontWallTier = 'low';
 
       const sky = new TilingSprite({ texture: skyTexLow, width: 1, height: 1 });
@@ -228,20 +257,34 @@ export class CandyAtmosphereManager {
     }
   }
 
-  /** layer2 below 5k m; 5000 factory at and above. */
+  /** layer2 below 5k m; 5000 factory [5k, 10k); castle 10000 at 10k+. */
+  private resolveThreeTier(climbMeters: number): 'low' | 'high' | 'ultra' {
+    if (climbMeters >= BACKGROUND_TIER_2_SWITCH_METERS) {
+      return 'ultra';
+    }
+    if (climbMeters >= BACKGROUND_TIER_SWITCH_METERS) {
+      return 'high';
+    }
+    return 'low';
+  }
+
   private syncMiddleTier(climbMeters: number, layout?: LayerBackgroundLayout): void {
     const middle = this.middleSprite;
     if (!middle) {
       return;
     }
 
-    const wantHigh = climbMeters >= BACKGROUND_TIER_SWITCH_METERS;
-    const wantTier = wantHigh ? 'high' : 'low';
+    const wantTier = this.resolveThreeTier(climbMeters);
     if (wantTier === this.activeMiddleTier) {
       return;
     }
 
-    const tex = wantHigh ? this.middleTexHigh : this.middleTexLow;
+    const tex =
+      wantTier === 'ultra'
+        ? this.middleTexUltra
+        : wantTier === 'high'
+          ? this.middleTexHigh
+          : this.middleTexLow;
     if (!tex) {
       return;
     }
@@ -263,20 +306,24 @@ export class CandyAtmosphereManager {
     }
   }
 
-  /** loop wall 2 below 5k m; 5000 wall at and above — same parallax scroll as before. */
+  /** loop wall 2 below 5k m; 5000 wall [5k, 10k); 10000 walls at 10k+ — same parallax scroll as before. */
   private syncFrontWallTier(climbMeters: number, layout?: LayerBackgroundLayout): void {
     const front = this.frontTile;
     if (!front) {
       return;
     }
 
-    const wantHigh = climbMeters >= BACKGROUND_TIER_SWITCH_METERS;
-    const wantTier = wantHigh ? 'high' : 'low';
+    const wantTier = this.resolveThreeTier(climbMeters);
     if (wantTier === this.activeFrontWallTier) {
       return;
     }
 
-    const tex = wantHigh ? this.frontTexHigh : this.frontTexLow;
+    const tex =
+      wantTier === 'ultra'
+        ? this.frontTexUltra
+        : wantTier === 'high'
+          ? this.frontTexHigh
+          : this.frontTexLow;
     if (!tex) {
       return;
     }
@@ -394,9 +441,11 @@ export class CandyAtmosphereManager {
     this.activeSkyTier = 'low';
     this.frontTexLow = null;
     this.frontTexHigh = null;
+    this.frontTexUltra = null;
     this.activeFrontWallTier = 'low';
     this.middleTexLow = null;
     this.middleTexHigh = null;
+    this.middleTexUltra = null;
     this.activeMiddleTier = 'low';
     this.loaded = false;
   }

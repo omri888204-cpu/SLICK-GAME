@@ -14,6 +14,14 @@ export type CreatePlatformsSeed = {
   nextStairId: number;
 };
 
+export type CreateInitialPlatformInput = {
+  y: number;
+  stairId: number;
+  platformHeight: number;
+  uniformBaseWidth: number;
+  isSpawn: boolean;
+};
+
 export class PlatformPool {
   constructor() {}
 
@@ -143,6 +151,20 @@ export class PlatformPool {
       baseY,
       layoutCamX,
       nextStairId: input.poolCount - 1,
+    };
+  }
+
+  createInitialPlatform(input: CreateInitialPlatformInput): Platform {
+    return {
+      x: 0,
+      y: input.y,
+      width: 0,
+      height: input.platformHeight,
+      baseWidth: input.uniformBaseWidth,
+      driftDir: Math.random() < 0.5 ? -1 : 1,
+      driftVx: 0,
+      stairId: input.stairId,
+      kind: input.isSpawn ? 'spawn' : 'normal',
     };
   }
 }

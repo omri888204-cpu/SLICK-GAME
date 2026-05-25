@@ -1,11 +1,16 @@
 import { Texture } from 'pixi.js';
-import { keyImageDataFromEdges } from '../../utils/logoTexture';
+import { keyImageDataCenterBandFromTop, keyImageDataFromEdges } from '../../utils/logoTexture';
 
 export type StaticBackgroundTexturePrep = {
   /** Enable vertical repeat for TilingSprite layers. */
   verticalRepeat?: boolean;
   /** Skip flood-fill keying — keeps seamless vertical tile art opaque (e.g. back 5000). */
   skipEdgeKeying?: boolean;
+  /**
+   * Key black from the top row inside `[margin×W, (1-margin)×W)` only.
+   * Preserves side wall columns (e.g. `10000 walls.png` tier seams on the edges).
+   */
+  centerBandEdgeKeyMarginRatio?: number;
   /** Nearest sampling — avoids linear-filter gaps on tile seams. */
   nearestScale?: boolean;
 };
@@ -51,8 +56,18 @@ export async function prepareStaticBackgroundTexture(
 
   ctx.drawImage(image, 0, 0);
   const imageData = ctx.getImageData(0, 0, width, height);
-  // Vertical tiles: keep top/bottom opaque so repeat seams stay flush.
-  keyImageDataFromEdges(imageData.data, width, height, 24, prep.verticalRepeat === true);
+  if (prep.centerBandEdgeKeyMarginRatio != null) {
+    keyImageDataCenterBandFromTop(
+      imageData.data,
+      width,
+      height,
+      prep.centerBandEdgeKeyMarginRatio,
+      24,
+    );
+  } else {
+    // Vertical tiles: keep top/bottom opaque so repeat seams stay flush.
+    keyImageDataFromEdges(imageData.data, width, height, 24, prep.verticalRepeat === true);
+  }
   ctx.putImageData(imageData, 0, 0);
 
   const tex = Texture.from(canvas);

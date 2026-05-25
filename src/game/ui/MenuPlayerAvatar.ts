@@ -1,4 +1,5 @@
 import { Container, Sprite, type Texture } from 'pixi.js';
+import { PLAYER_AVATAR_SCALE } from '../constants/playerSkin';
 import { MENU_PLAY_TRANSITION } from './MenuPlayTransition';
 
 /** Static idle avatar for the main menu — on the pink deck above PLAY. */
@@ -46,7 +47,7 @@ export class MenuPlayerAvatar extends Container {
       this.viewportW = viewportW;
     }
 
-    const targetHeight = viewportH * 0.14;
+    const targetHeight = viewportH * 0.14 * PLAYER_AVATAR_SCALE;
     const visibleHeight = frame.height * this.feetAnchorY;
     this.baseScale = targetHeight / Math.max(1, visibleHeight);
     this.baseFeetX = feetX;

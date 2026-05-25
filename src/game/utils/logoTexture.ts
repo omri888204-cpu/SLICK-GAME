@@ -170,6 +170,62 @@ export function keyImageDataFromEdges(
 }
 
 /**
+ * Key export black only inside a vertical center band (top-seeded flood-fill).
+ * Side wall columns stay fully opaque — avoids punching holes through tier seams on left/right edges.
+ */
+export function keyImageDataCenterBandFromTop(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+  sideMarginRatio: number,
+  darkMaxChannel: number = DARK_BG_MAX_CHANNEL,
+): void {
+  const margin = Math.max(0, Math.min(0.45, sideMarginRatio));
+  const x0 = Math.floor(width * margin);
+  const x1 = Math.ceil(width * (1 - margin));
+  if (x1 <= x0 + 8) {
+    return;
+  }
+
+  const visited = new Uint8Array(width * height);
+  const queue: number[] = [];
+  const inBand = (x: number): boolean => x >= x0 && x < x1;
+
+  const enqueue = (x: number, y: number): void => {
+    if (x < 0 || y < 0 || x >= width || y >= height || !inBand(x)) {
+      return;
+    }
+    const pixelIndex = y * width + x;
+    if (visited[pixelIndex]) {
+      return;
+    }
+    visited[pixelIndex] = 1;
+    if (isDarkEdgeBackgroundPixel(pixels, pixelIndex, darkMaxChannel)) {
+      queue.push(pixelIndex);
+    }
+  };
+
+  for (let x = x0; x < x1; x += 1) {
+    enqueue(x, 0);
+  }
+
+  while (queue.length > 0) {
+    const pixelIndex = queue.pop() ?? 0;
+    const x = pixelIndex % width;
+    if (!inBand(x)) {
+      continue;
+    }
+    pixels[pixelIndex * 4 + 3] = 0;
+
+    const y = Math.floor(pixelIndex / width);
+    enqueue(x + 1, y);
+    enqueue(x - 1, y);
+    enqueue(x, y + 1);
+    enqueue(x, y - 1);
+  }
+}
+
+/**
  * Same edge keying as {@link loadLogoTextureTransparent}, for a DOM `<img src="…">`.
  * Returns a `blob:` URL when keying succeeds; caller must {@link URL.revokeObjectURL} when done.
  * On failure, returns the original `sourceUrl` unchanged.

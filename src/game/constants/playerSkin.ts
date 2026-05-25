@@ -131,8 +131,10 @@ export const CANDY_BOY_ROW_BANDS = [
     ],
   },
 ] as const;
+/** Playable avatar scale — sprite width + physics hitbox (0.8 = 20% smaller). */
+export const PLAYER_AVATAR_SCALE = 0.8;
 /** ~Fighter height on screen (tall candy-boy frames scale from width). */
-export const CANDY_BOY_DISPLAY_WIDTH = 165;
+export const CANDY_BOY_DISPLAY_WIDTH = 165 * PLAYER_AVATAR_SCALE;
 /** Airborne loop starts at apex frame in the jump strip. */
 export const CANDY_BOY_JUMP_LOOP_FRAME_START = 3;
 export const CANDY_BOY_FEET_ANCHOR_Y: SkinFeetAnchors = {

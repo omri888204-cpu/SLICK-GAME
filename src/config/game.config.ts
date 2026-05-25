@@ -4,9 +4,12 @@
  *
  * {@link PLAY_SCENE} — values that must stay in sync with {@link PlayScene} layout (stair deck world size).
  */
+/** Uniform scale for stair deck hitbox + sprite width (0.8 = 20% smaller). */
+export const PLATFORM_WORLD_SCALE = 0.8;
+
 export const PLAY_SCENE = {
   /** Visual/body scale for infinite stair platforms — matches `PLATFORM_SCALE` in `PlayScene`. */
-  stairPlatformScale: 2.1,
+  stairPlatformScale: 2.1 * PLATFORM_WORLD_SCALE,
 } as const;
 
 /**
@@ -14,9 +17,9 @@ export const PLAY_SCENE = {
  * {@link spriteWorldWidthPx} so PNG scale stays constant when hitbox width changes.
  */
 export const PLATFORM_SIZING = {
-  uniformBaseWidth: 162,
-  normalWorldWidthPx: 318,
-  spriteWorldWidthPx: 318,
+  uniformBaseWidth: 162 * PLATFORM_WORLD_SCALE,
+  normalWorldWidthPx: 318 * PLATFORM_WORLD_SCALE,
+  spriteWorldWidthPx: 318 * PLATFORM_WORLD_SCALE,
   /** Cap vs visible world width minus spawn margins. */
   maxViewportWidthFraction: 0.46,
 } as const;
@@ -278,17 +281,20 @@ export const STAIRS = {
 
 /**
  * Stair PNG art (`public/assets/Platforms/`) — half-open HUD ranges `[minMeters, maxMeters)`.
- * `platforms marshmelo.png` — marshmallow grid [0, 5000) m; chocolate grid [5000, 10000) m.
+ * `platforms marshmelo.png` — marshmallow [0, 5000) m; chocolate [5000, 10000) m.
+ * `stairs 10000.png` — candy stair art from 10000 m upward.
  */
 export const PLATFORM_LEVEL_ART = {
   marshmallow: { minMeters: 0, maxMeters: 5000 },
   chocolate: { minMeters: 5000, maxMeters: 10000 },
+  stairs10000: { minMeters: 10000, maxMeters: Number.POSITIVE_INFINITY },
 } as const;
 
 /** Walkable deck anchor — center of stair art aligns with physics landing (`platform.y`). */
 export const PLATFORM_LEVEL_DECK_ANCHOR_Y = {
   marshmallow: 0.5,
   chocolate: 0.5,
+  stairs10000: 0.5,
 } as const;
 
 /**
