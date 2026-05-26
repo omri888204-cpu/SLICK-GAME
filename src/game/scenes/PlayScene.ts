@@ -76,7 +76,9 @@ import { logoutAndReturnToLogin } from '../landing/runLandingGate';
 import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
 import { InputManager } from '../systems/InputManager';
 import { GummySideDecor, type GummyPickResult, type GummySideDecorPickLayout } from '../systems/GummySideDecor';
+import { RunSpeedClock } from '../systems/RunSpeedClock';
 import { GummyPopupSystem } from '../ui/GummyPopupSystem';
+import { SpeedClockHud } from '../ui/SpeedClockHud';
 import { Physics } from '../systems/Physics';
 import {
   extractNormalizedRowFrames,
@@ -698,20 +700,11 @@ const FLOOR0_SPAWN_SURFACE_OFFSET_PX = 2;
 const MENU_SKY_DROP_INTRO_SEC = MENU_PLAY_TRANSITION.fadeOutSec;
 const MENU_SKY_DROP_FALL_VIEWPORT_RATIO = 0.82;
 const AUTO_SCROLL_BASE_SPEED_PX = 120;
-/** HUD climb (m): flat ×1 SPD below this, then linear ramp to {@link SCROLL_SPEED_MAX_MULT}. */
-const SCROLL_SPEED_WARMUP_METERS = 300;
-/** Linear SPD ramp ends here — reaches ×{@link SCROLL_SPEED_MAX_MULT} at 10k m. */
-const SCROLL_SPEED_RAMP_END_METERS = 10000;
-const SCROLL_SPEED_MAX_MULT = 2.5;
-/** UI tier feedback — one tier per this multiplier step above ×1. */
-const SCROLL_SPEED_STEP_DELTA = 0.15;
-/** Continuous altitude shake disabled; it became visible jitter around the 3000m+ tiers. */
-const ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD = Number.POSITIVE_INFINITY;
-const SPEED_TIER_SHAKE_SEC = 0;
-const SPEED_TIER_UI_FLASH_SEC = 0.22;
-/** Cool lavender pulse — avoids harsh fullscreen white flash (read as glitch on some GPUs). */
-const SPEED_TIER_PULSE_COLOR = 0xb8a0ff;
-const SPEED_TIER_PULSE_FILL_ALPHA = 0.11;
+/** Speed clock HUD — upper-left, below combo row (tweak after playtest). */
+const SPEED_CLOCK_HUD_X = 14;
+const SPEED_CLOCK_HUD_Y = 118;
+/** Wind streaks appear once the run-speed clock reaches this tier. */
+const WIND_PARTICLES_MIN_SPEED_TIER = 2;
 const PAUSE_RESUME_BTN_MIN_H = 64;
 /** Pause coin — full-res PNG on disk; crop + scale in Pixi only. */
 const PAUSE_BTN_TEXTURE_URL = `${GAME_ASSETS}/objects/${encodeURIComponent('pause.png')}`;
@@ -1262,10 +1255,8 @@ export class PlayScene implements Scene {
   private sidebarLbContentH = 0;
   /** Touch accessibility: first finger locks steering without needing to tap near the player (default on). */
   private touchGlobalAnywhereLock = true;
-  /** Full-screen HUD flash when scroll speed tier increases (see `getScrollSpeedTier`). */
-  private speedPulseGfx = new Graphics();
-  private speedTierUiFlashTime = 0;
-  private lastScrollSpeedTier = 0;
+  private readonly speedClock = new RunSpeedClock();
+  private speedClockHud: SpeedClockHud | null = null;
   private tongueRoot = new Container();
   private tongueVector = new Graphics();
   private tongueArmature: PixiArmatureDisplay | null = null;
@@ -1497,7 +1488,6 @@ export class PlayScene implements Scene {
   private cameraJuiceY = 0;
   private cameraJuiceVelY = 0;
   /** Phase accumulator for speed-stress screenshake (continuous, not impact bursts). */
-  private velocityStressShakePhase = 0;
   private bgm?: HTMLAudioElement;
   /** Last picked `game music` URL — avoids playing the same track twice in a row when possible. */
   private lastGameMusicBgmUrl: string | null = null;
@@ -1732,6 +1722,7 @@ export class PlayScene implements Scene {
     app.stage.on('pointerup', this.handlePointerUpGummyCollect);
     app.stage.on('pointerupoutside', this.handlePointerUpGummyCollect);
     this.setupClimbHud(app);
+    this.setupSpeedClockHud();
     this.setupComboHud(skillButtonTextures);
     this.setupGummyPopups();
     this.setupGameOverUi();
@@ -1741,7 +1732,6 @@ export class PlayScene implements Scene {
     this.setupHeaderPauseButton();
     this.setupStatusPanel();
     this.setupAttackButton();
-    this.setupSpeedTierPulseOverlay();
     this.layoutHeaderPauseButton();
     this.layoutClimbHud();
     this.layoutStatusPanel();
@@ -1770,6 +1760,7 @@ export class PlayScene implements Scene {
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
     this.gummyPopups?.tick(dt);
+    this.speedClockHud?.syncFromClock();
     this.tickTouchStaleLockWatch();
     this.updateHeaderPauseButtonFx(dt);
     if (this.gameOver) {
@@ -1781,7 +1772,6 @@ export class PlayScene implements Scene {
       return;
     }
     if (this.paused) {
-      this.updateSpeedTierUiFlash(dt);
       this.applyCameraTransform();
       return;
     }
@@ -1827,6 +1817,7 @@ export class PlayScene implements Scene {
     }
 
     this.restWallBounceAppliedThisFrame = false;
+    this.speedClock.tick(dt);
     this.syncSlidePhaseFromHudMeters();
     this.photoroomOscTimeMs += Math.max(0, ticker.deltaMS);
     this.grappleCooldown = Math.max(0, this.grappleCooldown - dt);
@@ -2119,7 +2110,6 @@ export class PlayScene implements Scene {
     /** Before camera scroll — otherwise auto-scroll outruns a fall into the disqualify row and stairs vanish off-screen. */
     this.checkFallGameOver();
     this.updateCamera(dt);
-    this.maybeAdvanceScrollSpeedTierFeedback();
     this.maybeRebaseWorldVerticalOrigin();
     this.clampPlayerToCameraViewport();
     if (!this.shouldPausePlatformGeneration()) {
@@ -2155,7 +2145,6 @@ export class PlayScene implements Scene {
     this.tickStressModeBgm();
     this.syncPlayerDepthRelativeToLava();
     this.drawDynamicWorld();
-    this.updateSpeedTierUiFlash(dt);
     this.updateScreenShake(dt);
     this.updateCameraJuice(dt);
     this.recomputeDerivedTotalScore();
@@ -2195,7 +2184,7 @@ export class PlayScene implements Scene {
     this.layoutPauseOverlay();
     this.layoutLogoutConfirmOverlay();
     this.gummyPopups?.layout(this.width, this.height);
-    this.redrawSpeedPulseOverlay();
+    this.speedClockHud?.layout(this.width, this.height, SPEED_CLOCK_HUD_X, SPEED_CLOCK_HUD_Y);
     this.uiLayer.sortChildren();
     this.input?.onResize();
 
@@ -2210,7 +2199,7 @@ export class PlayScene implements Scene {
       this.layoutAttackButton();
       this.layoutPauseOverlay();
       this.layoutLogoutConfirmOverlay();
-      this.redrawSpeedPulseOverlay();
+      this.speedClockHud?.layout(this.width, this.height, SPEED_CLOCK_HUD_X, SPEED_CLOCK_HUD_Y);
       this.clampEntitiesToWorldBounds();
       this.syncPlatformSpritesFromPlatforms();
       this.drawDynamicWorld();
@@ -3521,10 +3510,7 @@ export class PlayScene implements Scene {
     this.shakeOffsetY = 0;
     this.cameraJuiceY = 0;
     this.cameraJuiceVelY = 0;
-    this.velocityStressShakePhase = 0;
-    this.speedTierUiFlashTime = 0;
-    this.speedPulseGfx.visible = false;
-    this.speedPulseGfx.alpha = 1;
+    this.speedClock.reset();
     this.diamondShineSparks = [];
     this.level = 1;
     this.levelUpBannerTime = 0;
@@ -3574,7 +3560,7 @@ export class PlayScene implements Scene {
     this.collectibleHudBump = 0;
     this.collectibleHudRoot.scale.set(1);
     this.refreshCollectibleHudText();
-    this.syncScrollSpeedTierBaseline();
+    this.speedClockHud?.syncFromClock();
     if (opts?.pickNewBgm === true) {
       this.startBackgroundMusic();
     }
@@ -4961,19 +4947,6 @@ export class PlayScene implements Scene {
       oy += (Math.random() - 0.5) * 2 * mag;
     }
 
-    const scrollMult = this.getAltitudeSpeedMultiplier();
-    if (scrollMult >= ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD) {
-      const over = scrollMult - ALTITUDE_STRESS_SHAKE_MULT_THRESHOLD;
-      const ramp = Math.min(1, over / 6);
-      const stressMag = 1.2 + ramp * 6.5;
-      this.velocityStressShakePhase += dt * (11 + scrollMult * 2.4);
-      const ph = this.velocityStressShakePhase;
-      ox += Math.sin(ph * 2.08) * stressMag * 0.52;
-      oy += Math.cos(ph * 1.66) * stressMag * 0.42;
-      ox += (Math.random() - 0.5) * stressMag * 0.34;
-      oy += (Math.random() - 0.5) * stressMag * 0.34;
-    }
-
     this.shakeOffsetX = ox;
     this.shakeOffsetY = oy;
     this.applyCameraTransform();
@@ -5396,7 +5369,7 @@ export class PlayScene implements Scene {
   /**
    * Best scored landing altitude in the same HUD “m” units as {@link getHudClimbMeters} (see {@link getPlatformMeters}).
    * When auto-scroll + camera follow keep the player body’s Y in a narrow band, raw climb-from-body can plateau even
-   * though {@link lastScoredLandWorldTopY} keeps moving up — use this so SPD / peak height track real progress.
+   * though {@link lastScoredLandWorldTopY} keeps moving up — use this for peak height / scoring.
    */
   private getBestLandedClimbMeters(): number {
     if (this.lastScoredLandWorldTopY === Number.POSITIVE_INFINITY) {
@@ -5408,83 +5381,25 @@ export class PlayScene implements Scene {
     );
   }
 
-  /**
-   * Scroll / difficulty: linear ×1 → ×{@link SCROLL_SPEED_MAX_MULT} from warmup to 10k m (HUD climb).
-   */
-  private getAltitudeSpeedMultiplier(): number {
-    const m = Math.max(
-      this.getHudClimbMeters(),
-      this.peakClimbMetersThisRun,
-      this.getBestLandedClimbMeters(),
-    );
-    if (m <= SCROLL_SPEED_WARMUP_METERS) {
-      return 1;
-    }
-    const rampSpan = Math.max(1, SCROLL_SPEED_RAMP_END_METERS - SCROLL_SPEED_WARMUP_METERS);
-    const effM = Math.min(m - SCROLL_SPEED_WARMUP_METERS, rampSpan);
-    return 1 + (SCROLL_SPEED_MAX_MULT - 1) * (effM / rampSpan);
+  /** Global run-speed multiplier from the 30s speed clock (×1 … ×5). */
+  private getRunSpeedMultiplier(): number {
+    return this.speedClock.getMultiplier();
   }
 
   private getCameraScrollSpeedPx(): number {
-    return AUTO_SCROLL_BASE_SPEED_PX * this.getAltitudeSpeedMultiplier();
+    return AUTO_SCROLL_BASE_SPEED_PX * this.getRunSpeedMultiplier();
   }
 
-  /** Tier index for speed feedback; tracks whole {@link SCROLL_SPEED_STEP_DELTA} steps above ×1. */
-  private getScrollSpeedTier(): number {
-    const mult = this.getAltitudeSpeedMultiplier();
-    if (mult <= 1.0001) {
-      return 0;
-    }
-    return Math.floor((mult - 1) / SCROLL_SPEED_STEP_DELTA);
-  }
-
-  private syncScrollSpeedTierBaseline(): void {
-    this.lastScrollSpeedTier = this.getScrollSpeedTier();
-  }
-
-  private maybeAdvanceScrollSpeedTierFeedback(): void {
-    const tier = this.getScrollSpeedTier();
-    if (tier > this.lastScrollSpeedTier) {
-      this.lastScrollSpeedTier = tier;
-      if (tier > 0) {
-        this.shakeTime = Math.max(this.shakeTime, SPEED_TIER_SHAKE_SEC);
-        // Full-screen tier pulse removed — read as random white flashes / “cancelled overlay” on scroll.
-      }
-    }
-  }
-
-  private redrawSpeedPulseOverlay(): void {
-    const g = this.speedPulseGfx;
-    g.clear();
-    g.rect(0, 0, this.width, this.height).fill({
-      color: SPEED_TIER_PULSE_COLOR,
-      alpha: SPEED_TIER_PULSE_FILL_ALPHA,
-    });
-  }
-
-  private updateSpeedTierUiFlash(dt: number): void {
-    if (this.speedTierUiFlashTime <= 0 || !this.speedPulseGfx.visible) {
-      return;
-    }
-    this.speedTierUiFlashTime -= dt;
-    const u = Math.max(0, this.speedTierUiFlashTime / SPEED_TIER_UI_FLASH_SEC);
-    this.speedPulseGfx.alpha = u * 0.95;
-    if (this.speedTierUiFlashTime <= 0) {
-      this.speedPulseGfx.visible = false;
-      this.speedPulseGfx.alpha = 1;
-    }
-  }
-
-  /** Level-based horizontal stair drift before altitude scaling. */
+  /** Level-based horizontal stair drift before run-speed scaling. */
   private getLevelScrollSpeedPx(): number {
     return LEVEL_PLATFORM_SPEED_BASE + this.level * LEVEL_PLATFORM_SPEED_PER_LEVEL;
   }
 
   /**
-   * Effective platform drift speed (px/s): scales with climb height (same multiplier as camera scroll).
+   * Effective platform drift speed (px/s): scales with the run-speed clock (same multiplier as camera scroll).
    */
   private getBaseScrollSpeedPx(): number {
-    return this.getLevelScrollSpeedPx() * this.getAltitudeSpeedMultiplier();
+    return this.getLevelScrollSpeedPx() * this.getRunSpeedMultiplier();
   }
 
   private drawStaticWorld(): void {
@@ -5646,9 +5561,8 @@ export class PlayScene implements Scene {
 
   private refreshClimbHudText(): void {
     if (this.climbHudText) {
-      const mult = this.getAltitudeSpeedMultiplier();
       const mApprox = Math.round(this.getClimbHeightPx() / 12);
-      this.climbHudText.text = `${mApprox}M  |  SPD x${mult.toFixed(2)}`;
+      this.climbHudText.text = `${mApprox}M`;
     }
   }
 
@@ -5715,6 +5629,13 @@ export class PlayScene implements Scene {
     this.gummyPopups.zIndex = 1185;
     this.uiLayer.addChild(this.gummyPopups);
     this.gummyPopups.layout(this.width, this.height);
+  }
+
+  private setupSpeedClockHud(): void {
+    this.speedClockHud = new SpeedClockHud(this.speedClock);
+    this.speedClockHud.zIndex = 1006;
+    this.uiLayer.addChild(this.speedClockHud);
+    this.speedClockHud.layout(this.width, this.height, SPEED_CLOCK_HUD_X, SPEED_CLOCK_HUD_Y);
   }
 
   private setupSkillFallbackButtons(): void {
@@ -8335,14 +8256,6 @@ export class PlayScene implements Scene {
     return true;
   }
 
-  private setupSpeedTierPulseOverlay(): void {
-    this.speedPulseGfx.eventMode = 'none';
-    this.speedPulseGfx.visible = false;
-    this.speedPulseGfx.zIndex = 1105;
-    this.uiLayer.addChild(this.speedPulseGfx);
-    this.redrawSpeedPulseOverlay();
-  }
-
   private syncHeaderPauseHudLayer(): void {
     // Keep the pause coin tappable above the dim overlay so a second tap resumes.
     this.headerPauseRoot.zIndex = this.paused ? HEADER_PAUSE_BTN_Z_INDEX_PAUSED : HEADER_PAUSE_BTN_Z_INDEX;
@@ -8535,9 +8448,6 @@ export class PlayScene implements Scene {
     this.sfx.endWallSlideLoop();
     this.wallSlideFasciaSfxStreamingMemo = false;
     this.peakComboThisRun = Math.max(this.peakComboThisRun, this.comboCount);
-    this.speedTierUiFlashTime = 0;
-    this.speedPulseGfx.visible = false;
-    this.speedPulseGfx.alpha = 1;
     this.paused = false;
     this.pauseOverlay.visible = false;
     this.headerPauseRoot.visible = false;
@@ -8835,8 +8745,8 @@ export class PlayScene implements Scene {
   }
 
   private spawnWindParticlesForAltitude(dt: number): void {
-    const mult = this.getAltitudeSpeedMultiplier();
-    if (mult <= 1.001 || this.windParticles.length >= ALTITUDE_WIND_MAX_PARTICLES) {
+    const mult = this.getRunSpeedMultiplier();
+    if (mult < WIND_PARTICLES_MIN_SPEED_TIER || this.windParticles.length >= ALTITUDE_WIND_MAX_PARTICLES) {
       return;
     }
     this.windSpawnAcc += dt * (mult - 1) * 12;
