@@ -194,7 +194,29 @@ type SfxId =
   | 'collect_diamond'
   | 'player_land'
   | 'super_jump_woohoo'
-  | 'wall_slide';
+  | 'wall_slide'
+  | 'mobi_ready'
+  | 'come_on_last_jump'
+  | 'holy_sweet'
+  | 'magic_jump'
+  | 'ohhhh_whooo_whooo'
+  | 'dont_give_up_now'
+  | 'hmmm_candy'
+  | 'gonna_grab_them_all'
+  | 'higher_you_get_sweeter_you_get';
+
+/** Super Jump mobi lines — exactly one per mega jump launch, rotated in order. */
+const SUPER_JUMP_VOICE_ROTATION: readonly SfxId[] = [
+  'super_jump_woohoo',
+  'ohhhh_whooo_whooo',
+  'magic_jump',
+];
+
+/** Side gummy collect mobi lines — one per bear eaten, rotated in order. */
+const GUMMY_COLLECT_VOICE_ROTATION: readonly SfxId[] = [
+  'hmmm_candy',
+  'gonna_grab_them_all',
+];
 
 /** Remote clips when `public/audio/<name>.*` is missing (see `SFX_LOCAL`). */
 const SFX_REMOTE: Record<SfxId, string> = {
@@ -208,9 +230,18 @@ const SFX_REMOTE: Record<SfxId, string> = {
   player_land:
     'https://assets.mixkit.co/active_storage/sfx/2070/2070-preview.mp3',
   super_jump_woohoo:
-    'https://assets.mixkit.co/active_storage/sfx/2019/2019-preview.mp3',
+    `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhh weee.mp3')}`,
   wall_slide:
     'https://assets.mixkit.co/active_storage/sfx/705/705-preview.mp3',
+  mobi_ready: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('mobi ready.mp3')}`,
+  come_on_last_jump: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('come on last jump.mp3')}`,
+  holy_sweet: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('holy sweet.mp3')}`,
+  magic_jump: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('magic jump.mp3')}`,
+  ohhhh_whooo_whooo: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhhh whooo whooo.mp3')}`,
+  dont_give_up_now: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('dont give up now.mp3')}`,
+  hmmm_candy: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('hmmm candy.mp3')}`,
+  gonna_grab_them_all: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('gonna grab them all.mp3')}`,
+  higher_you_get_sweeter_you_get: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('highr you get sweeter you get.mp3')}`,
 };
 
 /** Game binaries live in `public/assets/` and grouped subfolders. */
@@ -379,6 +410,8 @@ const BGM_FALLBACK_URL = `${GAME_MUSIC_DIR_URL}/${encodeURIComponent('Gummy Moon
 const STRESS_MODE_BGM_URL = `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/${encodeURIComponent('stress mode.m4a')}`;
 const ENABLE_STRESS_MODE_BGM = false;
 const ENABLE_WALL_SLIDE_LOOP_SFX = false;
+const ENABLE_COME_ON_LAST_JUMP_VOICE = false;
+const ENABLE_SPEED_CLOCK_HUD = false;
 const REST_FLOOR_HOUSE_CANDIDATES = [
   `${GAME_ASSETS}/house/isohome.png.png`,
   `${GAME_ASSETS}/house/${encodeURIComponent('House 1.png')}`,
@@ -405,9 +438,18 @@ const SFX_LOCAL: Record<SfxId, string> = {
   collect_coin: `${import.meta.env.BASE_URL}audio/collect_coin.mp3`,
   collect_diamond: `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/diamond_collect.mp3`,
   player_land: `${import.meta.env.BASE_URL}audio/player_land.mp3`,
-  super_jump_woohoo: `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/woohoohoo.mp3`,
+  super_jump_woohoo: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhh weee.mp3')}`,
   /** לולאת גלידה — `public/assets/sound effect/slide 2.m4a` */
   wall_slide: `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/${encodeURIComponent('slide 2.m4a')}`,
+  mobi_ready: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('mobi ready.mp3')}`,
+  come_on_last_jump: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('come on last jump.mp3')}`,
+  holy_sweet: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('holy sweet.mp3')}`,
+  magic_jump: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('magic jump.mp3')}`,
+  ohhhh_whooo_whooo: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhhh whooo whooo.mp3')}`,
+  dont_give_up_now: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('dont give up now.mp3')}`,
+  hmmm_candy: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('hmmm candy.mp3')}`,
+  gonna_grab_them_all: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('gonna grab them all.mp3')}`,
+  higher_you_get_sweeter_you_get: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('highr you get sweeter you get.mp3')}`,
 };
 
 /**
@@ -547,6 +589,9 @@ class PlaySceneSfx {
 
   private readonly prototypes = new Map<SfxId, HTMLAudioElement>();
   private master = 0.42;
+  /** Serialized mobi voice lines — never stack (queue drains one clip at a time). */
+  private mobiVoiceActive: HTMLAudioElement | null = null;
+  private mobiVoiceQueue: Array<{ id: SfxId; volume: number }> = [];
   /** Dedicated loop clip — analogous to Phaser `sound.add('slide', { loop: true, volume: 0.5 })`. */
   private wallSlideLoop: HTMLAudioElement | null = null;
   /** Boost vs one-shots × {@link master} — capped inside {@link refreshWallSlideLoopVolume}. */
@@ -609,6 +654,49 @@ class PlaySceneSfx {
     });
   }
 
+  /** Mobi voice lines share one channel — queued so clips never overlap. */
+  playMobiVoice(id: SfxId, volume = 1): void {
+    this.mobiVoiceQueue.push({ id, volume });
+    this.drainMobiVoiceQueue();
+  }
+
+  resetMobiVoice(): void {
+    this.mobiVoiceQueue.length = 0;
+    if (this.mobiVoiceActive) {
+      this.mobiVoiceActive.pause();
+      this.mobiVoiceActive.currentTime = 0;
+      this.mobiVoiceActive = null;
+    }
+  }
+
+  private drainMobiVoiceQueue(): void {
+    if (this.mobiVoiceActive) {
+      return;
+    }
+    const next = this.mobiVoiceQueue.shift();
+    if (!next) {
+      return;
+    }
+    const template = this.prototypes.get(next.id);
+    if (!template?.src) {
+      this.drainMobiVoiceQueue();
+      return;
+    }
+    const clip = template.cloneNode(true) as HTMLAudioElement;
+    clip.volume = Math.max(0, Math.min(1, next.volume * this.master));
+    this.mobiVoiceActive = clip;
+    const onDone = (): void => {
+      if (this.mobiVoiceActive !== clip) {
+        return;
+      }
+      this.mobiVoiceActive = null;
+      this.drainMobiVoiceQueue();
+    };
+    clip.addEventListener('ended', onDone, { once: true });
+    clip.addEventListener('error', onDone, { once: true });
+    void clip.play().catch(onDone);
+  }
+
   private initWallSlideLoopFromPrototype(): void {
     const proto = this.prototypes.get('wall_slide');
     const src = proto?.currentSrc || proto?.src;
@@ -667,6 +755,7 @@ class PlaySceneSfx {
 
   dispose(): void {
     this.endWallSlideLoop();
+    this.resetMobiVoice();
     if (this.wallSlideLoop) {
       this.wallSlideLoop.removeAttribute('src');
       this.wallSlideLoop.load();
@@ -702,7 +791,7 @@ const MENU_SKY_DROP_FALL_VIEWPORT_RATIO = 0.82;
 const AUTO_SCROLL_BASE_SPEED_PX = 120;
 /** Speed clock HUD — upper-left, below combo row (tweak after playtest). */
 const SPEED_CLOCK_HUD_X = 14;
-const SPEED_CLOCK_HUD_Y = 118;
+const SPEED_CLOCK_HUD_Y = 108;
 /** Wind streaks appear once the run-speed clock reaches this tier. */
 const WIND_PARTICLES_MIN_SPEED_TIER = 2;
 const PAUSE_RESUME_BTN_MIN_H = 64;
@@ -816,6 +905,8 @@ const VIEWPORT_SAFE_MARGIN_SCREEN_PX = 40;
 /** When true, stairs spawn in a band around the player (world X) so they stay on-screen on mobile. */
 const MOBILE_NARROW_UI_MAX_W = 520;
 const REST_FLOOR_INTERVAL_METERS = 1000;
+/** Mobi voice at each 5000 m climb milestone (5000, 10000, 15000…). */
+const HIGHER_YOU_GET_VOICE_INTERVAL_METERS = 5000;
 const REST_FLOOR_MONSTER_CLEAR_METERS = 100;
 const REST_FLOOR_RESUME_ABOVE_PX = 50;
 const REST_FLOOR_TILE_PX = 64;
@@ -946,9 +1037,9 @@ const SKILL_PULL_UP_NUDGE_LEFT_PX = 14;
 /** Gap below meters/speed row (screen px, before `skillPairRoot` scale). */
 const SKILL_PAIR_BELOW_CLIMB_GAP_PX = 6;
 /** Nudge skill pair left under the meters/speed HUD (screen px). */
-const SKILL_PAIR_SHIFT_LEFT_PX = 28;
+const SKILL_PAIR_SHIFT_LEFT_PX = 12;
 /** Uniform scale on `skillPairRoot` — keep at 1 to preserve PNG sharpness. */
-const PULL_UP_BTN_SCALE = 1;
+const PULL_UP_BTN_SCALE = 0.85;
 /** Legacy vector fallback when the PNG sheet fails to load. */
 const SKILL_FALLBACK_BTN_W = 152;
 const SKILL_FALLBACK_BTN_H = 44;
@@ -1049,6 +1140,12 @@ export class PlayScene implements Scene {
   private menuSkyDropIntroStartY = 0;
   private menuSkyDropIntroTargetY = 0;
   private gameplayUnlocked = true;
+  /** One-shot voice when the player first steers at run start. */
+  private mobiReadyVoicePlayed = false;
+  private comeOnLastJumpVoicePlayed = false;
+  private superJumpVoiceRotationIndex = 0;
+  private gummyCollectVoiceRotationIndex = 0;
+  private mobiIntroFollowupVoiceTimeout: ReturnType<typeof setTimeout> | null = null;
   /** Run-start spawn resolved — gravity/physics stay off until this is true. */
   private initialFloorConfirmed = false;
   /** Guards duplicate spawn bootstrap within the same reset pass. */
@@ -1333,6 +1430,8 @@ export class PlayScene implements Scene {
   private collectibles: Collectible[] = [];
   /** Last-milestone sweep (⌊max climb m / 1000⌋) — see {@link maybeRunPeriodicPoolMaintenance}. */
   private lastPoolSweepKmBand = -1;
+  /** Last 5000 m voice band played — see {@link maybePlayHigherYouGetSweetVoiceAtMilestone}. */
+  private lastHigherYouGetSweetVoiceBand = 0;
   private goldCount = 0;
   private diamondCount = 0;
   private runGoldCollected = 0;
@@ -1760,7 +1859,7 @@ export class PlayScene implements Scene {
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
     this.gummyPopups?.tick(dt);
-    this.speedClockHud?.syncFromClock();
+    this.speedClockHud?.tick(dt);
     this.tickTouchStaleLockWatch();
     this.updateHeaderPauseButtonFx(dt);
     if (this.gameOver) {
@@ -1898,6 +1997,7 @@ export class PlayScene implements Scene {
     }
 
     const axis = this.input?.getHorizontalAxis() ?? 0;
+    this.maybePlayMobiReadyOnFirstMove(axis);
     const pulling =
       this.grapple?.phase === 'pull' && this.grapple.targetKind !== 'gummy';
     const axisScale = pulling ? 0 : 1;
@@ -2116,6 +2216,7 @@ export class PlayScene implements Scene {
       this.recycleStairsOffscreen();
     }
     this.maybeRunPeriodicPoolMaintenance();
+    this.maybePlayHigherYouGetSweetVoiceAtMilestone();
     this.cullDisposableWorldFarBelowViewport();
     this.syncPlatformSpritesFromPlatforms();
     this.updateRipples(dt);
@@ -2213,6 +2314,7 @@ export class PlayScene implements Scene {
   }
 
   destroy(): void {
+    this.clearMobiIntroFollowupVoiceTimeout();
     this.clearWallColliderRestoreTimeout();
     this.app?.stage.off('pointermove', this.handleStatusPanelBagPointerMove);
     this.app?.stage.off('pointerup', this.handleStatusPanelBagPointerUp);
@@ -2308,6 +2410,54 @@ export class PlayScene implements Scene {
   }
 
   /** Side gummy tongue — always available during gameplay (independent of skill pair). */
+  private maybePlayMobiReadyOnFirstMove(axis: number): void {
+    if (
+      this.mobiReadyVoicePlayed ||
+      !this.gameplayUnlocked ||
+      this.gameOver ||
+      this.paused ||
+      !this.initialFloorConfirmed
+    ) {
+      return;
+    }
+    if (Math.abs(axis) <= 0.12) {
+      return;
+    }
+    this.mobiReadyVoicePlayed = true;
+    this.sfx.playMobiVoice('mobi_ready', 1);
+    if (ENABLE_COME_ON_LAST_JUMP_VOICE) {
+      this.scheduleComeOnLastJumpVoice();
+    }
+  }
+
+  private clearMobiIntroFollowupVoiceTimeout(): void {
+    if (this.mobiIntroFollowupVoiceTimeout !== null) {
+      clearTimeout(this.mobiIntroFollowupVoiceTimeout);
+      this.mobiIntroFollowupVoiceTimeout = null;
+    }
+  }
+
+  /** 3s after {@link maybePlayMobiReadyOnFirstMove} — one-shot run intro line. */
+  private scheduleComeOnLastJumpVoice(): void {
+    if (!ENABLE_COME_ON_LAST_JUMP_VOICE || this.comeOnLastJumpVoicePlayed) {
+      return;
+    }
+    this.clearMobiIntroFollowupVoiceTimeout();
+    this.mobiIntroFollowupVoiceTimeout = setTimeout(() => {
+      this.mobiIntroFollowupVoiceTimeout = null;
+      if (
+        this.comeOnLastJumpVoicePlayed ||
+        !this.gameplayActive ||
+        this.gameOver ||
+        !this.gameplayUnlocked
+      ) {
+        return;
+      }
+      this.comeOnLastJumpVoicePlayed = true;
+      this.sfx.playMobiVoice('come_on_last_jump', 1);
+    }, 3000);
+  }
+
   private isGummyGrapple(grapple: ActiveGrapple | null | undefined): boolean {
     return grapple?.targetKind === 'gummy';
   }
@@ -2559,7 +2709,7 @@ export class PlayScene implements Scene {
    * On `comboCount >= 2` we play the combo synth + bump the badge (word tier rises every
    * `COMBO.jumpsPerWord` counted jumps in `game.config`).
    */
-  private registerComboJump(opts?: { skipClimbCheck?: boolean }): void {
+  private registerComboJump(opts?: { skipClimbCheck?: boolean; skipMobiVoice?: boolean }): void {
     const currentY = this.player.body.y;
     const withinWindow =
       this.runTime - this.comboLastJumpTime <= COMBO_CHAIN_WINDOW_SEC;
@@ -2587,10 +2737,21 @@ export class PlayScene implements Scene {
       this.comboSynth?.resume();
       this.comboSynth?.play(wordTier);
     }
+    if (!opts?.skipMobiVoice) {
+      this.maybePlayHolySweetComboVoice();
+    }
+  }
+
+  /** Mobi voice at each unbroken 15-combo milestone (15, 30, 45…). */
+  private maybePlayHolySweetComboVoice(): void {
+    if (this.comboCount >= COMBO_GLOW_STREAK && this.comboCount % COMBO_GLOW_STREAK === 0) {
+      this.sfx.playMobiVoice('holy_sweet', 1);
+    }
   }
 
   /** Side gummy reel-in — combo step only; does not touch skill pair state. */
   private onGummyBearCollected(bearIndex: number | null): void {
+    this.playNextGummyCollectVoice();
     this.comboLastJumpTime = this.runTime;
     if (this.comboCount <= 0) {
       this.comboCount = 1;
@@ -2603,6 +2764,7 @@ export class PlayScene implements Scene {
       this.comboSynth?.resume();
       this.comboSynth?.play(wordTier);
     }
+    this.maybePlayHolySweetComboVoice();
 
     if (bearIndex === null) {
       return;
@@ -2706,6 +2868,20 @@ export class PlayScene implements Scene {
     }
   }
 
+  private playNextSuperJumpVoice(volume = 0.95): void {
+    const id = SUPER_JUMP_VOICE_ROTATION[this.superJumpVoiceRotationIndex]!;
+    this.superJumpVoiceRotationIndex =
+      (this.superJumpVoiceRotationIndex + 1) % SUPER_JUMP_VOICE_ROTATION.length;
+    this.sfx.playMobiVoice(id, volume);
+  }
+
+  private playNextGummyCollectVoice(volume = 0.95): void {
+    const id = GUMMY_COLLECT_VOICE_ROTATION[this.gummyCollectVoiceRotationIndex]!;
+    this.gummyCollectVoiceRotationIndex =
+      (this.gummyCollectVoiceRotationIndex + 1) % GUMMY_COLLECT_VOICE_ROTATION.length;
+    this.sfx.playMobiVoice(id, volume);
+  }
+
   /** One combo step from riding the viewport fascia elevator (paced by {@link FACIA_WALL_SLIDE_COMBO_STEP_INTERVAL_SEC}). */
   private incrementComboForViewportFasciaSlideAscend(): void {
     this.comboCount += 1;
@@ -2717,6 +2893,7 @@ export class PlayScene implements Scene {
       this.comboSynth?.resume();
       this.comboSynth?.play(wordTier);
     }
+    this.maybePlayHolySweetComboVoice();
   }
 
   /**
@@ -3497,6 +3674,13 @@ export class PlayScene implements Scene {
     this.setSkillPairAvailable(false);
     this.superTongueBuffTime = 0;
     this.jumpBufferTimeLeft = 0;
+    this.clearMobiIntroFollowupVoiceTimeout();
+    this.mobiReadyVoicePlayed = false;
+    this.comeOnLastJumpVoicePlayed = false;
+    this.superJumpVoiceRotationIndex = 0;
+    this.gummyCollectVoiceRotationIndex = 0;
+    this.lastHigherYouGetSweetVoiceBand = 0;
+    this.sfx.resetMobiVoice();
     this.runTime = 0;
     this.menuSkyDropIntroActive = false;
     this.menuSkyDropIntroElapsedSec = 0;
@@ -3571,7 +3755,7 @@ export class PlayScene implements Scene {
     this.collectibleHudBump = 0;
     this.collectibleHudRoot.scale.set(1);
     this.refreshCollectibleHudText();
-    this.speedClockHud?.syncFromClock();
+    this.speedClockHud?.tick(0);
     if (opts?.pickNewBgm === true) {
       this.startBackgroundMusic();
     }
@@ -3605,6 +3789,7 @@ export class PlayScene implements Scene {
   }
 
   private performShieldSuperLaunch(): void {
+    this.sfx.playMobiVoice('dont_give_up_now', 1);
     this.grapple = null;
     this.grappleCooldown = 0;
     this.grappleReleaseDampingLeft = 0;
@@ -4035,6 +4220,19 @@ export class PlayScene implements Scene {
       this.comboSuperJumpParticles = this.comboSuperJumpParticles.slice(
         -MAX_COMBO_SUPER_JUMP_PARTICLES_AFTER_CLEANUP,
       );
+    }
+  }
+
+  /** Mobi voice each time HUD climb crosses 5000, 10000, 15000 m… */
+  private maybePlayHigherYouGetSweetVoiceAtMilestone(): void {
+    const meters = this.getHudScoreboardDisplayMeters();
+    const band = Math.floor(meters / HIGHER_YOU_GET_VOICE_INTERVAL_METERS);
+    if (band <= this.lastHigherYouGetSweetVoiceBand) {
+      return;
+    }
+    this.lastHigherYouGetSweetVoiceBand = band;
+    if (band >= 1) {
+      this.sfx.playMobiVoice('higher_you_get_sweeter_you_get', 1);
     }
   }
 
@@ -5580,8 +5778,9 @@ export class PlayScene implements Scene {
 
   private refreshClimbHudText(): void {
     if (this.climbHudText) {
+      const mult = this.getRunSpeedMultiplier();
       const mApprox = Math.round(this.getClimbHeightPx() / 12);
-      this.climbHudText.text = `${mApprox}M`;
+      this.climbHudText.text = `${mApprox}M  |  SPD x${mult.toFixed(2)}`;
     }
   }
 
@@ -5651,6 +5850,9 @@ export class PlayScene implements Scene {
   }
 
   private setupSpeedClockHud(): void {
+    if (!ENABLE_SPEED_CLOCK_HUD) {
+      return;
+    }
     this.speedClockHud = new SpeedClockHud(this.speedClock);
     this.speedClockHud.zIndex = 1006;
     this.uiLayer.addChild(this.speedClockHud);
@@ -6023,6 +6225,7 @@ export class PlayScene implements Scene {
     const wordTier = comboStreakToWordTier(this.comboCount);
     this.comboBadge?.bumpTo(this.comboCount);
     this.comboSynth?.play(wordTier);
+    this.maybePlayHolySweetComboVoice();
     /** Mid-air shake + camera punch makes the moment feel earned. */
     this.shakeTime = Math.max(this.shakeTime, 0.18);
     this.skillPullUpSpent = true;
@@ -6057,14 +6260,13 @@ export class PlayScene implements Scene {
     this.physics.jump(this.player.body);
     this.player.body.vy *= SUPER_JUMP_VY_SCALE;
     this.jumpCount += 1;
-    this.sfx.play('super_jump_woohoo', 0.9);
 
     /**
      * Combo registration must run **before** mega-jump stair tracking: a cold chain calls
      * {@link breakCombo}, which clears {@link superJumpStairTrackActive} / {@link superJumpCrossedStairIds}
      * / {@link megaJumpReanchorComboOnLanding}. Those flags are set immediately after.
      */
-    this.registerComboJump({ skipClimbCheck: true });
+    this.registerComboJump({ skipClimbCheck: true, skipMobiVoice: true });
 
     this.superJumpCrossedStairIds.clear();
     if (launchPlatform) {
@@ -6072,6 +6274,7 @@ export class PlayScene implements Scene {
     }
     this.superJumpStairTrackActive = true;
     this.megaJumpReanchorComboOnLanding = true;
+    this.playNextSuperJumpVoice();
 
     if (chained) {
       this.maybeTriggerScreenShake(Math.min(10, 2 + Math.floor(this.comboCount / 4)));

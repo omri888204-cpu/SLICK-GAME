@@ -28,6 +28,24 @@ export class RunSpeedClock {
     return (cycleT / RUN_SPEED_CLOCK_CYCLE_SEC) * Math.PI * 2 - Math.PI / 2;
   }
 
+  /** Seconds left in the current 30s cycle (30 → 0). */
+  get cycleRemainingSec(): number {
+    const mod = this.elapsedSec % RUN_SPEED_CLOCK_CYCLE_SEC;
+    if (mod <= 0 && this.elapsedSec <= 0) {
+      return RUN_SPEED_CLOCK_CYCLE_SEC;
+    }
+    return RUN_SPEED_CLOCK_CYCLE_SEC - mod;
+  }
+
+  /** Integer HUD countdown — 30 at cycle start, 1 in the last second. */
+  get countdownSeconds(): number {
+    const rem = this.cycleRemainingSec;
+    if (rem >= RUN_SPEED_CLOCK_CYCLE_SEC - 0.05) {
+      return RUN_SPEED_CLOCK_CYCLE_SEC;
+    }
+    return Math.max(1, Math.ceil(rem - 0.001));
+  }
+
   /** Remaining tier-up pulse animation time (seconds). */
   get tierPulseRemainingSec(): number {
     return this.tierPulseSec;
