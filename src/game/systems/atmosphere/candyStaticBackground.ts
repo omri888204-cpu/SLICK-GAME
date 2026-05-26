@@ -25,8 +25,6 @@ export const BACKGROUND_TIER_SWITCH_METERS = 5000;
 export const BACKGROUND_TIER_2_SWITCH_METERS = 10000;
 /** @deprecated Use {@link BACKGROUND_TIER_2_SWITCH_METERS}. */
 export const FRONT_WALL_TIER_2_SWITCH_METERS = BACKGROUND_TIER_2_SWITCH_METERS;
-/** loop wall 2 — foreground side walls below {@link BACKGROUND_TIER_SWITCH_METERS}. */
-export const CANDY_LAYER3_FRONT_URL = layerAssetUrl('loop wall 2.png');
 /** 5000 wall — foreground side walls [5000, {@link BACKGROUND_TIER_2_SWITCH_METERS}) m. */
 export const CANDY_LAYER3_FRONT_HIGH_URL = layerAssetUrl('5000 wall.png');
 /** 10000 walls — foreground side walls from {@link BACKGROUND_TIER_2_SWITCH_METERS} upward. */
@@ -40,8 +38,10 @@ export const Z_FRONT = -35;
 /** Phaser ref: `tilePositionY -= 0.15` at 60 fps — sky ambient drift. */
 export const SKY_TILE_SCROLL_PX_PER_SEC = 0.15 * 60;
 
-/** Foreground walls drift upward slowly while the player climbs (camera parallax). */
+/** Foreground walls (5k+) drift upward slowly while the player climbs. */
 export const FRONT_WALL_CAMERA_PARALLAX = 0.32;
+/** Tiled side walls (`5000 wall`, `10000 walls`) — off for now. */
+export const ENABLE_CANDY_FRONT_WALLS = false;
 
 /** Portrait-first — logical aspect height / width. */
 export const PORTRAIT_MIN_ASPECT = 1.05;

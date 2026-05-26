@@ -339,7 +339,7 @@ const BG_Z_TESET2_SPRITE = -20;
 const BG_Z_TESET1_SPRITE = -10;
 /** Only Photoroom stack + fill — skip altitude tier parallax (set `false` to restore `BACKGROUND_TIERS`). */
 const STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY = true;
-/** Static candy layers — `layer1/2` + `loop wall 2` + lightweight FX. */
+/** Static candy layers — sky + midground only (foreground walls disabled). */
 const USE_CANDY_STATIC_ATMOSPHERE = true;
 /** Legacy multi-layer parallax — disabled when static atmosphere is active. */
 const USE_CANDY_CANYON_PARALLAX = false;
