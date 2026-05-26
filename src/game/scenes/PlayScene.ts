@@ -2131,11 +2131,12 @@ export class PlayScene implements Scene {
      * and tint pulse. Streak ≥ 15 turns on both for the persistent "COSMIC+" visual reward.
      */
     const comboGlow = this.comboCount >= COMBO_GLOW_STREAK;
+    const animGrapple = this.isGummyGrapple(this.grapple) ? null : this.grapple;
     this.player.update(
       dt,
       axis,
       this.comboCount >= 2,
-      this.grapple,
+      animGrapple,
       comboGlow,
       this.fallShields > 0,
       wallSlideStreamForSfx,
@@ -2307,6 +2308,15 @@ export class PlayScene implements Scene {
   }
 
   /** Side gummy tongue — always available during gameplay (independent of skill pair). */
+  private isGummyGrapple(grapple: ActiveGrapple | null | undefined): boolean {
+    return grapple?.targetKind === 'gummy';
+  }
+
+  /** Platform pull locks movement/jump; side gummy collect runs in parallel with normal physics. */
+  private grappleBlocksJump(): boolean {
+    return this.grapple != null && !this.isGummyGrapple(this.grapple);
+  }
+
   private canCollectGummyWithTongue(): boolean {
     return (
       !this.grapple &&
@@ -2352,6 +2362,7 @@ export class PlayScene implements Scene {
       cameraY: this.cameraY,
       viewportH: this.worldHeightFromScreen(),
       cullBelowY: this.getCullBelowWorldY(),
+      climbBaselineY: this.climbBaselineY,
     };
   }
 
@@ -2461,7 +2472,7 @@ export class PlayScene implements Scene {
       !this.isSlidePhase ||
       landedThisFrame ||
       this.jumpBufferTimeLeft <= 0 ||
-      this.grapple ||
+      this.grappleBlocksJump() ||
       this.player.body.grounded ||
       !fasciaAssistSpec
     ) {
@@ -2513,7 +2524,7 @@ export class PlayScene implements Scene {
   }
 
   private triggerJumpAction(fromRightSwipe = false): boolean {
-    if (!this.player.body.grounded || !!this.grapple) {
+    if (!this.player.body.grounded || this.grappleBlocksJump()) {
       return false;
     }
     this.maybeEndFloor0IntroCameraFreeze();
@@ -4164,7 +4175,11 @@ export class PlayScene implements Scene {
     if (this.lastLandedPlatform !== null && !this.platforms.includes(this.lastLandedPlatform)) {
       this.lastLandedPlatform = restPlatform;
     }
-    if (this.grapple && !this.platforms.some((platform) => platform.stairId === this.grapple?.hookStairId)) {
+    if (
+      this.grapple &&
+      !this.isGummyGrapple(this.grapple) &&
+      !this.platforms.some((platform) => platform.stairId === this.grapple?.hookStairId)
+    ) {
       this.grapple = null;
     }
     this.rebuildPlatformSprites();
@@ -4207,7 +4222,11 @@ export class PlayScene implements Scene {
 
     this.currentGroundPlatform = null;
     this.lastLandedPlatform = restPlatform;
-    if (this.grapple && !this.platforms.some((platform) => platform.stairId === this.grapple?.hookStairId)) {
+    if (
+      this.grapple &&
+      !this.isGummyGrapple(this.grapple) &&
+      !this.platforms.some((platform) => platform.stairId === this.grapple?.hookStairId)
+    ) {
       this.grapple = null;
     }
     this.rebuildPlatformSprites();

@@ -5,21 +5,22 @@ import { tunedBloom } from '../../config/game.config';
 const GUMMY_SHEET_URL = `${import.meta.env.BASE_URL}assets/${encodeURIComponent('Player staff')}/gummy.png`;
 const GUMMY_BEAR_COUNT = 3;
 
-/** Keep 30% of prior density (70% fewer side bears). */
-const GUMMY_SPAWN_DENSITY = 0.3;
-const GAP_DENSITY_SCALE = 1 / GUMMY_SPAWN_DENSITY;
-/** Min vertical gap between gummies on the same side (world px). */
-const MIN_VERTICAL_GAP_PX = Math.round(220 * GAP_DENSITY_SCALE);
-const MAX_VERTICAL_GAP_PX = Math.round(460 * GAP_DENSITY_SCALE);
-/** How far above the camera top to pre-generate placements. */
-const GENERATE_AHEAD_PX = 5200;
+/** One left + one right per altitude band. */
+const GUMMY_BAND_METERS = 5000;
+const GUMMY_BEARS_PER_BAND = 2;
+/** HUD climb meters ↔ world Y (matches PlayScene). */
+const GUMMY_METERS_PER_PX = 12;
+/** Slow vertical drift along the fascia (world px). */
+const GUMMY_BAND_DRIFT_SPEED = 0.38;
+const GUMMY_BAND_DRIFT_AMPLITUDE_PX = 52;
+const GUMMY_BAND_METER_PAD = 240;
 /** Viewport padding for visibility culling. */
 const VIEW_CULL_PAD_PX = 280;
 /** Target sprite width on the fascia strip (world px) — +30% vs original 72. */
 const SIDE_DISPLAY_WIDTH_PX = Math.round(72 * 1.3);
 const GUMMY_SIDE_JITTER_X_FRAC = 0.18;
 /** Pull speed while tongue reels a bear toward the mouth (world px/s). */
-export const GUMMY_PULL_SPEED_PX_PER_SEC = 520;
+export const GUMMY_PULL_SPEED_PX_PER_SEC = 1040;
 /** Mouth proximity — bear vanishes inside this radius (world px). */
 export const GUMMY_COLLECT_RADIUS_PX = 50;
 /** Screen/world pick radius — generous so taps work while moving. */
@@ -30,9 +31,12 @@ type Side = 'left' | 'right';
 
 type GummyPlacement = {
   id: number;
+  /** Stable slot within a 5000 m band (left = 0, right = 1). */
+  bandKey: number;
   side: Side;
   bearIndex: number;
-  worldY: number;
+  baseWorldY: number;
+  driftPhase: number;
   displayScale: number;
   flipX: boolean;
   xJitter: number;
@@ -54,6 +58,8 @@ export type GummySideDecorPickLayout = {
   cameraY: number;
   viewportH: number;
   cullBelowY: number;
+  /** Floor-0 feet baseline — maps HUD meters to world Y. */
+  climbBaselineY: number;
 };
 
 export type GummySideDecorSync = GummySideDecorPickLayout & {
@@ -222,8 +228,7 @@ export class GummySideDecor {
   private loaded = false;
   private rng = mulberry32(0x67aa15);
   private nextPlacementId = 1;
-  /** Highest world Y (most skyward / smallest Y) that has placements. */
-  private generatedTopY = Number.POSITIVE_INFINITY;
+  private lastRunTimeSec = 0;
   private tapHandler: ((id: number, x: number, y: number) => void) | null = null;
 
   constructor() {
@@ -249,8 +254,8 @@ export class GummySideDecor {
   unload(): void {
     this.clearSprites();
     this.placements = [];
-    this.generatedTopY = Number.POSITIVE_INFINITY;
     this.nextPlacementId = 1;
+    this.lastRunTimeSec = 0;
     this.tapHandler = null;
     for (const tex of this.bearTextures) {
       tex.destroy();
@@ -259,14 +264,13 @@ export class GummySideDecor {
     this.loaded = false;
   }
 
-  /** Call at run start — seeds placements upward from the floor deck. */
-  reset(floorTopY: number, seed = Date.now() & 0xffffffff): void {
+  /** Call at run start — band placements are created lazily in {@link sync}. */
+  reset(_floorTopY: number, seed = Date.now() & 0xffffffff): void {
     this.clearSprites();
     this.placements = [];
     this.nextPlacementId = 1;
+    this.lastRunTimeSec = 0;
     this.rng = mulberry32(seed ^ 0x9e3779b9);
-    this.generatedTopY = floorTopY + 240;
-    this.extendPlacementsUpTo(floorTopY - GENERATE_AHEAD_PX);
   }
 
   shiftWorldY(deltaY: number): void {
@@ -274,13 +278,10 @@ export class GummySideDecor {
       return;
     }
     for (const p of this.placements) {
-      p.worldY += deltaY;
+      p.baseWorldY += deltaY;
       if (p.collecting) {
         p.collectY += deltaY;
       }
-    }
-    if (Number.isFinite(this.generatedTopY)) {
-      this.generatedTopY += deltaY;
     }
   }
 
@@ -357,17 +358,17 @@ export class GummySideDecor {
       if (placement.collected || placement.collecting) {
         continue;
       }
-      if (placement.worldY > layout.cullBelowY) {
+      const cy = this.getIdleWorldY(placement, this.lastRunTimeSec);
+      if (cy > layout.cullBelowY) {
         continue;
       }
-      if (placement.worldY < viewTop || placement.worldY > viewBottom) {
+      if (cy < viewTop || cy > viewBottom) {
         continue;
       }
 
       const baseX =
         placement.side === 'left' ? layout.leftCenterX : layout.rightCenterX;
       const cx = baseX + placement.xJitter * jitterSpan;
-      const cy = placement.worldY;
       const dist = Math.hypot(worldX - cx, worldY - cy);
       if (dist > GUMMY_PICK_RADIUS_PX) {
         continue;
@@ -392,20 +393,24 @@ export class GummySideDecor {
     const interactive = this.tapHandler != null;
 
     const viewTop = layout.cameraY - VIEW_CULL_PAD_PX;
-    this.extendPlacementsUpTo(viewTop - GENERATE_AHEAD_PX);
-
     const viewBottom = layout.cameraY + layout.viewportH + VIEW_CULL_PAD_PX;
     const runTimeSec = layout.runTimeSec ?? 0;
+    this.lastRunTimeSec = runTimeSec;
+
+    this.ensureBandPlacements(layout.climbBaselineY, viewTop, viewBottom);
+    this.pruneFarPlacements(layout.cullBelowY);
+
     let slotIdx = 0;
 
     for (const placement of this.placements) {
       if (placement.collected) {
         continue;
       }
-      if (placement.worldY > layout.cullBelowY && !placement.collecting) {
+      const idleY = this.getIdleWorldY(placement, runTimeSec);
+      if (idleY > layout.cullBelowY && !placement.collecting) {
         continue;
       }
-      if (!placement.collecting && (placement.worldY < viewTop || placement.worldY > viewBottom)) {
+      if (!placement.collecting && (idleY < viewTop || idleY > viewBottom)) {
         continue;
       }
 
@@ -422,7 +427,6 @@ export class GummySideDecor {
       const slabSpan = Math.abs(layout.rightCenterX - layout.leftCenterX);
       const jitterSpan = Math.max(12, slabSpan * GUMMY_SIDE_JITTER_X_FRAC);
       const idleX = baseX + placement.xJitter * jitterSpan;
-      const idleY = placement.worldY;
       const cx = placement.collecting ? placement.collectX : idleX;
       const cy = placement.collecting ? placement.collectY : idleY;
 
@@ -431,8 +435,8 @@ export class GummySideDecor {
 
       const breathe =
         1 +
-        0.045 *
-          Math.sin(runTimeSec * 2.5 + placement.id * 0.37 + placement.bearIndex * 0.9);
+        0.035 *
+          Math.sin(runTimeSec * 1.35 + placement.id * 0.37 + placement.bearIndex * 0.9);
       slot.wrap.scale.set(breathe);
 
       const baseScale = placement.displayScale;
@@ -441,7 +445,7 @@ export class GummySideDecor {
       slot.sprite.alpha = 1;
       slot.sprite.tint = 0xffffff;
 
-      const pulse = 0.5 + 0.5 * Math.sin(runTimeSec * 3.6 + placement.id * 0.71 + placement.bearIndex);
+      const pulse = 0.5 + 0.5 * Math.sin(runTimeSec * 2.1 + placement.id * 0.71 + placement.bearIndex);
       applyGummyGlowPulse(slot.glowFilter, slot.bloom, pulse, placement.flipX, baseScale);
 
       const canTap = interactive && !placement.collecting;
@@ -525,64 +529,89 @@ export class GummySideDecor {
     this.root.removeChildren();
   }
 
-  private extendPlacementsUpTo(targetTopY: number): void {
-    if (!this.isReady) {
-      return;
-    }
-    if (targetTopY >= this.generatedTopY) {
-      return;
-    }
-
-    for (const side of ['left', 'right'] as const) {
-      const sidePlacements = this.placements.filter((p) => p.side === side && !p.collected);
-      let lastY =
-        sidePlacements.length > 0
-          ? Math.min(...sidePlacements.map((p) => p.worldY))
-          : this.generatedTopY;
-      let y = lastY;
-
-      while (y > targetTopY) {
-        const gap =
-          MIN_VERTICAL_GAP_PX +
-          this.rng() * (MAX_VERTICAL_GAP_PX - MIN_VERTICAL_GAP_PX);
-        y -= gap;
-        if (y <= targetTopY) {
-          break;
-        }
-        if (Math.abs(y - lastY) < MIN_VERTICAL_GAP_PX * 0.85) {
-          continue;
-        }
-        lastY = y;
-        const bearIndex = this.placementBearIndex(side, y);
-        const tex = this.bearTextures[bearIndex];
-        if (!tex) {
-          continue;
-        }
-        const displayScale = SIDE_DISPLAY_WIDTH_PX / Math.max(1, tex.width);
-        const id = this.nextPlacementId;
-        this.nextPlacementId += 1;
-        this.placements.push({
-          id,
-          side,
-          bearIndex,
-          worldY: y,
-          displayScale,
-          flipX: side === 'right' && this.rng() < 0.42,
-          xJitter: (this.rng() - 0.5) * 2,
-          collected: false,
-          collecting: false,
-          collectX: 0,
-          collectY: 0,
-        });
-      }
-    }
-
-    this.generatedTopY = targetTopY;
+  private getIdleWorldY(placement: GummyPlacement, runTimeSec: number): number {
+    const drift =
+      Math.sin(runTimeSec * GUMMY_BAND_DRIFT_SPEED + placement.driftPhase) *
+      GUMMY_BAND_DRIFT_AMPLITUDE_PX;
+    return placement.baseWorldY + drift;
   }
 
-  /** Stable bear pick per side/Y — avoids clumping the same color. */
-  private placementBearIndex(side: Side, worldY: number): number {
-    const bucket = Math.floor(worldY / 97);
+  private metersToWorldY(climbBaselineY: number, meters: number): number {
+    return climbBaselineY - meters * GUMMY_METERS_PER_PX;
+  }
+
+  private worldYToMeters(climbBaselineY: number, worldY: number): number {
+    return (climbBaselineY - worldY) / GUMMY_METERS_PER_PX;
+  }
+
+  /** Lazily spawn one left + one right bear per visible 5000 m band. */
+  private ensureBandPlacements(climbBaselineY: number, viewTop: number, viewBottom: number): void {
+    const metersAtTop = this.worldYToMeters(climbBaselineY, viewTop);
+    const metersAtBottom = this.worldYToMeters(climbBaselineY, viewBottom);
+    const minM = Math.max(0, Math.min(metersAtTop, metersAtBottom) - GUMMY_BAND_METER_PAD);
+    const maxM = Math.max(metersAtTop, metersAtBottom) + GUMMY_BAND_METER_PAD;
+    const firstBand = Math.floor(minM / GUMMY_BAND_METERS);
+    const lastBand = Math.floor(maxM / GUMMY_BAND_METERS);
+
+    for (let band = firstBand; band <= lastBand; band += 1) {
+      for (let slot = 0; slot < GUMMY_BEARS_PER_BAND; slot += 1) {
+        this.ensureBandSlot(band, slot, climbBaselineY);
+      }
+    }
+  }
+
+  private ensureBandSlot(bandIndex: number, slotIndex: number, climbBaselineY: number): void {
+    const bandKey = bandIndex * GUMMY_BEARS_PER_BAND + slotIndex;
+    if (this.placements.some((p) => p.bandKey === bandKey)) {
+      return;
+    }
+
+    const side: Side = slotIndex === 0 ? 'left' : 'right';
+    const bandSeed = bandIndex * 9973 + slotIndex * 131;
+    const frac = this.seededUnit(bandSeed);
+    const meterSpan = GUMMY_BAND_METERS - GUMMY_BAND_METER_PAD * 2;
+    const meters = bandIndex * GUMMY_BAND_METERS + GUMMY_BAND_METER_PAD + frac * meterSpan;
+    const bearIndex = this.placementBearIndex(side, bandIndex * GUMMY_BAND_METERS + slotIndex * 1100);
+    const tex = this.bearTextures[bearIndex];
+    if (!tex) {
+      return;
+    }
+
+    const displayScale = SIDE_DISPLAY_WIDTH_PX / Math.max(1, tex.width);
+    const id = this.nextPlacementId;
+    this.nextPlacementId += 1;
+    this.placements.push({
+      id,
+      bandKey,
+      side,
+      bearIndex,
+      baseWorldY: this.metersToWorldY(climbBaselineY, meters),
+      driftPhase: this.seededUnit(bandSeed + 17) * Math.PI * 2,
+      displayScale,
+      flipX: side === 'right' && this.seededUnit(bandSeed + 29) < 0.42,
+      xJitter: (this.seededUnit(bandSeed + 41) - 0.5) * 2,
+      collected: false,
+      collecting: false,
+      collectX: 0,
+      collectY: 0,
+    });
+  }
+
+  private seededUnit(seed: number): number {
+    return mulberry32(seed ^ 0x5bd1e995)();
+  }
+
+  /** Drop collected slots far below the camera; keep active band pairs. */
+  private pruneFarPlacements(cullBelowY: number): void {
+    const keepPad = 3200;
+    this.placements = this.placements.filter(
+      (p) => !p.collected || p.baseWorldY <= cullBelowY + keepPad,
+    );
+  }
+
+  /** Stable bear pick per side/band — avoids clumping the same color. */
+  private placementBearIndex(side: Side, meterAnchor: number): number {
+    const bucket = Math.floor(meterAnchor / 97);
     const mix = side === 'left' ? 1 : 2;
     return Math.abs((bucket * 17 + mix * 31) % GUMMY_BEAR_COUNT);
   }
