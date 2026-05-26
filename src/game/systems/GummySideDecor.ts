@@ -1,4 +1,6 @@
-import { Assets, Container, FederatedPointerEvent, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
+import { Assets, Container, FederatedPointerEvent, Rectangle, Sprite, Texture } from 'pixi.js';
+import { GlowFilter } from 'pixi-filters';
+import { tunedBloom } from '../../config/game.config';
 
 const GUMMY_SHEET_URL = `${import.meta.env.BASE_URL}assets/${encodeURIComponent('Player staff')}/gummy.png`;
 const GUMMY_BEAR_COUNT = 3;
@@ -15,7 +17,6 @@ const GENERATE_AHEAD_PX = 5200;
 const VIEW_CULL_PAD_PX = 280;
 /** Target sprite width on the fascia strip (world px) — +30% vs original 72. */
 const SIDE_DISPLAY_WIDTH_PX = Math.round(72 * 1.3);
-const GUMMY_GLOW_COLORS = [0xff6688, 0x66ff99, 0x6688ff] as const;
 const GUMMY_SIDE_JITTER_X_FRAC = 0.18;
 /** Pull speed while tongue reels a bear toward the mouth (world px/s). */
 export const GUMMY_PULL_SPEED_PX_PER_SEC = 520;
@@ -56,18 +57,42 @@ export type GummySideDecorPickLayout = {
 };
 
 export type GummySideDecorSync = GummySideDecorPickLayout & {
-  /** Scene run clock — drives idle glow pulse. */
+  /** Scene run clock — drives glow pulse from the bear silhouette. */
   runTimeSec?: number;
-  /** Pull-up skill unlocked — side bears become tappable. */
+  /** Side bears tappable when true. */
   interactive?: boolean;
   onBearTap?: (placementId: number, worldX: number, worldY: number) => void;
 };
 
 type GummyBearSlot = {
   wrap: Container;
-  glow: Graphics;
+  bloom: Sprite;
+  bodyLayer: Container;
   sprite: Sprite;
+  glowFilter: GlowFilter;
 };
+
+function createBearGlowFilter(): GlowFilter {
+  return new GlowFilter({
+    distance: tunedBloom(14),
+    outerStrength: tunedBloom(3.4),
+    innerStrength: tunedBloom(1.05),
+    color: 0xffcc44,
+    alpha: tunedBloom(0.78),
+    quality: tunedBloom(0.24),
+  });
+}
+
+function applyGummyGlowPulse(filter: GlowFilter, bloom: Sprite, pulse: number, flipX: boolean, baseScale: number): void {
+  const bloomScale = baseScale * (1.08 + 0.05 * pulse);
+  bloom.scale.set(bloomScale * (flipX ? -1 : 1), bloomScale);
+  bloom.alpha = 0.26 + 0.2 * pulse;
+
+  filter.outerStrength = tunedBloom(2.6 + 1.8 * pulse);
+  filter.innerStrength = tunedBloom(0.85 + 0.45 * pulse);
+  filter.alpha = tunedBloom(0.62 + 0.34 * pulse);
+  filter.color = pulse > 0.55 ? 0xffe878 : 0xffc840;
+}
 
 function mulberry32(seed: number): () => number {
   let t = seed >>> 0;
@@ -125,6 +150,25 @@ function keySheetBlackBackground(pixels: Uint8ClampedArray, width: number, heigh
   }
 }
 
+/** Lift contrast/saturation so bears read clearly on pastel fascia art. */
+function sharpenGummyPixels(pixels: Uint8ClampedArray): void {
+  for (let i = 0; i < pixels.length; i += 4) {
+    const a = pixels[i + 3];
+    if (a < 12) {
+      continue;
+    }
+    const r = pixels[i];
+    const g = pixels[i + 1];
+    const b = pixels[i + 2];
+    const lum = (r + g + b) / 3;
+    const sat = 1.14;
+    pixels[i] = Math.min(255, Math.round(lum + (r - lum) * sat + 10));
+    pixels[i + 1] = Math.min(255, Math.round(lum + (g - lum) * sat + 10));
+    pixels[i + 2] = Math.min(255, Math.round(lum + (b - lum) * sat + 8));
+    pixels[i + 3] = Math.min(255, a + 8);
+  }
+}
+
 async function loadKeyedGummySheet(): Promise<Texture | null> {
   try {
     await Assets.load(GUMMY_SHEET_URL);
@@ -143,6 +187,7 @@ async function loadKeyedGummySheet(): Promise<Texture | null> {
     ctx.drawImage(image, 0, 0);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     keySheetBlackBackground(imageData.data, canvas.width, canvas.height);
+    sharpenGummyPixels(imageData.data);
     ctx.putImageData(imageData, 0, 0);
     return Texture.from(canvas);
   } catch {
@@ -251,16 +296,16 @@ export class GummySideDecor {
     return true;
   }
 
-  /** Reel bear toward mouth; returns current tip position or `null` when collected. */
+  /** Reel bear toward mouth; `'collected'` when eaten, `'lost'` if placement invalid. */
   pullToward(
     placementId: number,
     mouthX: number,
     mouthY: number,
     dt: number,
-  ): { x: number; y: number } | null {
+  ): { x: number; y: number } | 'collected' | 'lost' {
     const p = this.placements.find((pl) => pl.id === placementId);
     if (!p || p.collected || !p.collecting) {
-      return null;
+      return 'lost';
     }
 
     const dx = mouthX - p.collectX;
@@ -269,7 +314,7 @@ export class GummySideDecor {
     if (dist <= GUMMY_COLLECT_RADIUS_PX) {
       p.collected = true;
       p.collecting = false;
-      return null;
+      return 'collected';
     }
 
     const step = Math.min(dist, GUMMY_PULL_SPEED_PX_PER_SEC * dt);
@@ -287,6 +332,12 @@ export class GummySideDecor {
       return { x: p.collectX, y: p.collectY };
     }
     return null;
+  }
+
+  /** Bear column index (0 = Red Berry … 2 = Blue Burst) for a placement id. */
+  getBearIndexForPlacement(placementId: number): number | null {
+    const p = this.placements.find((pl) => pl.id === placementId);
+    return p ? p.bearIndex : null;
   }
 
   /** Nearest visible side bear under a world-space point (works while the avatar moves). */
@@ -377,34 +428,21 @@ export class GummySideDecor {
 
       slot.wrap.position.set(cx, cy);
       slot.wrap.visible = true;
+
       const breathe =
         1 +
         0.045 *
           Math.sin(runTimeSec * 2.5 + placement.id * 0.37 + placement.bearIndex * 0.9);
       slot.wrap.scale.set(breathe);
-      slot.sprite.scale.set(
-        placement.displayScale * (placement.flipX ? -1 : 1),
-        placement.displayScale,
-      );
 
-      const phase = runTimeSec * 9.5 + placement.id * 0.83 + placement.bearIndex * 1.7;
-      const blink = 0.5 + 0.5 * Math.sin(phase);
-      /** Sharpen peaks so the halo visibly flashes on/off. */
-      const flash = blink * blink;
-      const displayW = SIDE_DISPLAY_WIDTH_PX * placement.displayScale;
-      const glowR = displayW * (0.46 + 0.32 * flash);
-      const glowColor = GUMMY_GLOW_COLORS[placement.bearIndex % GUMMY_GLOW_COLORS.length];
-      slot.glow.clear();
-      slot.glow
-        .circle(0, 0, glowR * 1.42)
-        .fill({ color: glowColor, alpha: 0.1 + 0.28 * flash });
-      slot.glow
-        .circle(0, 0, glowR)
-        .fill({ color: glowColor, alpha: 0.24 + 0.56 * flash });
-      slot.glow
-        .circle(0, 0, glowR * 0.48)
-        .fill({ color: 0xffffff, alpha: 0.14 + 0.42 * flash });
-      slot.sprite.alpha = 0.72 + 0.28 * flash;
+      const baseScale = placement.displayScale;
+      const flipMul = placement.flipX ? -1 : 1;
+      slot.sprite.scale.set(baseScale * flipMul, baseScale);
+      slot.sprite.alpha = 1;
+      slot.sprite.tint = 0xffffff;
+
+      const pulse = 0.5 + 0.5 * Math.sin(runTimeSec * 3.6 + placement.id * 0.71 + placement.bearIndex);
+      applyGummyGlowPulse(slot.glowFilter, slot.bloom, pulse, placement.flipX, baseScale);
 
       const canTap = interactive && !placement.collecting;
       slot.wrap.eventMode = canTap ? 'static' : 'none';
@@ -429,17 +467,31 @@ export class GummySideDecor {
     let slot = this.slots[index];
     if (!slot) {
       const wrap = new Container();
-      const glow = new Graphics();
-      glow.blendMode = 'add';
+
+      const bloom = new Sprite(tex);
+      bloom.anchor.set(0.5, 0.5);
+      bloom.tint = 0xffe070;
+      bloom.alpha = 0.34;
+      bloom.blendMode = 'add';
+      bloom.eventMode = 'none';
+
+      const glowFilter = createBearGlowFilter();
+      const bodyLayer = new Container();
+      bodyLayer.filters = [glowFilter];
+      bodyLayer.eventMode = 'none';
+
       const sprite = new Sprite(tex);
       sprite.anchor.set(0.5, 0.5);
-      wrap.addChild(glow, sprite);
+      bodyLayer.addChild(sprite);
+
+      wrap.addChild(bloom, bodyLayer);
       this.root.addChild(wrap);
       this.wireSlotTap(wrap, sprite);
-      slot = { wrap, glow, sprite };
+      slot = { wrap, bloom, bodyLayer, sprite, glowFilter };
       this.slots[index] = slot;
     } else if (slot.sprite.texture !== tex) {
       slot.sprite.texture = tex;
+      slot.bloom.texture = tex;
     }
     return slot;
   }
@@ -466,6 +518,7 @@ export class GummySideDecor {
 
   private clearSprites(): void {
     for (const slot of this.slots) {
+      slot.glowFilter.destroy();
       slot.wrap.destroy({ children: true });
     }
     this.slots = [];

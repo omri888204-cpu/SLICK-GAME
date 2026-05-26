@@ -41,4 +41,6 @@ export type ActiveGrapple = {
   /** Default/platform pull — `gummy` pulls a side bear toward the mouth. */
   targetKind?: 'platform' | 'gummy';
   gummyPlacementId?: number;
+  /** Bear sheet column captured when the tongue latch starts (0 = Red Berry …). */
+  gummyBearIndex?: number;
 };

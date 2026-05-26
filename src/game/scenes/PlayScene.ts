@@ -76,6 +76,7 @@ import { logoutAndReturnToLogin } from '../landing/runLandingGate';
 import { isQuickStartMobileDevice } from '../utils/quickStartDevice';
 import { InputManager } from '../systems/InputManager';
 import { GummySideDecor, type GummyPickResult, type GummySideDecorPickLayout } from '../systems/GummySideDecor';
+import { GummyPopupSystem } from '../ui/GummyPopupSystem';
 import { Physics } from '../systems/Physics';
 import {
   extractNormalizedRowFrames,
@@ -1452,6 +1453,7 @@ export class PlayScene implements Scene {
   private fasciaSlideComboNextStepAtRunTime: number | null = null;
   /** Visual badge in the upper-left; created in `setupComboHud`. */
   private comboBadge?: ComboBadge;
+  private gummyPopups: GummyPopupSystem | null = null;
   /** Wraps combo badge only; scaled — stays screen-fixed (parent `uiLayer`, never `world`). */
   private comboHudRoot = new Container();
   /** Lazy WebAudio synth that plays the tier hit on each combo increment. */
@@ -1683,7 +1685,7 @@ export class PlayScene implements Scene {
     this.jelly.zIndex = 0;
     this.platformSpriteLayer.zIndex = PLATFORM_SPRITE_LAYER_Z_INDEX;
     this.platformLayer.zIndex = 3;
-    this.gummySideDecor.root.zIndex = 4;
+    this.gummySideDecor.root.zIndex = 30;
     this.viewportFasciaBoneLayer.zIndex = 3;
     this.viewportFasciaBoneLayer.eventMode = 'none';
     this.viewportFasciaBoneLayer.sortableChildren = false;
@@ -1731,6 +1733,7 @@ export class PlayScene implements Scene {
     app.stage.on('pointerupoutside', this.handlePointerUpGummyCollect);
     this.setupClimbHud(app);
     this.setupComboHud(skillButtonTextures);
+    this.setupGummyPopups();
     this.setupGameOverUi();
     this.touchGlobalAnywhereLock = this.loadTouchGlobalSteeringPreference();
     this.setupPauseUi();
@@ -1766,6 +1769,7 @@ export class PlayScene implements Scene {
     // Use real frame delta on mobile — capping to 1/30s made slow frames *lose* time so drifting
     // platforms and the camera looked stuttery. Only cap huge spikes (tab resume).
     const dt = Math.min(Math.max(ticker.deltaMS, 0) / 1000, 1 / 8);
+    this.gummyPopups?.tick(dt);
     this.tickTouchStaleLockWatch();
     this.updateHeaderPauseButtonFx(dt);
     if (this.gameOver) {
@@ -1860,14 +1864,17 @@ export class PlayScene implements Scene {
         this.grapple = null;
       } else {
         const mouth = this.getMouthWorld();
-        const tip = this.gummySideDecor.pullToward(placementId, mouth.x, mouth.y, dt);
-        if (tip) {
-          this.grapple.targetX = tip.x;
-          this.grapple.targetY = tip.y;
-        } else {
+        const pullResult = this.gummySideDecor.pullToward(placementId, mouth.x, mouth.y, dt);
+        if (pullResult === 'collected') {
+          const bearIndex = this.grapple.gummyBearIndex ?? this.gummySideDecor.getBearIndexForPlacement(placementId);
           this.sfx.play('collect_coin', 0.88);
           this.grapple = null;
-          this.onGummyBearCollected();
+          this.onGummyBearCollected(bearIndex);
+        } else if (pullResult === 'lost') {
+          this.grapple = null;
+        } else {
+          this.grapple.targetX = pullResult.x;
+          this.grapple.targetY = pullResult.y;
         }
       }
     } else if (this.grapple?.phase === 'pull') {
@@ -2187,6 +2194,7 @@ export class PlayScene implements Scene {
     this.layoutAttackButton();
     this.layoutPauseOverlay();
     this.layoutLogoutConfirmOverlay();
+    this.gummyPopups?.layout(this.width, this.height);
     this.redrawSpeedPulseOverlay();
     this.uiLayer.sortChildren();
     this.input?.onResize();
@@ -2309,11 +2317,9 @@ export class PlayScene implements Scene {
     this.sfx.play('tongue_shoot', 0.88);
   }
 
-  /** Pull-up skill unlocked and unused — one side gummy per Pull Up offer. */
+  /** Side gummy tongue — always available during gameplay (independent of skill pair). */
   private canCollectGummyWithTongue(): boolean {
     return (
-      this.skillPairAvailable &&
-      !this.skillPullUpSpent &&
       !this.grapple &&
       this.gameplayUnlocked &&
       !this.gameOver &&
@@ -2329,6 +2335,7 @@ export class PlayScene implements Scene {
     if (!this.gummySideDecor.markCollecting(placementId, worldX, worldY)) {
       return;
     }
+    const bearIndex = this.gummySideDecor.getBearIndexForPlacement(placementId);
     this.grapple = {
       phase: 'extend',
       targetX: worldX,
@@ -2339,6 +2346,7 @@ export class PlayScene implements Scene {
       pullStartY: this.player.body.y + this.player.body.height * 0.5,
       targetKind: 'gummy',
       gummyPlacementId: placementId,
+      gummyBearIndex: bearIndex ?? undefined,
     };
     this.player.onGrappleLaunch();
     this.sfx.play('tongue_shoot', 0.88);
@@ -2581,12 +2589,8 @@ export class PlayScene implements Scene {
     }
   }
 
-  /** One gummy per Pull Up — spend the offer, hide skills until {@link PULL_UP_JUMPS_REQUIRED} jumps. */
-  private onGummyBearCollected(): void {
-    if (!this.skillPairAvailable) {
-      return;
-    }
-    this.closeSkillPairOffer();
+  /** Side gummy reel-in — combo step only; does not touch skill pair state. */
+  private onGummyBearCollected(bearIndex: number | null): void {
     this.comboLastJumpTime = this.runTime;
     if (this.comboCount <= 0) {
       this.comboCount = 1;
@@ -2599,6 +2603,13 @@ export class PlayScene implements Scene {
       this.comboSynth?.resume();
       this.comboSynth?.play(wordTier);
     }
+
+    if (bearIndex === null) {
+      return;
+    }
+    this.gummyPopups?.handleCollected(bearIndex, () => {
+      this.sfx.play('collect_diamond', 0.84);
+    });
   }
 
   /** Same horizontal overlap rule as {@link Physics.resolvePlatformLanding} (narrower feet band). */
@@ -5697,6 +5708,13 @@ export class PlayScene implements Scene {
     this.uiLayer.addChild(this.skillPairRoot);
     this.layoutSkillPairHud();
     this.layoutComboHudRoot();
+  }
+
+  private setupGummyPopups(): void {
+    this.gummyPopups = new GummyPopupSystem();
+    this.gummyPopups.zIndex = 1185;
+    this.uiLayer.addChild(this.gummyPopups);
+    this.gummyPopups.layout(this.width, this.height);
   }
 
   private setupSkillFallbackButtons(): void {
