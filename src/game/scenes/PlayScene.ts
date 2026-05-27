@@ -230,18 +230,18 @@ const SFX_REMOTE: Record<SfxId, string> = {
   player_land:
     'https://assets.mixkit.co/active_storage/sfx/2070/2070-preview.mp3',
   super_jump_woohoo:
-    `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhh weee.mp3')}`,
+    `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhh weee_C_minor__bpm_108.mp3')}`,
   wall_slide:
     'https://assets.mixkit.co/active_storage/sfx/705/705-preview.mp3',
-  mobi_ready: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('mobi ready.mp3')}`,
+  mobi_ready: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('mobi ready_D♭_minor__bpm_109.mp3')}`,
   come_on_last_jump: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('come on last jump.mp3')}`,
-  holy_sweet: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('holy sweet.mp3')}`,
-  magic_jump: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('magic jump.mp3')}`,
-  ohhhh_whooo_whooo: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhhh whooo whooo.mp3')}`,
+  holy_sweet: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('holy sweet_B_minor__bpm_141.mp3')}`,
+  magic_jump: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('magic jump_D♭_major__bpm_121.mp3')}`,
+  ohhhh_whooo_whooo: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhhh whooo whooo_F_major__bpm_88.mp3')}`,
   dont_give_up_now: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('dont give up now.mp3')}`,
-  hmmm_candy: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('hmmm candy.mp3')}`,
-  gonna_grab_them_all: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('gonna grab them all.mp3')}`,
-  higher_you_get_sweeter_you_get: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('highr you get sweeter you get.mp3')}`,
+  hmmm_candy: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('hmmm candy_G♭_minor__bpm_110.mp3')}`,
+  gonna_grab_them_all: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('gonna grab them all_D♭_minor__bpm_123.mp3')}`,
+  higher_you_get_sweeter_you_get: `${import.meta.env.BASE_URL}assets/${encodeURIComponent('mobi sound')}/${encodeURIComponent('highr you get sweeter you get_D♭_minor__bpm_115.mp3')}`,
 };
 
 /** Game binaries live in `public/assets/` and grouped subfolders. */
@@ -438,18 +438,18 @@ const SFX_LOCAL: Record<SfxId, string> = {
   collect_coin: `${import.meta.env.BASE_URL}audio/collect_coin.mp3`,
   collect_diamond: `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/diamond_collect.mp3`,
   player_land: `${import.meta.env.BASE_URL}audio/player_land.mp3`,
-  super_jump_woohoo: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhh weee.mp3')}`,
+  super_jump_woohoo: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhh weee_C_minor__bpm_108.mp3')}`,
   /** לולאת גלידה — `public/assets/sound effect/slide 2.m4a` */
   wall_slide: `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/${encodeURIComponent('slide 2.m4a')}`,
-  mobi_ready: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('mobi ready.mp3')}`,
+  mobi_ready: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('mobi ready_D♭_minor__bpm_109.mp3')}`,
   come_on_last_jump: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('come on last jump.mp3')}`,
-  holy_sweet: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('holy sweet.mp3')}`,
-  magic_jump: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('magic jump.mp3')}`,
-  ohhhh_whooo_whooo: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhhh whooo whooo.mp3')}`,
+  holy_sweet: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('holy sweet_B_minor__bpm_141.mp3')}`,
+  magic_jump: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('magic jump_D♭_major__bpm_121.mp3')}`,
+  ohhhh_whooo_whooo: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('ohhhh whooo whooo_F_major__bpm_88.mp3')}`,
   dont_give_up_now: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('dont give up now.mp3')}`,
-  hmmm_candy: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('hmmm candy.mp3')}`,
-  gonna_grab_them_all: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('gonna grab them all.mp3')}`,
-  higher_you_get_sweeter_you_get: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('highr you get sweeter you get.mp3')}`,
+  hmmm_candy: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('hmmm candy_G♭_minor__bpm_110.mp3')}`,
+  gonna_grab_them_all: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('gonna grab them all_D♭_minor__bpm_123.mp3')}`,
+  higher_you_get_sweeter_you_get: `${GAME_ASSETS}/${encodeURIComponent('mobi sound')}/${encodeURIComponent('highr you get sweeter you get_D♭_minor__bpm_115.mp3')}`,
 };
 
 /**
@@ -1726,14 +1726,13 @@ export class PlayScene implements Scene {
     this.lavaTeethLayer.sortableChildren = true;
     this.lavaPoolLayer.sortableChildren = true;
     preloadSkillButtonAssets();
-    const quickMobile = isQuickStartMobileDevice();
     const [, , , , , , , , , skillButtonTextures] = await Promise.all([
-      quickMobile ? this.loadPlatformSpriteCore() : this.loadPlatformSprite(),
+      this.loadPlatformSpriteCore(),
       this.player.load(),
       this.sfx.load(),
       this.loadViewportFasciaBoneTextures(),
       this.loadDeathZoneStrip(),
-      quickMobile ? this.loadBackgroundTextureEssentialForQuickMobile() : this.loadBackgroundTexture(),
+      this.loadBackgroundTextureEssentialForQuickMobile(),
       this.loadStaticTeset3BackgroundLayer(),
       this.loadPhotoroomStaticMidForegroundSprites(),
       this.gummySideDecor.load(),
@@ -1836,11 +1835,7 @@ export class PlayScene implements Scene {
     this.layoutStatusPanel();
     this.uiLayer.sortChildren();
 
-    if (quickMobile) {
-      void this.finishDeferredPlaySceneLoadsForMobile().catch(() => {});
-    } else {
-      await this.tryLoadTongueArmature();
-    }
+    void this.finishDeferredPlaySceneLoads().catch(() => {});
     this.resetRun({ pickNewBgm: true });
     this.drawStaticWorld();
     this.applyCameraTransform();
@@ -4749,7 +4744,7 @@ export class PlayScene implements Scene {
 
   /**
    * Mobile quick-start: only the first parallax tier (~0–1000m). Remaining tiers load in
-   * {@link finishDeferredPlaySceneLoadsForMobile}.
+   * {@link finishDeferredPlaySceneLoads}.
    */
   private async loadBackgroundTextureEssentialForQuickMobile(): Promise<void> {
     this.resetBackgroundTextureLoadState();
@@ -4770,7 +4765,7 @@ export class PlayScene implements Scene {
   /**
    * After the first frame of gameplay: extra BG tiers, decorative platform atlases, DragonBones tongue.
    */
-  private async finishDeferredPlaySceneLoadsForMobile(): Promise<void> {
+  private async finishDeferredPlaySceneLoads(): Promise<void> {
     if (!STATIC_BACKGROUND_TESET3_PHOTOROOM_ONLY) {
       for (let i = 1; i < BACKGROUND_TIERS.length; i += 1) {
         await this.loadBackgroundTierIntoMap(BACKGROUND_TIERS[i]);

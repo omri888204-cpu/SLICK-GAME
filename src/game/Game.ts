@@ -56,17 +56,19 @@ export class Game {
     this.app.ticker.add((ticker) => this.activeScene?.update(ticker));
     window.addEventListener('resize', this.handleResize);
 
-    try {
-      const didScheduledPurge = await tryOneTimeScheduledLeaderboardPurge();
-      if (import.meta.env.VITE_CLEAR_LEADERBOARD_ON_BOOT === 'true') {
-        await clearLeaderboardDatabase();
-        if (!didScheduledPurge) {
-          console.info(LEADERBOARD_PURGE_CONFIRM_LOG);
+    void (async () => {
+      try {
+        const didScheduledPurge = await tryOneTimeScheduledLeaderboardPurge();
+        if (import.meta.env.VITE_CLEAR_LEADERBOARD_ON_BOOT === 'true') {
+          await clearLeaderboardDatabase();
+          if (!didScheduledPurge) {
+            console.info(LEADERBOARD_PURGE_CONFIRM_LOG);
+          }
         }
+      } catch (err) {
+        console.error('[Game] leaderboard bootstrap purge failed', err);
       }
-    } catch (err) {
-      console.error('[Game] leaderboard bootstrap purge failed', err);
-    }
+    })();
 
     if (import.meta.env.DEV) {
       (

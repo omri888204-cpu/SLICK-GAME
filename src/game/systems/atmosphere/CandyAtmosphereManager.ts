@@ -95,81 +95,52 @@ export class CandyAtmosphereManager {
     parent.addChild(this.root);
   }
 
+  /** Core layers for sub-5k m — rocks / 5k+ tiers may still be loading. */
   get isReady(): boolean {
     return (
       this.loaded &&
       this.skyBackSpaceTile != null &&
       this.skyTileHigh != null &&
       this.spaceMidSprite != null &&
-      this.middleSprite != null &&
-      this.spaceRocks.isReady &&
-      (!ENABLE_CANDY_FRONT_WALLS || this.frontTile != null)
+      this.middleSprite != null
     );
   }
 
   async load(): Promise<boolean> {
+    const ok = await this.loadEssential();
+    if (ok) {
+      void this.loadDeferredAssets();
+    }
+    return ok;
+  }
+
+  /** Fast path: back space + space mid + space 1 only (play-entry white screen). */
+  async loadEssential(): Promise<boolean> {
     this.unload();
 
     try {
-      const loadPromises: Promise<Texture>[] = [
+      const [skyTexBackSpace, skyTexSpaceMid, middleTexLow] = await Promise.all([
         prepareStaticBackgroundTexture(CANDY_BACK_SPACE_SKY_URL, {
           verticalRepeat: true,
           nearestScale: true,
-        }),
-        prepareStaticBackgroundTexture(CANDY_LAYER1_SKY_HIGH_URL, {
-          skipEdgeKeying: true,
         }),
         prepareStaticBackgroundTexture(CANDY_SPACE_MID_URL, {
           skipEdgeKeying: true,
         }),
         prepareStaticBackgroundTexture(CANDY_LAYER2_MIDDLE_URL),
-        prepareStaticBackgroundTexture(CANDY_LAYER2_MIDDLE_HIGH_URL),
-        prepareStaticBackgroundTexture(CANDY_LAYER2_MIDDLE_ULTRA_URL),
-      ];
-      if (ENABLE_CANDY_FRONT_WALLS) {
-        loadPromises.push(
-          prepareStaticBackgroundTexture(CANDY_LAYER3_FRONT_HIGH_URL, { verticalRepeat: true }),
-          prepareStaticBackgroundTexture(CANDY_LAYER3_FRONT_ULTRA_URL, {
-            verticalRepeat: true,
-            centerBandEdgeKeyMarginRatio: 0.2,
-          }),
-        );
-      }
+      ]);
 
-      const loaded = await Promise.all(loadPromises);
-      const skyTexBackSpace = loaded[0]!;
-      const skyTexHigh = loaded[1]!;
-      const skyTexSpaceMid = loaded[2]!;
-      const middleTexLow = loaded[3]!;
-      const middleTexHigh = loaded[4]!;
-      const middleTexUltra = loaded[5]!;
-      const frontTexHigh = ENABLE_CANDY_FRONT_WALLS ? loaded[6]! : null;
-      const frontTexUltra = ENABLE_CANDY_FRONT_WALLS ? loaded[7]! : null;
-
-      this.textures.push(
-        skyTexBackSpace,
-        skyTexHigh,
-        skyTexSpaceMid,
-        middleTexLow,
-        middleTexHigh,
-        middleTexUltra,
-      );
-      if (frontTexHigh) {
-        this.textures.push(frontTexHigh);
-      }
-      if (frontTexUltra) {
-        this.textures.push(frontTexUltra);
-      }
+      this.textures.push(skyTexBackSpace, skyTexSpaceMid, middleTexLow);
       this.skyTexBackSpace = skyTexBackSpace;
       this.skyTexSpaceMid = skyTexSpaceMid;
-      this.skyTexHigh = skyTexHigh;
+      this.skyTexHigh = null;
       this.activeSkyTier = 'low';
       this.middleTexLow = middleTexLow;
-      this.middleTexHigh = middleTexHigh;
-      this.middleTexUltra = middleTexUltra;
+      this.middleTexHigh = null;
+      this.middleTexUltra = null;
       this.activeMiddleTier = 'low';
-      this.frontTexHigh = frontTexHigh;
-      this.frontTexUltra = frontTexUltra;
+      this.frontTexHigh = null;
+      this.frontTexUltra = null;
       this.activeFrontWallTier = 'low';
 
       const skyBackSpace = new TilingSprite({ texture: skyTexBackSpace, width: 1, height: 1 });
@@ -178,7 +149,7 @@ export class CandyAtmosphereManager {
       skyBackSpace.zIndex = Z_SKY;
       this.skyBackSpaceTile = skyBackSpace;
 
-      const skyHigh = new TilingSprite({ texture: skyTexHigh, width: 1, height: 1 });
+      const skyHigh = new TilingSprite({ texture: skyTexBackSpace, width: 1, height: 1 });
       skyHigh.eventMode = 'none';
       skyHigh.roundPixels = true;
       skyHigh.zIndex = Z_SKY;
@@ -199,26 +170,10 @@ export class CandyAtmosphereManager {
       middle.zIndex = Z_MIDDLE;
       this.middleSprite = middle;
 
-      if (ENABLE_CANDY_FRONT_WALLS && frontTexHigh) {
-        const front = new TilingSprite({ texture: frontTexHigh, width: 1, height: 1 });
-        front.eventMode = 'none';
-        front.roundPixels = false;
-        front.zIndex = Z_FRONT;
-        front.visible = false;
-        this.frontTile = front;
-        this.root.addChild(skyBackSpace, skyHigh, spaceMid, middle, front, this.fx.root);
-      } else {
-        this.frontTile = null;
-        this.root.addChild(skyBackSpace, skyHigh, spaceMid, middle, this.fx.root);
-      }
-
+      this.frontTile = null;
+      this.root.addChild(skyBackSpace, skyHigh, spaceMid, middle, this.fx.root);
       this.fx.root.zIndex = Z_FX;
       this.fx.root.visible = false;
-
-      this.spaceRocks.root.zIndex = Z_SPACE_ROCKS;
-      await this.spaceRocks.load();
-      this.spaceRocks.setVisible(this.activeSkyTier === 'low');
-      this.root.addChild(this.spaceRocks.root);
 
       this.backSpaceFilmScrollPx = 0;
       this.lastBackSpaceCameraY = 0;
@@ -231,9 +186,96 @@ export class CandyAtmosphereManager {
       }
       return true;
     } catch (error) {
-      console.error('[CandyAtmosphereManager] Failed to load layer backgrounds:', error);
+      console.error('[CandyAtmosphereManager] Failed to load essential layers:', error);
       this.unload();
       return false;
+    }
+  }
+
+  private deferredAssetsPromise: Promise<void> | null = null;
+
+  /** 5k+ tiers, optional walls, floating rocks — after first gameplay frame. */
+  loadDeferredAssets(): Promise<void> {
+    if (!this.loaded) {
+      return Promise.resolve();
+    }
+    this.deferredAssetsPromise ??= this.runDeferredAssetsLoad();
+    return this.deferredAssetsPromise;
+  }
+
+  private async runDeferredAssetsLoad(): Promise<void> {
+    if (!this.loaded || !this.skyBackSpaceTile || !this.middleSprite) {
+      return;
+    }
+
+    try {
+      const deferredPromises: Promise<Texture>[] = [
+        prepareStaticBackgroundTexture(CANDY_LAYER1_SKY_HIGH_URL, {
+          skipEdgeKeying: true,
+        }),
+        prepareStaticBackgroundTexture(CANDY_LAYER2_MIDDLE_HIGH_URL),
+        prepareStaticBackgroundTexture(CANDY_LAYER2_MIDDLE_ULTRA_URL),
+      ];
+      if (ENABLE_CANDY_FRONT_WALLS) {
+        deferredPromises.push(
+          prepareStaticBackgroundTexture(CANDY_LAYER3_FRONT_HIGH_URL, { verticalRepeat: true }),
+          prepareStaticBackgroundTexture(CANDY_LAYER3_FRONT_ULTRA_URL, {
+            verticalRepeat: true,
+            centerBandEdgeKeyMarginRatio: 0.2,
+          }),
+        );
+      }
+
+      const loaded = await Promise.all(deferredPromises);
+      const skyTexHigh = loaded[0]!;
+      const middleTexHigh = loaded[1]!;
+      const middleTexUltra = loaded[2]!;
+      const frontTexHigh = ENABLE_CANDY_FRONT_WALLS ? loaded[3]! : null;
+      const frontTexUltra = ENABLE_CANDY_FRONT_WALLS ? loaded[4]! : null;
+
+      this.textures.push(skyTexHigh, middleTexHigh, middleTexUltra);
+      if (frontTexHigh) {
+        this.textures.push(frontTexHigh);
+      }
+      if (frontTexUltra) {
+        this.textures.push(frontTexUltra);
+      }
+      this.skyTexHigh = skyTexHigh;
+      this.middleTexHigh = middleTexHigh;
+      this.middleTexUltra = middleTexUltra;
+      this.frontTexHigh = frontTexHigh;
+      this.frontTexUltra = frontTexUltra;
+      if (this.skyTileHigh) {
+        this.skyTileHigh.texture = skyTexHigh;
+      }
+
+      if (ENABLE_CANDY_FRONT_WALLS && frontTexHigh && !this.frontTile) {
+        const front = new TilingSprite({ texture: frontTexHigh, width: 1, height: 1 });
+        front.eventMode = 'none';
+        front.roundPixels = false;
+        front.zIndex = Z_FRONT;
+        front.visible = false;
+        this.frontTile = front;
+        this.root.addChild(front);
+      }
+
+      this.spaceRocks.root.zIndex = Z_SPACE_ROCKS;
+      await this.spaceRocks.load();
+      this.spaceRocks.setVisible(this.activeSkyTier === 'low');
+      if (this.spaceRocks.root.parent !== this.root) {
+        const insertBefore = this.fx.root.parent === this.root ? this.fx.root : null;
+        if (insertBefore) {
+          this.root.addChildAt(this.spaceRocks.root, this.root.getChildIndex(insertBefore));
+        } else {
+          this.root.addChild(this.spaceRocks.root);
+        }
+      }
+
+      if (this.lastLayout) {
+        this.layout(this.lastLayout);
+      }
+    } catch (error) {
+      console.error('[CandyAtmosphereManager] Deferred layer load failed:', error);
     }
   }
 
@@ -624,6 +666,23 @@ export class CandyAtmosphereManager {
     this.middleTexUltra = null;
     this.activeMiddleTier = 'low';
     this.space1MiddleBobPhaseSec = 0;
+    this.deferredAssetsPromise = null;
     this.loaded = false;
+  }
+}
+
+const ATMOSPHERE_WARMUP_URLS = [
+  CANDY_BACK_SPACE_SKY_URL,
+  CANDY_SPACE_MID_URL,
+  CANDY_LAYER2_MIDDLE_URL,
+] as const;
+
+/** Warm HTTP cache while the menu is visible so play entry stays fast. */
+export function warmupCandyAtmosphereEssentials(): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  for (const url of ATMOSPHERE_WARMUP_URLS) {
+    void fetch(url, { mode: 'cors', cache: 'force-cache' }).catch(() => {});
   }
 }

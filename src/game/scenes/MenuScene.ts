@@ -16,6 +16,7 @@ import {
   stopBackgroundMusic,
   tryResumeBackgroundMusic,
 } from '../audio/BackgroundMusic';
+import { warmupCandyAtmosphereEssentials } from '../systems/atmosphere/CandyAtmosphereManager';
 import { MENU_BGM_URL } from '../constants/gameMusic';
 import {
   applyMenuBackDriftAnimation,
@@ -200,6 +201,7 @@ export class MenuScene implements Scene {
 
     registerMenuAssets();
     preloadBackgroundMusic(MENU_BGM_URL);
+    warmupCandyAtmosphereEssentials();
 
     const [menuBackTexture, menuForegroundTexture, idleFrame, jumpFrame] = await Promise.all([
 
