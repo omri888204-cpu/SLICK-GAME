@@ -62,7 +62,7 @@ import type { Scene } from './Scene';
 
 /**
 
- * Main menu: animated `menu back` layer + static candy UI art + invisible PLAY hit zone.
+ * Main menu: animated `menu back space` layer + `new menu space` UI art + invisible PLAY hit zone.
 
  */
 

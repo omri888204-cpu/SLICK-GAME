@@ -8,9 +8,9 @@ function resolvePublicAssetUrl(relativeToAssets: string): string {
   return new URL(`assets/${relativeToAssets}`, new URL(normalizedBase, window.location.href)).href;
 }
 
-/** Main menu loop — `public/assets/game music/Cloud Candy Citadel.mp3`. */
+/** Main menu loop — `public/assets/game music/Celestial Drift.mp3`. */
 export const MENU_BGM_URL = resolvePublicAssetUrl(
-  `${encodeURIComponent('game music')}/${encodeURIComponent('Cloud Candy Citadel.mp3')}`,
+  `${encodeURIComponent('game music')}/${encodeURIComponent('Celestial Drift.mp3')}`,
 );
 
 /** Default gameplay loop — `public/assets/game music/Gummy Moon Arcade.mp3`. */

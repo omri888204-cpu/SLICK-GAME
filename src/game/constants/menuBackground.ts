@@ -1,30 +1,33 @@
 import { Assets, Rectangle, Texture, type Graphics, type Sprite } from 'pixi.js';
 
-/** Intrinsic size of `menu candy loop.png`. */
-export const MENU_CANDY_LOOP_TEX_W = 864;
-export const MENU_CANDY_LOOP_TEX_H = 1821;
+/** Intrinsic size of `new menu space.png`. */
+export const MENU_CANDY_LOOP_TEX_W = 1023;
+export const MENU_CANDY_LOOP_TEX_H = 1537;
+
+/** Bust browser/Pixi cache when the menu PNG is replaced. */
+const MENU_ASSET_REVISION = '20260527-new-menu-space-v4';
 
 /**
- * Painted PLAY control bounds in texture space (pink pill + gold frame in `menu candy loop.png`).
+ * Painted PLAY control bounds in texture space (`new menu space.png`).
  * Normalized 0–1 relative to {@link MENU_CANDY_LOOP_TEX_W} × {@link MENU_CANDY_LOOP_TEX_H}.
  */
 export const MENU_PLAY_BUTTON_RECT_NORM = {
-  x: 235 / MENU_CANDY_LOOP_TEX_W,
-  y: 1318 / MENU_CANDY_LOOP_TEX_H,
-  w: 405 / MENU_CANDY_LOOP_TEX_W,
-  h: 100 / MENU_CANDY_LOOP_TEX_H,
+  x: 295 / MENU_CANDY_LOOP_TEX_W,
+  y: 1205 / MENU_CANDY_LOOP_TEX_H,
+  w: 435 / MENU_CANDY_LOOP_TEX_W,
+  h: 98 / MENU_CANDY_LOOP_TEX_H,
 } as const;
 
-/** Pink deck feet line in menu art (texture Y) — front platform in front of the tower door. */
-export const MENU_PLAYER_DECK_Y_TEX = 1276;
-/** Horizontal feet anchor in menu art (texture X). */
-export const MENU_PLAYER_FEET_X_TEX = 375;
+/** Portal stairs — lowered so the avatar does not cover the portal. */
+export const MENU_PLAYER_DECK_Y_TEX = 1130;
+/** Horizontal feet anchor (portal stairs center). */
+export const MENU_PLAYER_FEET_X_TEX = 512;
 /** Soles sink into the painted deck (screen px). */
 export const MENU_PLAYER_FEET_SINK_PX = 12;
 
-/** Center of brown pill number area (right of coin/gem icon) on `menu candy loop.png`. */
-export const MENU_LOOT_GOLD_TEXT_NORM = { x: 0.228, y: 0.0695 } as const;
-export const MENU_LOOT_DIAMOND_TEXT_NORM = { x: 0.228, y: 0.1225 } as const;
+/** Center of top-left currency pill text on `new menu space.png`. */
+export const MENU_LOOT_GOLD_TEXT_NORM = { x: 0.215, y: 0.062 } as const;
+export const MENU_LOOT_DIAMOND_TEXT_NORM = { x: 0.215, y: 0.114 } as const;
 
 /** Extra tap slop around the painted PLAY control (texture pixels). */
 export const MENU_PLAY_HIT_PAD_TEX_PX = {
@@ -43,18 +46,18 @@ export type MenuCoverLayout = {
 const GAME_ASSETS = `${import.meta.env.BASE_URL}assets`;
 const BG_TESET_DIR = `${GAME_ASSETS}/${encodeURIComponent('backgroud teset')}`;
 
-/** Pixi asset alias — `public/assets/backgroud teset/menu back.png`. */
+/** Pixi asset alias — `public/assets/backgroud teset/menu back space.png`. */
 export const MENU_BACK_ASSET_KEY = 'menuBack';
 
-export const MENU_BACK_URL = `${BG_TESET_DIR}/${encodeURIComponent('menu back.png')}`;
+export const MENU_BACK_URL = `${BG_TESET_DIR}/${encodeURIComponent('menu back space.png')}?v=${MENU_ASSET_REVISION}`;
 
-/** Pixi asset alias — `public/assets/backgroud teset/menu candy loop.png`. */
+/** Pixi asset alias — `public/assets/backgroud teset/new menu space.png`. */
 export const MENU_CANDY_LOOP_ASSET_KEY = 'menuCandyLoop';
 
-export const MENU_CANDY_LOOP_URL = `${BG_TESET_DIR}/${encodeURIComponent('menu candy loop.png')}`;
+export const MENU_CANDY_LOOP_URL = `${BG_TESET_DIR}/${encodeURIComponent('new menu space.png')}?v=${MENU_ASSET_REVISION}`;
 
-/** Letterbox fill behind the menu cover sprite (matches candy sky purple). */
-export const MENU_BACKDROP_COLOR = 0x2a1048;
+/** Letterbox fill behind the menu cover sprite (space void). */
+export const MENU_BACKDROP_COLOR = 0x090612;
 
 /** Dreamy drift — slow position loop. */
 const MENU_BACK_DRIFT_PERIOD_SEC = 9;
@@ -68,15 +71,19 @@ const MENU_BACK_SCALE_PULSE = 0.008;
 /** Overscan above cover scale — prevents edge gaps while drifting. */
 const MENU_BACK_COVER_BLEED = 1.045;
 
-let menuAssetsRegistered = false;
+let menuAssetsRegisteredRevision: string | null = null;
 
 export function registerMenuAssets(): void {
-  if (menuAssetsRegistered) {
+  if (menuAssetsRegisteredRevision === MENU_ASSET_REVISION) {
     return;
+  }
+  if (menuAssetsRegisteredRevision != null) {
+    void Assets.unload(MENU_BACK_ASSET_KEY).catch(() => {});
+    void Assets.unload(MENU_CANDY_LOOP_ASSET_KEY).catch(() => {});
   }
   Assets.add({ alias: MENU_BACK_ASSET_KEY, src: MENU_BACK_URL });
   Assets.add({ alias: MENU_CANDY_LOOP_ASSET_KEY, src: MENU_CANDY_LOOP_URL });
-  menuAssetsRegistered = true;
+  menuAssetsRegisteredRevision = MENU_ASSET_REVISION;
 }
 
 /** @deprecated Use {@link registerMenuAssets}. */

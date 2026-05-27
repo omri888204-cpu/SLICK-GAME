@@ -15,10 +15,16 @@ const PLAY_BOUNCE_SEC = 0.17;
 const PLAY_POST_GLOW_SEC = 4;
 const PLAY_POST_GLOW_PULSE_SEC = 0.55;
 const PLAY_POST_GLOW_FADE_START = 0.82;
-const PLAY_GLOW_BOOST_OUTER = 11;
-const PLAY_GLOW_BOOST_INNER = 4.2;
-const PLAY_GLOW_BOOST_DISTANCE = 28;
+const PLAY_GLOW_BOOST_OUTER = 10.5;
+const PLAY_GLOW_BOOST_INNER = 4;
+const PLAY_GLOW_BOOST_DISTANCE = 25;
 const PLAY_GLOW_PRESS_COLOR = 0xfff0a8;
+/** Glow pill narrower than PLAY art — width only (symmetric base). */
+const PLAY_GLOW_WIDTH_SCALE = 0.91;
+/** Extra reach on the right edge only (fraction of full PLAY width). */
+const PLAY_GLOW_RIGHT_EXTEND_RATIO = 0.035;
+/** Extra reach on the top edge only (fraction of full PLAY height). */
+const PLAY_GLOW_TOP_EXTEND_RATIO = 0.03;
 
 type PlayClickPhase = 'squash' | 'bounce';
 
@@ -37,11 +43,11 @@ export class MenuPlayButton extends Container {
   private readonly glowHalo = new Graphics();
   private readonly glowCore = new Graphics();
   private readonly glowFilter = new GlowFilter({
-    distance: tunedBloom(18),
-    outerStrength: tunedBloom(3.6),
-    innerStrength: tunedBloom(1.5),
+    distance: tunedBloom(17),
+    outerStrength: tunedBloom(3.4),
+    innerStrength: tunedBloom(1.45),
     color: 0xffe566,
-    alpha: tunedBloom(0.65),
+    alpha: tunedBloom(0.6),
     quality: tunedBloom(0.28),
   });
   private glowW = 0;
@@ -89,9 +95,9 @@ export class MenuPlayButton extends Container {
     }
     const wave = 0.5 + 0.5 * Math.sin((timeSec * Math.PI * 2) / PLAY_PULSE_PERIOD_SEC);
     const blink = wave * wave;
-    this.glowFilter.alpha = tunedBloom(0.12) + blink * tunedBloom(0.78);
-    this.glowHalo.alpha = tunedBloom(0.15) + blink * tunedBloom(0.45);
-    this.glowCore.alpha = tunedBloom(0.2) + blink * tunedBloom(0.8);
+    this.glowFilter.alpha = tunedBloom(0.12) + blink * tunedBloom(0.72);
+    this.glowHalo.alpha = tunedBloom(0.14) + blink * tunedBloom(0.42);
+    this.glowCore.alpha = tunedBloom(0.18) + blink * tunedBloom(0.75);
   }
 
   /** Squash + bounce; switches to flat glow for cinematic zoom (no filter shimmer). */
@@ -181,13 +187,13 @@ export class MenuPlayButton extends Container {
         : Math.max(0, 1 - (elapsedSec - fadeOutAt) / (PLAY_POST_GLOW_SEC - fadeOutAt));
     const pulse = 0.5 + 0.5 * Math.sin((elapsedSec * Math.PI * 2) / PLAY_POST_GLOW_PULSE_SEC);
     const shine = envelope * (0.62 + pulse * 0.38);
-    this.glowFilter.distance = tunedBloom(lerp(18, PLAY_GLOW_BOOST_DISTANCE, shine));
-    this.glowFilter.outerStrength = tunedBloom(lerp(3.6, PLAY_GLOW_BOOST_OUTER, shine));
-    this.glowFilter.innerStrength = tunedBloom(lerp(1.5, PLAY_GLOW_BOOST_INNER, shine));
+    this.glowFilter.distance = tunedBloom(lerp(17, PLAY_GLOW_BOOST_DISTANCE, shine));
+    this.glowFilter.outerStrength = tunedBloom(lerp(3.4, PLAY_GLOW_BOOST_OUTER, shine));
+    this.glowFilter.innerStrength = tunedBloom(lerp(1.45, PLAY_GLOW_BOOST_INNER, shine));
     this.glowFilter.color = shine > 0.04 ? PLAY_GLOW_PRESS_COLOR : 0xffe566;
-    this.glowFilter.alpha = tunedBloom(lerp(0.65, 1, shine));
-    this.glowHalo.alpha = tunedBloom(lerp(0.15, 1, shine));
-    this.glowCore.alpha = tunedBloom(lerp(0.2, 1, shine));
+    this.glowFilter.alpha = tunedBloom(lerp(0.6, 0.95, shine));
+    this.glowHalo.alpha = tunedBloom(lerp(0.14, 0.92, shine));
+    this.glowCore.alpha = tunedBloom(lerp(0.18, 0.95, shine));
   }
 
   private finishPressScaleAnimation(): void {
@@ -215,53 +221,75 @@ export class MenuPlayButton extends Container {
 
   /** Perfect pill outline with soft outer halo + bright core for bloom. */
   private redrawGlowLine(transitionBright = false): void {
-    const w = this.glowW;
+    const fullW = this.glowW;
     const h = this.glowH;
-    if (w <= 0 || h <= 0) {
+    if (fullW <= 0 || h <= 0) {
       this.glowHalo.clear();
       this.glowCore.clear();
       return;
     }
 
-    const radius = h * 0.5;
-    const coreWidth = Math.max(1.5, h * (transitionBright ? 0.048 : 0.036));
-    const haloWidth = coreWidth * (transitionBright ? 1.65 : 1.45);
+    const halfScaled = (fullW * PLAY_GLOW_WIDTH_SCALE) * 0.5;
+    const glowLeft = -halfScaled;
+    const glowRight = halfScaled + fullW * PLAY_GLOW_RIGHT_EXTEND_RATIO;
+
+    const halfH = h * 0.5;
+    const glowTop = -halfH - h * PLAY_GLOW_TOP_EXTEND_RATIO;
+    const glowBottom = halfH;
+
+    const drawH = glowBottom - glowTop;
+    const drawW = glowRight - glowLeft;
+    const radius = Math.min(drawH * 0.5, drawW * 0.5);
+    const coreWidth = Math.max(1.6, h * (transitionBright ? 0.05 : 0.04));
+    const haloWidth = coreWidth * (transitionBright ? 1.62 : 1.48);
     const haloColor = transitionBright ? PLAY_GLOW_PRESS_COLOR : 0xffe566;
     this.strokePill(
       this.glowHalo,
-      w,
-      h,
+      glowLeft,
+      glowRight,
+      glowTop,
+      glowBottom,
       radius,
       haloWidth,
       haloColor,
-      transitionBright ? 0.72 : 0.4,
+      transitionBright ? 0.68 : 0.42,
     );
     this.strokePill(
       this.glowCore,
-      w,
-      h,
+      glowLeft,
+      glowRight,
+      glowTop,
+      glowBottom,
       radius,
       coreWidth,
       0xfff8b8,
-      transitionBright ? 1 : 0.85,
+      transitionBright ? 0.95 : 0.8,
     );
   }
 
   private strokePill(
     target: Graphics,
-    w: number,
-    h: number,
+    left: number,
+    right: number,
+    top: number,
+    bottom: number,
     radius: number,
     strokeWidth: number,
     color: number,
     alpha: number,
   ): void {
+    const w = right - left;
+    const h = bottom - top;
+    if (w <= 0 || h <= 0) {
+      target.clear();
+      return;
+    }
     const halfStroke = strokeWidth * 0.5;
     target.clear();
     target
       .roundRect(
-        -w * 0.5 + halfStroke,
-        -h * 0.5 + halfStroke,
+        left + halfStroke,
+        top + halfStroke,
         w - strokeWidth,
         h - strokeWidth,
         Math.max(0, radius - halfStroke),
