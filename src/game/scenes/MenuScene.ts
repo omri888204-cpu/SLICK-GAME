@@ -22,6 +22,7 @@ import {
   applyMenuBackDriftAnimation,
   computeMenuBackBaseScale,
   computeMenuCoverLayout,
+  computeMenuPortalAmbienceBounds,
   computeMenuPlayerFeetPoint,
   createMenuPlayButtonTexture,
   layoutMenuCoverSprite,
@@ -31,8 +32,17 @@ import {
   MENU_CANDY_LOOP_ASSET_KEY,
   registerMenuAssets,
 } from '../constants/menuBackground';
-import { loadMenuPlayerIdleFrame, loadMenuPlayerJumpFrame } from '../entities/Player';
+import {
+  loadMenuPlayerClips,
+  loadMenuPlayerMoodFrames,
+  loadMenuPlayerStill,
+} from '../entities/Player';
+import {
+  MENU_MOOD_FEET_ANCHOR_Y,
+  MENU_PLAYER_STILL_FEET_ANCHOR_Y,
+} from '../constants/playerSkin';
 import { MenuLootTotalsOverlay } from '../ui/MenuLootTotalsOverlay';
+import { MenuPortalAmbience } from '../ui/MenuPortalAmbience';
 import { MenuPlayButton } from '../ui/MenuPlayButton';
 import {
   createMenuDreamyFadeOverlay,
@@ -81,6 +91,8 @@ export class MenuScene implements Scene {
   private readonly menuBack = new Sprite();
 
   private readonly menuForeground = new Sprite();
+
+  private readonly menuPortalAmbience = new MenuPortalAmbience();
 
   private readonly playButton = new MenuPlayButton();
   private readonly menuPlayer = new MenuPlayerAvatar();
@@ -174,6 +186,8 @@ export class MenuScene implements Scene {
 
     this.menuForeground.eventMode = 'none';
 
+    this.menuPortalAmbience.eventMode = 'none';
+
     this.playButton.eventMode = 'none';
     this.playHitZone.eventMode = 'static';
 
@@ -184,6 +198,8 @@ export class MenuScene implements Scene {
     this.menuBack.zIndex = 0;
 
     this.menuForeground.zIndex = 2;
+
+    this.menuPortalAmbience.zIndex = 25;
 
     this.playButton.zIndex = 3;
 
@@ -203,17 +219,14 @@ export class MenuScene implements Scene {
     preloadBackgroundMusic(MENU_BGM_URL);
     warmupCandyAtmosphereEssentials();
 
-    const [menuBackTexture, menuForegroundTexture, idleFrame, jumpFrame] = await Promise.all([
-
-      Assets.load<Texture>(MENU_BACK_ASSET_KEY),
-
-      Assets.load<Texture>(MENU_CANDY_LOOP_ASSET_KEY),
-
-      loadMenuPlayerIdleFrame(),
-
-      loadMenuPlayerJumpFrame(),
-
-    ]);
+    const [menuBackTexture, menuForegroundTexture, menuMoodFrames, menuPlayerStill, menuPlayerClips] =
+      await Promise.all([
+        Assets.load<Texture>(MENU_BACK_ASSET_KEY),
+        Assets.load<Texture>(MENU_CANDY_LOOP_ASSET_KEY),
+        loadMenuPlayerMoodFrames(),
+        loadMenuPlayerStill(),
+        loadMenuPlayerClips(),
+      ]);
 
 
 
@@ -229,14 +242,21 @@ export class MenuScene implements Scene {
       ),
     );
 
-    this.menuPlayer.setIdleFrame(idleFrame);
-    this.menuPlayer.setJumpFrame(jumpFrame);
-
-
+    if (menuMoodFrames.length > 0) {
+      this.menuPlayer.setMoodFrames(menuMoodFrames, MENU_MOOD_FEET_ANCHOR_Y);
+    } else if (menuPlayerStill) {
+      this.menuPlayer.setMoodFrames([menuPlayerStill], MENU_PLAYER_STILL_FEET_ANCHOR_Y);
+    } else if (menuPlayerClips?.idleFrames[0]) {
+      this.menuPlayer.setMoodFrames([menuPlayerClips.idleFrames[0]], 1);
+    }
+    if (menuPlayerClips) {
+      this.menuPlayer.setJumpFrames(menuPlayerClips.jumpFrames);
+    }
 
     this.menuContent.addChild(
       this.menuBack,
       this.menuForeground,
+      this.menuPortalAmbience,
       this.playButton,
       this.menuPlayer,
     );
@@ -300,6 +320,8 @@ export class MenuScene implements Scene {
 
     this.playButton.pulse(this.menuAnimTimeSec);
     this.playButton.tickPressAnimation(dtSec);
+    this.menuPortalAmbience.tick(dtSec);
+    this.menuPlayer.tickMoods(dtSec);
   }
 
 
@@ -353,6 +375,8 @@ export class MenuScene implements Scene {
     const fgTexH = Math.max(1, this.menuForeground.texture.height);
 
     const fgLayout = computeMenuCoverLayout(width, height, fgTexW, fgTexH);
+
+    this.menuPortalAmbience.layout(computeMenuPortalAmbienceBounds(fgLayout, fgTexW, fgTexH));
 
     this.playButton.layout(fgLayout, fgTexW, fgTexH);
 
@@ -691,6 +715,7 @@ export class MenuScene implements Scene {
     }
     this.lootTotals.setVisible(false);
     this.playHitZone.eventMode = 'none';
+    this.menuPortalAmbience.visible = false;
 
     this.playButton.startPressAnimation();
 

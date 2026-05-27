@@ -20,10 +20,10 @@ export const MENU_PLAY_TRANSITION = {
   playerJumpPeakWindow: 0.06,
 } as const;
 
-/** Elapsed transition time when the menu avatar hits jump apex. */
+/** Elapsed transition time when the menu avatar hits jump apex (jump starts on PLAY). */
 export function computeMenuJumpPeakSec(): number {
   const cfg = MENU_PLAY_TRANSITION;
-  return cfg.totalSec - cfg.playerJumpLeadSec + cfg.playerJumpLeadSec * cfg.playerJumpPeakNorm;
+  return cfg.playerJumpLeadSec * cfg.playerJumpPeakNorm;
 }
 
 export type MenuPlayHandoff = {
@@ -156,21 +156,17 @@ export class MenuPlayTransition {
     if (t < cfg.fadeStartSec) {
       this.fadeOverlay.alpha = 0;
     } else {
-      const jumpStartSec = cfg.totalSec - cfg.playerJumpLeadSec;
       const peakSec = computeMenuJumpPeakSec();
       const rampEnd = Math.max(cfg.fadeStartSec + 0.001, peakSec);
       const fadeT = smoothstep((Math.min(t, peakSec) - cfg.fadeStartSec) / (rampEnd - cfg.fadeStartSec));
       this.fadeOverlay.alpha = fadeT * fadeT * cfg.fadeMaxAlpha;
     }
 
-    const jumpStartSec = cfg.totalSec - cfg.playerJumpLeadSec;
-    if (t >= jumpStartSec) {
-      const jumpT = (t - jumpStartSec) / cfg.playerJumpLeadSec;
-      const peak = cfg.playerJumpPeakNorm;
-      if (jumpT >= peak - cfg.playerJumpPeakWindow && jumpT <= peak + cfg.playerJumpPeakWindow) {
-        this.phase = 'whiteIn';
-        this.whiteInElapsedSec = 0;
-      }
+    const jumpT = t / cfg.playerJumpLeadSec;
+    const peak = cfg.playerJumpPeakNorm;
+    if (jumpT >= peak - cfg.playerJumpPeakWindow && jumpT <= peak + cfg.playerJumpPeakWindow) {
+      this.phase = 'whiteIn';
+      this.whiteInElapsedSec = 0;
     }
   }
 

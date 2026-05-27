@@ -13,7 +13,7 @@ export const MENU_BGM_URL = resolvePublicAssetUrl(
   `${encodeURIComponent('game music')}/${encodeURIComponent('Celestial Drift.mp3')}`,
 );
 
-/** Default gameplay loop — `public/assets/game music/Gummy Moon Arcade.mp3`. */
+/** Default gameplay loop — `public/assets/game music/Starlight Gateway.mp3`. */
 export const DEFAULT_GAME_BGM_URL = resolvePublicAssetUrl(
-  `${encodeURIComponent('game music')}/${encodeURIComponent('Gummy Moon Arcade.mp3')}`,
+  `${encodeURIComponent('game music')}/${encodeURIComponent('Starlight Gateway.mp3')}`,
 );

@@ -1,4 +1,4 @@
-import { Texture } from 'pixi.js';
+import { Rectangle, Texture } from 'pixi.js';
 import {
   DARK_BG_MAX_CHANNEL,
   keyImageDataFromEdges,
@@ -199,6 +199,11 @@ function characterOpaqueBounds(
     if (component.x1 < 22 && component.size < 900) {
       continue;
     }
+    // Antenna / head glow above the torso (never drop when trimming).
+    if (component.y1 < main.y0 + 12) {
+      kept.push(component);
+      continue;
+    }
     // Sheet frame digits — small isolated blobs fully below the body.
     if (component.y0 > main.y1 + 5 && component.size < 900) {
       continue;
@@ -239,6 +244,40 @@ function inflateBounds(
   return { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
 }
 
+function inflateBoundsAsymmetric(
+  bounds: TightBounds,
+  pad: { top: number; right: number; bottom: number; left: number },
+  maxW: number,
+  maxH: number,
+): TightBounds {
+  const x0 = Math.max(0, bounds.x - pad.left);
+  const y0 = Math.max(0, bounds.y - pad.top);
+  const x1 = Math.min(maxW, bounds.x + bounds.w + pad.right);
+  const y1 = Math.min(maxH, bounds.y + bounds.h + pad.bottom);
+  return { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
+}
+
+/** Keeps the full row-band height so antenna / cape tips are never trimmed off. */
+function trimCharacterSliceFullHeight(sliceCanvas: HTMLCanvasElement): TightBounds | null {
+  const ctx = sliceCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) {
+    return null;
+  }
+  const w = sliceCanvas.width;
+  const h = sliceCanvas.height;
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const charBounds = characterOpaqueBounds(imageData.data, w, h);
+  const foodBounds = foodOpaqueBounds(imageData.data, w, h);
+  if (!charBounds && !foodBounds) {
+    return null;
+  }
+  const ref = charBounds ?? foodBounds!;
+  const span = foodBounds ?? charBounds!;
+  const x0 = Math.min(ref.x, span.x);
+  const x1 = Math.max(ref.x + ref.w, span.x + span.w);
+  return { x: x0, y: 0, w: Math.max(1, x1 - x0), h };
+}
+
 function trimFoodSliceCanvas(sliceCanvas: HTMLCanvasElement, boundsPadPx = 0): TightBounds | null {
   const ctx = sliceCanvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) {
@@ -262,16 +301,22 @@ function packFrameTexture(
   bounds: TightBounds,
   outW: number,
   outH: number,
+  alignFeetCenterX = false,
+  packHeadroomPx = 0,
 ): Texture {
+  const headroom = Math.max(0, packHeadroomPx);
   const outCanvas = document.createElement('canvas');
   outCanvas.width = outW;
-  outCanvas.height = outH;
+  outCanvas.height = outH + headroom;
   const outCtx = outCanvas.getContext('2d');
   if (!outCtx) {
     return Texture.EMPTY;
   }
-  const dx = Math.floor((outW - bounds.w) * 0.5);
-  const dy = outH - bounds.h;
+  const footCenterX = bounds.x + bounds.w * 0.5;
+  const dx = alignFeetCenterX
+    ? Math.floor(outW * 0.5 - (footCenterX - bounds.x))
+    : Math.floor((outW - bounds.w) * 0.5);
+  const dy = headroom + outH - bounds.h;
   outCtx.drawImage(
     sliceCanvas,
     bounds.x,
@@ -361,21 +406,61 @@ export function extractUniformSheetFrameRows(
   }));
 }
 
+export type NormalizedRowExtractOptions = {
+  /** Expand trimmed bounds (keeps antenna / cape tips). */
+  boundsPadPx?: number;
+  /** Extra space above trim box when packing (px). */
+  packHeadroomPx?: number;
+  /** Do not crop the top of the row band (antenna-safe). */
+  preserveSliceHeight?: boolean;
+  /** Lock feet to canvas center X across frames (reduces idle jitter). */
+  alignFeetCenterX?: boolean;
+};
+
+function trimSliceWithOptions(
+  sliceCanvas: HTMLCanvasElement,
+  options: NormalizedRowExtractOptions,
+): TightBounds | null {
+  const bounds = options.preserveSliceHeight
+    ? trimCharacterSliceFullHeight(sliceCanvas)
+    : trimSliceCanvas(sliceCanvas);
+  if (!bounds) {
+    return null;
+  }
+  const padPx = options.boundsPadPx ?? 0;
+  if (padPx > 0) {
+    return inflateBounds(bounds, padPx, sliceCanvas.width, sliceCanvas.height);
+  }
+  if (options.preserveSliceHeight) {
+    return inflateBoundsAsymmetric(
+      bounds,
+      { top: 8, right: 10, bottom: 4, left: 10 },
+      sliceCanvas.width,
+      sliceCanvas.height,
+    );
+  }
+  return bounds;
+}
+
 function extractRowFramesFromColumns(
   sheetCanvas: HTMLCanvasElement,
   rowY0: number,
   rowY1: number,
   ranges: ColumnRange[],
+  options: NormalizedRowExtractOptions = {},
 ): NormalizedSheetFrames {
-  const trimmed = collectTrimmedSlices(sheetCanvas, rowY0, rowY1, ranges, trimSliceCanvas);
+  const trim = (slice: HTMLCanvasElement) => trimSliceWithOptions(slice, options);
+  const trimmed = collectTrimmedSlices(sheetCanvas, rowY0, rowY1, ranges, trim);
   if (trimmed.length === 0) {
     return { textures: [], feetAnchorY: 1 };
   }
 
   const outW = Math.max(...trimmed.map((t) => t.bounds.w));
   const outH = Math.max(...trimmed.map((t) => t.bounds.h));
+  const alignFeet = options.alignFeetCenterX === true;
+  const headroom = Math.max(0, options.packHeadroomPx ?? 0);
   const textures = trimmed.map(({ sliceCanvas, bounds }) =>
-    packFrameTexture(sliceCanvas, bounds, outW, outH),
+    packFrameTexture(sliceCanvas, bounds, outW, outH, alignFeet, headroom),
   );
 
   return { textures, feetAnchorY: 1 };
@@ -385,11 +470,43 @@ function extractRowFramesFromColumns(
  * Detects each animation strip in a row band, keys the background, trims to opaque
  * bounds, and packs frames onto a shared canvas with feet on the bottom edge.
  */
+/**
+ * Raw row slices from a keyed sheet — column rects only, no trim/repack (art stays intact).
+ */
+export function sliceKeyedSheetRowFrames(
+  sheetCanvas: HTMLCanvasElement,
+  rowY0: number,
+  rowY1: number,
+  maxFrames: number,
+): NormalizedSheetFrames {
+  const sheetW = sheetCanvas.width;
+  const bandH = rowY1 - rowY0;
+  const ctx = sheetCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) {
+    return { textures: [], feetAnchorY: 1 };
+  }
+  const bandData = ctx.getImageData(0, rowY0, sheetW, bandH);
+  const ranges = findColumnRanges(sheetW, bandH, bandData.data).slice(0, maxFrames);
+  if (ranges.length === 0) {
+    return { textures: [], feetAnchorY: 1 };
+  }
+  const base = Texture.from(sheetCanvas);
+  const textures = ranges.map(
+    (range) =>
+      new Texture({
+        source: base.source,
+        frame: new Rectangle(range.x0, rowY0, range.x1 - range.x0, bandH),
+      }),
+  );
+  return { textures, feetAnchorY: 1 };
+}
+
 export function extractNormalizedRowFrames(
   sheetCanvas: HTMLCanvasElement,
   rowY0: number,
   rowY1: number,
   maxFrames: number,
+  options: NormalizedRowExtractOptions = {},
 ): NormalizedSheetFrames {
   const sheetW = sheetCanvas.width;
   const bandH = rowY1 - rowY0;
@@ -399,7 +516,7 @@ export function extractNormalizedRowFrames(
   }
   const bandData = bandCtx.getImageData(0, rowY0, sheetW, bandH);
   const ranges = findColumnRanges(sheetW, bandH, bandData.data).slice(0, maxFrames);
-  return extractRowFramesFromColumns(sheetCanvas, rowY0, rowY1, ranges);
+  return extractRowFramesFromColumns(sheetCanvas, rowY0, rowY1, ranges, options);
 }
 
 /** Uses pre-measured row bounds and column rects (avoids label bleed and row overlap). */

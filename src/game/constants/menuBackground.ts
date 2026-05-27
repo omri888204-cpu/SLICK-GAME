@@ -21,7 +21,7 @@ export const MENU_PLAY_BUTTON_RECT_NORM = {
 /** Portal stairs — lowered so the avatar does not cover the portal. */
 export const MENU_PLAYER_DECK_Y_TEX = 1130;
 /** Horizontal feet anchor (portal stairs center). */
-export const MENU_PLAYER_FEET_X_TEX = 512;
+export const MENU_PLAYER_FEET_X_TEX = 475;
 /** Soles sink into the painted deck (screen px). */
 export const MENU_PLAYER_FEET_SINK_PX = 12;
 
@@ -34,6 +34,12 @@ export const MENU_PLAY_HIT_PAD_TEX_PX = {
   x: 48,
   y: 44,
 } as const;
+
+/** Portal vortex center on `new menu space.png` (procedural ambience overlay). */
+export const MENU_PORTAL_AMBIENCE_CENTER_X_NORM = 512 / MENU_CANDY_LOOP_TEX_W;
+export const MENU_PORTAL_AMBIENCE_CENTER_Y_NORM = 888 / MENU_CANDY_LOOP_TEX_H;
+export const MENU_PORTAL_AMBIENCE_WIDTH_NORM = 230 / MENU_CANDY_LOOP_TEX_W;
+export const MENU_PORTAL_AMBIENCE_HEIGHT_NORM = 260 / MENU_CANDY_LOOP_TEX_H;
 
 export type MenuCoverLayout = {
   scale: number;
@@ -178,6 +184,19 @@ export function layoutMenuPlayButton(
   playButton.width = painted.width;
   playButton.height = painted.height;
   return painted;
+}
+
+export function computeMenuPortalAmbienceBounds(
+  layout: MenuCoverLayout,
+  texW: number,
+  texH: number,
+): { cx: number; cy: number; w: number; h: number } {
+  return {
+    cx: layout.left + MENU_PORTAL_AMBIENCE_CENTER_X_NORM * texW * layout.scale,
+    cy: layout.top + MENU_PORTAL_AMBIENCE_CENTER_Y_NORM * texH * layout.scale,
+    w: MENU_PORTAL_AMBIENCE_WIDTH_NORM * texW * layout.scale,
+    h: MENU_PORTAL_AMBIENCE_HEIGHT_NORM * texH * layout.scale,
+  };
 }
 
 /** Fixed menu avatar feet — does not move when PLAY glow/hit rects are tuned. */

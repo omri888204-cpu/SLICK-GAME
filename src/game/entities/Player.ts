@@ -1,25 +1,26 @@
 import { Assets, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
 import {
-  CANDY_BOY_DISPLAY_WIDTH,
   CANDY_BOY_FEET_ANCHOR_Y,
-  CANDY_BOY_JUMP_LOOP_FRAME_START,
-  CANDY_BOY_ROW_BANDS,
-  CANDY_BOY_SHEET_URL,
   DEFAULT_PLAYER_SKIN,
   FIGHTER_FEET_ANCHOR_Y,
   FIGHTER_FRAME_SIZE,
   FIGHTER_SHEETS,
   fighterSheetUrl,
+  MENU_MOOD_PORTRAIT_FILES,
+  MENU_PLAYER_STILL_SRC,
+  menuMoodPortraitSrc,
   PLAYER_AVATAR_SCALE,
   PLAYER_SKIN,
   type PlayerSkinName,
   type SkinFeetAnchors,
 } from '../constants/playerSkin';
 import { CHARACTER_SHEET_DARK_BG_MAX_CHANNEL } from '../utils/logoTexture';
+import { loadKeyedSheetCanvas } from '../utils/spriteSheetExtract';
 import {
-  extractUniformSheetFrameRows,
-  loadKeyedSheetCanvas,
-} from '../utils/spriteSheetExtract';
+  loadMobi2Animation,
+  mobi2ClipsToCharacterTextures,
+  MOBI2_ANIM,
+} from '../animation/mobi2Animation';
 import { ALIVE, GRAPPLE, RENDER, WALK } from '../../config/game.config';
 import type { ActiveGrapple, Direction } from '../types';
 import type { PlayerBody } from '../systems/Physics';
@@ -40,6 +41,7 @@ const FIGHTER_DISPLAY_WIDTH = 235 * PLAYER_DISPLAY_SCALE;
 /** Nudge feet onto the platform deck when grounded (positive = down into surface). */
 const GROUNDED_FEET_SINK_PX = 0;
 const SLIDE_FPS = 10;
+const IDLE_FPS = MOBI2_ANIM.fps.idle;
 
 type BodyFrame = {
   texture: Texture;
@@ -63,8 +65,6 @@ export const PLAYER_ATTACK_HIT_WINDOW_END = 0.78;
 const PLAYER_SCALE = 0.45785088 * PLAYER_AVATAR_SCALE;
 const PLAYER_BODY_WIDTH = 70 * PLAYER_SCALE;
 const PLAYER_BODY_HEIGHT = 96 * PLAYER_SCALE;
-
-const IDLE_FPS = 8;
 
 type CharacterTextures = {
   idle: Texture[];
@@ -156,88 +156,98 @@ function fighterSkinBundle(textures: CharacterTextures): SkinRenderBundle {
   };
 }
 
-function candyBoySkinBundle(textures: CharacterTextures): SkinRenderBundle {
+function mobi2SkinBundle(textures: CharacterTextures): SkinRenderBundle {
   return {
     textures,
-    spriteDisplayWidth: CANDY_BOY_DISPLAY_WIDTH,
+    spriteDisplayWidth: MOBI2_ANIM.displayWidth,
     feetAnchors: CANDY_BOY_FEET_ANCHOR_Y,
-    jumpLoopFrameStart: CANDY_BOY_JUMP_LOOP_FRAME_START,
+    jumpLoopFrameStart: MOBI2_ANIM.jumpLoopFrameStart,
   };
 }
 
-async function loadCandyBoyTextures(): Promise<CharacterTextures | null> {
-  try {
-    const sheetCanvas = await loadKeyedSheetCanvas(CANDY_BOY_SHEET_URL, {
-      darkMaxChannel: CHARACTER_SHEET_DARK_BG_MAX_CHANNEL,
-    });
-    if (!sheetCanvas) {
-      console.warn('[Player] Failed to decode Candy boy sheet:', CANDY_BOY_SHEET_URL);
-      return null;
-    }
-
-    const rowFrames = extractUniformSheetFrameRows(sheetCanvas, CANDY_BOY_ROW_BANDS);
-
-    const idle = rowFrames[0]?.textures ?? [];
-    const run = rowFrames[1]?.textures ?? [];
-    const jump = rowFrames[2]?.textures ?? [];
-    const landing = rowFrames[3]?.textures ?? [];
-
-    if (idle.length === 0) {
-      console.warn('[Player] Candy boy idle row produced no frames');
-      return null;
-    }
-
-    const ground = run.length > 0 ? run : idle;
-    const slide =
-      landing.length >= 2
-        ? [landing[0], landing[1]]
-        : landing.length > 0
-          ? landing
-          : idle;
-    const attack =
-      run.length >= 4
-        ? [run[0], run[2], run[4], run[6]].filter((tex): tex is Texture => !!tex)
-        : ground;
-
-    return {
-      idle,
-      walk: ground,
-      run: ground,
-      jump: jump.length > 0 ? jump : idle,
-      slide,
-      attack: attack.length > 0 ? attack : idle,
-      landing,
-    };
-  } catch (err) {
-    console.warn('[Player] Failed to load Candy boy sheet:', err);
+async function loadMobi2CharacterTextures(): Promise<CharacterTextures | null> {
+  const bundle = await loadMobi2Animation();
+  if (!bundle) {
     return null;
   }
+  return mobi2ClipsToCharacterTextures(bundle.clips);
 }
 
-/** Single idle frame for the main-menu avatar (avoids sheet digit labels cycling). */
+export type MenuPlayerClips = {
+  idleFrames: Texture[];
+  jumpFrames: Texture[];
+};
+
+let menuPlayerClipsPromise: Promise<MenuPlayerClips | null> | null = null;
+let menuPlayerStillPromise: Promise<Texture | null> | null = null;
+let menuPlayerMoodFramesPromise: Promise<Texture[]> | null = null;
+
+/** Mood portraits for the main menu (joke → happy → think → mad). */
+export async function loadMenuPlayerMoodFrames(): Promise<Texture[]> {
+  menuPlayerMoodFramesPromise ??= (async () => {
+    const textures: Texture[] = [];
+    for (const file of MENU_MOOD_PORTRAIT_FILES) {
+      const canvas = await loadKeyedSheetCanvas(menuMoodPortraitSrc(file), {
+        darkMaxChannel: CHARACTER_SHEET_DARK_BG_MAX_CHANNEL,
+      });
+      if (canvas) {
+        textures.push(Texture.from(canvas));
+      }
+    }
+    return textures;
+  })();
+  return menuPlayerMoodFramesPromise;
+}
+
+/** Static menu portrait (`new mobi 2.png`) — fallback when mood art fails to load. */
+export async function loadMenuPlayerStill(): Promise<Texture | null> {
+  menuPlayerStillPromise ??= (async () => {
+    const canvas = await loadKeyedSheetCanvas(MENU_PLAYER_STILL_SRC, {
+      darkMaxChannel: CHARACTER_SHEET_DARK_BG_MAX_CHANNEL,
+    });
+    if (!canvas) {
+      return null;
+    }
+    return Texture.from(canvas);
+  })();
+  return menuPlayerStillPromise;
+}
+
+/** Jump strip for PLAY transition only (`mobi 2 movement.png`). */
+export async function loadMenuPlayerClips(): Promise<MenuPlayerClips | null> {
+  menuPlayerClipsPromise ??= (async () => {
+    const bundle = await loadMobi2Animation();
+    if (bundle) {
+      return {
+        idleFrames: bundle.clips.idle,
+        jumpFrames:
+          bundle.clips.jump.length > 0 ? bundle.clips.jump : bundle.clips.idle,
+      };
+    }
+
+    const fighter = await loadFighterTextures();
+    if (fighter && fighter.idle.length > 0) {
+      return {
+        idleFrames: fighter.idle,
+        jumpFrames: fighter.jump.length > 0 ? fighter.jump : fighter.idle,
+      };
+    }
+
+    return null;
+  })();
+  return menuPlayerClipsPromise;
+}
+
+/** @deprecated Use {@link loadMenuPlayerClips}. */
 export async function loadMenuPlayerIdleFrame(): Promise<Texture | undefined> {
-  const candy = await loadCandyBoyTextures();
-  if (candy && candy.idle.length > 0) {
-    return candy.idle[0];
-  }
-  const fighter = await loadFighterTextures();
-  if (fighter && fighter.idle.length > 0) {
-    return fighter.idle[0];
-  }
-  return undefined;
+  const clips = await loadMenuPlayerClips();
+  return clips?.idleFrames[0];
 }
 
-/** Jump pose for the menu fly-into-clouds beat. */
+/** @deprecated Use {@link loadMenuPlayerClips}. */
 export async function loadMenuPlayerJumpFrame(): Promise<Texture | undefined> {
-  const candy = await loadCandyBoyTextures();
-  if (candy && candy.jump.length > 0) {
-    return candy.jump[0];
-  }
-  const fighter = await loadFighterTextures();
-  if (fighter && fighter.jump.length > 0) {
-    return fighter.jump[0];
-  }
-  return undefined;
+  const clips = await loadMenuPlayerClips();
+  return clips?.jumpFrames[0];
 }
 
 export class Player extends Container {
@@ -361,7 +371,6 @@ export class Player extends Container {
       this.bodySprite.scale.y = this.bodySprite.scale.x;
       this.bodySprite.roundPixels = snapPx;
     }
-
     if (this.silhouette) {
       this.silhouette.texture = frame0;
       this.silhouette.anchor.set(0.5, feetY);
@@ -372,14 +381,14 @@ export class Player extends Container {
   }
 
   async load(): Promise<void> {
-    const [fighterTextures, candyBoyTextures] = await Promise.all([
+    const [fighterTextures, mobi2Textures] = await Promise.all([
       loadFighterTextures(),
-      loadCandyBoyTextures(),
+      loadMobi2CharacterTextures(),
     ]);
 
     this.skinBundles = {} as Record<PlayerSkinName, SkinRenderBundle>;
-    if (candyBoyTextures) {
-      this.skinBundles[PLAYER_SKIN.CANDY_BOY] = candyBoySkinBundle(candyBoyTextures);
+    if (mobi2Textures) {
+      this.skinBundles[PLAYER_SKIN.CANDY_BOY] = mobi2SkinBundle(mobi2Textures);
     }
     if (fighterTextures) {
       this.skinBundles[PLAYER_SKIN.FIGHTER] = fighterSkinBundle({
@@ -417,6 +426,7 @@ export class Player extends Container {
     this.bodySprite.width = initialBundle?.spriteDisplayWidth ?? FIGHTER_DISPLAY_WIDTH;
     this.bodySprite.scale.y = this.bodySprite.scale.x;
     this.bodySprite.position.set(0, 0);
+
     this.avatarRig.addChild(this.bodySprite);
 
     this.addChildAt(this.silhouette, 1);
@@ -807,7 +817,7 @@ export class Player extends Container {
     if (this.state === PlayerState.Walk) {
       const walk = this.textures.walk;
       const idx =
-        Math.floor(this.distanceTraveled / WALK.runFrameDistance) %
+        Math.floor(this.distanceTraveled / MOBI2_ANIM.runFrameDistance) %
         Math.max(1, walk.length);
       return { texture: walk[idx], feetAnchorY: this.feetAnchors.run };
     }

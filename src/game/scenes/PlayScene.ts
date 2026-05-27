@@ -399,13 +399,13 @@ const PLATFORM_SPRITE_LAYER_Z_INDEX = 28;
 const COLLECTIBLES_LAYER_Z_INDEX = 36;
 /** Always above player (40) so molten pool covers the avatar on overlap. */
 const LAVA_POOL_LAYER_Z_INDEX = 45;
-/** Gameplay BGM — `public/assets/game music/Gummy Moon Arcade.mp3`. */
+/** Gameplay BGM — `public/assets/game music/Starlight Gateway.mp3`. */
 const GAME_MUSIC_DIR_URL = `${GAME_ASSETS}/${encodeURIComponent('game music')}`;
-const GAME_MUSIC_BGM_FILENAMES = ['Gummy Moon Arcade.mp3'] as const;
+const GAME_MUSIC_BGM_FILENAMES = ['Starlight Gateway.mp3'] as const;
 const GAME_MUSIC_BGM_TRACKS: readonly string[] = GAME_MUSIC_BGM_FILENAMES.map(
   (name) => `${GAME_MUSIC_DIR_URL}/${encodeURIComponent(name)}`,
 );
-const BGM_FALLBACK_URL = `${GAME_MUSIC_DIR_URL}/${encodeURIComponent('Gummy Moon Arcade.mp3')}`;
+const BGM_FALLBACK_URL = `${GAME_MUSIC_DIR_URL}/${encodeURIComponent('Starlight Gateway.mp3')}`;
 /** Lava-rise tension loop — `public/assets/sound effect/stress mode.m4a` (3500→6000 landed m). */
 const STRESS_MODE_BGM_URL = `${GAME_ASSETS}/${encodeURIComponent('sound effect')}/${encodeURIComponent('stress mode.m4a')}`;
 const ENABLE_STRESS_MODE_BGM = false;

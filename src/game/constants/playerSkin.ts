@@ -72,8 +72,8 @@ export function fighterSheetUrl(filename: string): string {
   return `${FIGHTER_DIR}${encodeURIComponent(filename)}`;
 }
 
-/** Single spritesheet `candy boy.png` — idle / run / jump / landing rows with explicit frame rects. */
-export const CANDY_BOY_SHEET_URL = `${PLAYABLE_STAFF}${encodeURIComponent('candy boy.png')}`;
+/** Playable character — `mobi 2 movement.png` (raw column slices, no auto-crop). */
+export const CANDY_BOY_SHEET_URL = `${PLAYABLE_STAFF}${encodeURIComponent('mobi 2 movement.png')}`;
 export const CANDY_BOY_ROW_BANDS = [
   {
     row: 0,
@@ -133,10 +133,11 @@ export const CANDY_BOY_ROW_BANDS = [
 ] as const;
 /** Playable avatar scale — sprite width + physics hitbox (0.8 = 20% smaller). */
 export const PLAYER_AVATAR_SCALE = 0.8;
-/** ~Fighter height on screen (tall candy-boy frames scale from width). */
-export const CANDY_BOY_DISPLAY_WIDTH = 165 * PLAYER_AVATAR_SCALE;
-/** Airborne loop starts at apex frame in the jump strip. */
+/** On-screen width for mobi 2 movement frames. */
+export const CANDY_BOY_DISPLAY_WIDTH = 178 * PLAYER_AVATAR_SCALE;
+/** Airborne loop — frame index in the 6-frame jump strip. */
 export const CANDY_BOY_JUMP_LOOP_FRAME_START = 3;
+/** Feet on frame bottom (measured rects include full character height). */
 export const CANDY_BOY_FEET_ANCHOR_Y: SkinFeetAnchors = {
   idle: 1,
   run: 1,
@@ -146,3 +147,29 @@ export const CANDY_BOY_FEET_ANCHOR_Y: SkinFeetAnchors = {
   attack: 1,
   landing: 1,
 };
+
+/** Main-menu still — full portrait, no sheet trim (`new mobi 2.png`). */
+export const MENU_PLAYER_STILL_URL = `${PLAYABLE_STAFF}${encodeURIComponent('new mobi 2.png')}`;
+const MENU_PLAYER_STILL_REVISION = '20260528-menu-still-restore';
+export const MENU_PLAYER_STILL_SRC = `${MENU_PLAYER_STILL_URL}?v=${MENU_PLAYER_STILL_REVISION}`;
+export const MENU_PLAYER_STILL_FEET_ANCHOR_Y = 0.94;
+
+/** Main-menu mood portraits — cycle order on the home screen. */
+export const MENU_MOOD_PORTRAIT_FILES = [
+  'mobi joke.png',
+  'mobi happy.png',
+  'mobi think.png',
+  'mobi mad.png',
+] as const;
+const MENU_MOOD_REVISION = '20260528-moods-v1';
+export const MENU_MOOD_CYCLE_SEC = 2;
+export const MENU_MOOD_FEET_ANCHOR_Y = MENU_PLAYER_STILL_FEET_ANCHOR_Y;
+
+export function menuMoodPortraitSrc(file: (typeof MENU_MOOD_PORTRAIT_FILES)[number]): string {
+  return `${PLAYABLE_STAFF}${encodeURIComponent(file)}?v=${MENU_MOOD_REVISION}`;
+}
+
+export const MENU_PLAYER_IDLE_FPS = 1;
+export const MENU_PLAYER_JUMP_FPS = 10;
+/** Menu avatar scale vs default avatar height. */
+export const MENU_PLAYER_SCALE_MULT = 1.89;
