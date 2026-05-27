@@ -32,11 +32,8 @@ import {
   MENU_CANDY_LOOP_ASSET_KEY,
   registerMenuAssets,
 } from '../constants/menuBackground';
-import {
-  loadMenuPlayerClips,
-  loadMenuPlayerMoodFrames,
-  loadMenuPlayerStill,
-} from '../entities/Player';
+import { menuPortalFocusScreen } from '../constants/portalAnchors';
+import { loadMenuPlayerMoodFrames, loadMenuPlayerStill } from '../entities/Player';
 import {
   MENU_MOOD_FEET_ANCHOR_Y,
   MENU_PLAYER_STILL_FEET_ANCHOR_Y,
@@ -109,6 +106,8 @@ export class MenuScene implements Scene {
   private playStarted = false;
 
   private playTransition: MenuPlayTransition | null = null;
+  private menuPortalFocusX = 0;
+  private menuPortalFocusY = 0;
 
   private playHandoffStarted = false;
 
@@ -219,13 +218,12 @@ export class MenuScene implements Scene {
     preloadBackgroundMusic(MENU_BGM_URL);
     warmupCandyAtmosphereEssentials();
 
-    const [menuBackTexture, menuForegroundTexture, menuMoodFrames, menuPlayerStill, menuPlayerClips] =
+    const [menuBackTexture, menuForegroundTexture, menuMoodFrames, menuPlayerStill] =
       await Promise.all([
         Assets.load<Texture>(MENU_BACK_ASSET_KEY),
         Assets.load<Texture>(MENU_CANDY_LOOP_ASSET_KEY),
         loadMenuPlayerMoodFrames(),
         loadMenuPlayerStill(),
-        loadMenuPlayerClips(),
       ]);
 
 
@@ -246,11 +244,6 @@ export class MenuScene implements Scene {
       this.menuPlayer.setMoodFrames(menuMoodFrames, MENU_MOOD_FEET_ANCHOR_Y);
     } else if (menuPlayerStill) {
       this.menuPlayer.setMoodFrames([menuPlayerStill], MENU_PLAYER_STILL_FEET_ANCHOR_Y);
-    } else if (menuPlayerClips?.idleFrames[0]) {
-      this.menuPlayer.setMoodFrames([menuPlayerClips.idleFrames[0]], 1);
-    }
-    if (menuPlayerClips) {
-      this.menuPlayer.setJumpFrames(menuPlayerClips.jumpFrames);
     }
 
     this.menuContent.addChild(
@@ -300,13 +293,20 @@ export class MenuScene implements Scene {
     this.menuAnimTimeSec += dtSec;
 
     if (this.playTransition) {
+      const state = this.playTransition.getState();
       this.playTransition.tick(dtSec);
       this.playButton.tickPressAnimation(dtSec);
-      this.menuPlayer.tickTransitionJump(
-        this.playTransition.getElapsedSec(),
-        this.viewportH,
-        this.viewportW,
-      );
+      this.menuPortalAmbience.setTransitionBoost(state.portalGlow);
+      this.menuPortalAmbience.tick(dtSec);
+      if (state.suctionT > 0.001) {
+        this.menuPlayer.tickPortalSuction(
+          state.suctionT,
+          this.menuPortalFocusX,
+          this.menuPortalFocusY,
+        );
+      } else {
+        this.menuPlayer.tickIdle(dtSec);
+      }
       return;
     }
 
@@ -321,10 +321,8 @@ export class MenuScene implements Scene {
     this.playButton.pulse(this.menuAnimTimeSec);
     this.playButton.tickPressAnimation(dtSec);
     this.menuPortalAmbience.tick(dtSec);
-    this.menuPlayer.tickMoods(dtSec);
+    this.menuPlayer.tickIdle(dtSec);
   }
-
-
 
   resize(width: number, height: number): void {
 
@@ -377,6 +375,10 @@ export class MenuScene implements Scene {
     const fgLayout = computeMenuCoverLayout(width, height, fgTexW, fgTexH);
 
     this.menuPortalAmbience.layout(computeMenuPortalAmbienceBounds(fgLayout, fgTexW, fgTexH));
+
+    const portalFocus = menuPortalFocusScreen(fgLayout, fgTexW, fgTexH);
+    this.menuPortalFocusX = portalFocus.x;
+    this.menuPortalFocusY = portalFocus.y;
 
     this.playButton.layout(fgLayout, fgTexW, fgTexH);
 
@@ -715,7 +717,7 @@ export class MenuScene implements Scene {
     }
     this.lootTotals.setVisible(false);
     this.playHitZone.eventMode = 'none';
-    this.menuPortalAmbience.visible = false;
+    this.menuPortalAmbience.setTransitionBoost(0);
 
     this.playButton.startPressAnimation();
 
@@ -739,6 +741,8 @@ export class MenuScene implements Scene {
         this.dreamyFadeOverlay!,
         this.viewportW,
         this.viewportH,
+        this.menuPortalFocusX,
+        this.menuPortalFocusY,
         (handoff) => {
           void this.beginPlayHandoff(handoff).then(resolve).catch(reject);
         },

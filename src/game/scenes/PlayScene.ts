@@ -92,6 +92,8 @@ import {
 } from '../utils/logoTexture';
 import { SkillHudButton } from '../ui/SkillHudButton';
 import type { ActiveGrapple, Platform, Ripple } from '../types';
+import { gameplayPortalScreen } from '../constants/portalAnchors';
+import { buildLayerBackgroundLayout } from '../systems/atmosphere/candyStaticBackground';
 import { MENU_PLAY_TRANSITION } from '../ui/MenuPlayTransition';
 import { PlatformSystem } from '../../scenes/play/world/PlatformSystem';
 import type { Scene } from './Scene';
@@ -785,9 +787,8 @@ const MOBILE_CAMERA_ZOOM = 0.42;
 const CAMERA_PLAYER_SCREEN_Y_RATIO = 0.62;
 /** Feet sit slightly above Floor 0 deck top so the first physics frame does not look like a harsh drop. */
 const FLOOR0_SPAWN_SURFACE_OFFSET_PX = 2;
-/** Menu handoff: in-game fall duration — synced with white overlay {@link MENU_PLAY_TRANSITION.fadeOutSec}. */
-const MENU_SKY_DROP_INTRO_SEC = MENU_PLAY_TRANSITION.fadeOutSec;
-const MENU_SKY_DROP_FALL_VIEWPORT_RATIO = 0.82;
+/** Menu handoff: burst out of painted `space 1.png` portal onto Floor 0. */
+const MENU_PORTAL_BURST_INTRO_SEC = 1.35;
 const AUTO_SCROLL_BASE_SPEED_PX = 120;
 /** Speed clock HUD — upper-left, below combo row (tweak after playtest). */
 const SPEED_CLOCK_HUD_X = 14;
@@ -1139,6 +1140,7 @@ export class PlayScene implements Scene {
   private menuSkyDropIntroElapsedSec = 0;
   private menuSkyDropIntroStartY = 0;
   private menuSkyDropIntroTargetY = 0;
+  private menuPortalBurstStartScale = 0.18;
   private gameplayUnlocked = true;
   /** One-shot voice when the player first steers at run start. */
   private mobiReadyVoicePlayed = false;
@@ -1660,7 +1662,7 @@ export class PlayScene implements Scene {
     });
   }
 
-  /** Starts the 2s sky fall in sync with the menu white overlay fade-out. */
+  /** Emerges from the painted gameplay portal (`space 1.png`) onto Floor 0. */
   beginMenuSkyDropIntro(): void {
     if (!this.fromMenuHandoff || this.gameplayUnlocked || !this.initialFloorConfirmed) {
       return;
@@ -1672,9 +1674,20 @@ export class PlayScene implements Scene {
 
     this.snapPlayerToFloor0(deck, false);
     this.menuSkyDropIntroTargetY = this.player.body.y;
-    const fallPx = this.worldHeightFromScreen() * MENU_SKY_DROP_FALL_VIEWPORT_RATIO;
-    this.menuSkyDropIntroStartY = this.menuSkyDropIntroTargetY - fallPx;
+
+    const vh = this.worldHeightFromScreen();
+    const vw = this.worldWidthFromScreen();
+    const bottomAnchorY = vh - DEATH_ORANGE_BAR_HEIGHT_PX;
+    const portalScreen = gameplayPortalScreen(
+      buildLayerBackgroundLayout(vw, vh, bottomAnchorY),
+    );
+    const feetScreenY = this.player.body.y + this.player.body.height;
+    const deltaScreen = portalScreen.y - feetScreenY;
+    this.menuSkyDropIntroStartY = this.menuSkyDropIntroTargetY + deltaScreen;
     this.player.body.y = Math.round(this.menuSkyDropIntroStartY);
+
+    this.menuPortalBurstStartScale = 0.16;
+    this.player.setPresentScale(this.menuPortalBurstStartScale);
     this.player.body.vx = 0;
     this.player.body.vy = 0;
     this.player.body.grounded = false;
@@ -1692,6 +1705,7 @@ export class PlayScene implements Scene {
     }
 
     this.menuSkyDropIntroActive = false;
+    this.player.setPresentScale(1);
     const deck = this.findFloor0Platform() ?? this.platforms[0] ?? null;
     if (deck) {
       this.snapPlayerToFloor0(deck, false);
@@ -3531,11 +3545,16 @@ export class PlayScene implements Scene {
       return;
     }
     this.menuSkyDropIntroElapsedSec += dt;
-    const t = Math.min(1, this.menuSkyDropIntroElapsedSec / MENU_SKY_DROP_INTRO_SEC);
-    const eased = t * t;
+    const t = Math.min(1, this.menuSkyDropIntroElapsedSec / MENU_PORTAL_BURST_INTRO_SEC);
+    const moveT = 1 - (1 - t) ** 3;
+    const popT = t < 1 ? 1 - (1 - t) ** 2 * Math.cos(t * Math.PI * 0.5) : 1;
     const span = this.menuSkyDropIntroTargetY - this.menuSkyDropIntroStartY;
-    this.player.body.y = Math.round(this.menuSkyDropIntroStartY + span * eased);
-    this.player.body.vy = (span * 2 * t) / MENU_SKY_DROP_INTRO_SEC;
+    this.player.body.y = Math.round(this.menuSkyDropIntroStartY + span * moveT);
+    this.player.setPresentScale(
+      this.menuPortalBurstStartScale + (1 - this.menuPortalBurstStartScale) * popT,
+    );
+    this.player.body.vx = 0;
+    this.player.body.vy = span > 0 ? ((span * moveT) / Math.max(0.05, MENU_PORTAL_BURST_INTRO_SEC)) * 0.35 : 0;
     this.player.body.grounded = false;
     if (t >= 1) {
       this.finishMenuSkyDropIntro();

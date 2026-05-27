@@ -4,17 +4,24 @@ import {
   MENU_PLAYER_SCALE_MULT,
   PLAYER_AVATAR_SCALE,
 } from '../constants/playerSkin';
-import { MENU_PLAY_TRANSITION } from './MenuPlayTransition';
 
-/** Menu avatar — mood cycle on home screen, jump strip on PLAY. */
+function smoothstep(t: number): number {
+  const x = Math.max(0, Math.min(1, t));
+  return x * x * (3 - 2 * x);
+}
+
+function easeInCubic(t: number): number {
+  return t * t * t;
+}
+
+/** Menu avatar — mood cycle, idle breath, portal suction on PLAY. */
 export class MenuPlayerAvatar extends Container {
   private readonly body = new Sprite();
 
   private moodFrames: Texture[] = [];
-  private jumpFrames: Texture[] = [];
   private moodFrameIndex = 0;
-  private jumpFrameIndex = 0;
   private moodAnimAccumSec = 0;
+  private breathTimeSec = 0;
   private baseScale = 1;
   private feetAnchorY = 1;
   private baseFeetX = 0;
@@ -28,12 +35,12 @@ export class MenuPlayerAvatar extends Container {
     this.addChild(this.body);
   }
 
-  /** Cycles joke / happy / think / mad on the main menu. */
   setMoodFrames(frames: Texture[], feetAnchorY = 1): void {
     this.moodFrames = frames;
     this.feetAnchorY = feetAnchorY;
     this.moodFrameIndex = 0;
     this.moodAnimAccumSec = 0;
+    this.breathTimeSec = 0;
     const frame = frames[0];
     if (!frame || frame.height <= 0) {
       this.visible = false;
@@ -42,6 +49,7 @@ export class MenuPlayerAvatar extends Container {
     this.visible = true;
     this.body.texture = frame;
     this.body.anchor.set(0.5, feetAnchorY);
+    this.applyBodyPose(1, 0);
   }
 
   setIdleFrames(frames: Texture[], feetAnchorY = 1): void {
@@ -50,15 +58,6 @@ export class MenuPlayerAvatar extends Container {
 
   setIdleFrame(frame: Texture | undefined, feetAnchorY = 1): void {
     this.setMoodFrames(frame ? [frame] : [], feetAnchorY);
-  }
-
-  setJumpFrames(frames: Texture[]): void {
-    this.jumpFrames = frames.length > 0 ? frames : this.moodFrames;
-    this.jumpFrameIndex = 0;
-  }
-
-  setJumpFrame(frame: Texture | undefined): void {
-    this.setJumpFrames(frame ? [frame] : []);
   }
 
   tickMoods(dtSec: number): void {
@@ -73,9 +72,46 @@ export class MenuPlayerAvatar extends Container {
     }
   }
 
-  /** @deprecated Use {@link tickMoods}. */
   tickIdle(dtSec: number): void {
     this.tickMoods(dtSec);
+    this.tickBreath(dtSec);
+  }
+
+  tickBreath(dtSec: number): void {
+    this.breathTimeSec += dtSec;
+    this.applyBodyPose(1, 0);
+  }
+
+  /**
+   * Suction into the painted menu portal — slide, stretch, shrink, fade.
+   * @param suctionT 0..1 from {@link MenuPlayTransition}
+   */
+  tickPortalSuction(suctionT: number, portalX: number, portalY: number): void {
+    const t = smoothstep(Math.max(0, Math.min(1, suctionT)));
+    if (t <= 0.001) {
+      this.position.set(this.baseFeetX, this.baseFeetY);
+      this.alpha = 1;
+      this.applyBodyPose(1, 0);
+      return;
+    }
+
+    const pull = easeInCubic(t);
+    const hop = Math.sin(t * Math.PI) * 0.08;
+    this.position.set(
+      this.baseFeetX + (portalX - this.baseFeetX) * pull,
+      this.baseFeetY + (portalY - this.baseFeetY) * pull - hop * 28,
+    );
+
+    const toward = Math.atan2(portalY - this.baseFeetY, portalX - this.baseFeetX);
+    this.body.rotation = toward * 0.06 * pull + Math.sin(t * 14) * 0.04 * (1 - t);
+
+    const stretch = 1 + 0.22 * pull;
+    const squash = 1 - 0.12 * pull;
+    const shrink = 1 - 0.82 * t;
+    this.applyBodyPose(shrink, pull, stretch, squash);
+
+    this.alpha = 1 - t * 0.95;
+    this.visible = this.alpha > 0.02;
   }
 
   layout(viewportH: number, feetX: number, feetY: number, viewportW?: number): void {
@@ -96,36 +132,23 @@ export class MenuPlayerAvatar extends Container {
 
     this.position.set(feetX, feetY);
     this.alpha = 1;
-    this.body.scale.set(this.baseScale);
     this.body.y = 0;
     this.body.rotation = 0;
     if (this.moodFrames.length > 0) {
       this.body.texture = this.moodFrames[this.moodFrameIndex] ?? this.moodFrames[0]!;
     }
+    this.applyBodyPose(1, 0);
   }
 
-  tickTransitionJump(transitionElapsedSec: number, viewportH: number, viewportW?: number): void {
-    if (viewportW != null) {
-      this.viewportW = viewportW;
-    }
-
-    const cfg = MENU_PLAY_TRANSITION;
-    const jumpLeadSec = cfg.playerJumpLeadSec;
-    const jumpT = Math.min(1, Math.max(0, transitionElapsedSec) / jumpLeadSec);
-    const hop = Math.sin(jumpT * Math.PI);
-    const climb = jumpT ** 0.72;
-    const jumpHeight = viewportH * cfg.playerJumpHeightNorm;
-    const yOffset = -(hop * jumpHeight * 0.28 + climb * jumpHeight * 1.5);
-    const towardCloudsX = (this.viewportW * cfg.focusNormX - this.baseFeetX) * climb * 0.22;
-
-    this.position.set(this.baseFeetX + towardCloudsX, this.baseFeetY + yOffset);
-    this.body.rotation = -0.16 * hop;
-    this.body.y = 0;
-
-    if (this.moodFrames.length > 0) {
-      this.body.texture = this.moodFrames[this.moodFrameIndex] ?? this.moodFrames[0]!;
-    }
-
-    this.alpha = 1;
+  private applyBodyPose(
+    scaleMul: number,
+    suctionPull: number,
+    stretchX = 1,
+    stretchY = 1,
+  ): void {
+    const breath = 1 + 0.028 * Math.sin(this.breathTimeSec * 2.1);
+    const sx = this.baseScale * scaleMul * stretchX * breath;
+    const sy = this.baseScale * scaleMul * stretchY * (breath - suctionPull * 0.04);
+    this.body.scale.set(sx, sy);
   }
 }

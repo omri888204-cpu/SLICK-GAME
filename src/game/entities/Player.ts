@@ -851,6 +851,14 @@ export class Player extends Container {
     return Math.min(0.99, 0.7 + Math.min(1, (vy - 400) / 800) * 0.29);
   }
 
+  /** Run-start portal burst — uniform scale on pose rig (1 = normal). */
+  setPresentScale(mult: number): void {
+    const m = Math.max(0.01, mult);
+    if (this.avatarRig) {
+      this.avatarRig.scale.set(m);
+    }
+  }
+
   /** World Y of the avatar rig origin — bottom-center of the sprite (feet). */
   private getFeetAnchorY(): number {
     return this.body.height * 0.5;
