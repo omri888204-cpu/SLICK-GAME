@@ -15,11 +15,12 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "skipLibCheck": true,
+    "noEmit": true,
     "allowJs": true,
     "useDefineForClassFields": true,
     "verbatimModuleSyntax": false,
     "types": ["vite/client"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"],
-  "exclude": ["node_modules", "dist", "android", "ios"]
+  "exclude": ["node_modules", "dist", "build"]
 }
