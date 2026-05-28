@@ -1,7 +1,7 @@
 const GAME_ASSETS = `${import.meta.env.BASE_URL}assets`;
 const BG_TESET_DIR = `${GAME_ASSETS}/${encodeURIComponent('backgroud teset')}`;
 
-const LAYER_ASSET_REVISION = '20260527-rocks-speck-v4';
+const LAYER_ASSET_REVISION = '20260529-teset-5002-v1';
 /** Letterbox / hole fill behind back 5000 sky (matches asset purple). */
 export const BACK_5000_BACKDROP_COLOR = 0x2a1048;
 
@@ -19,18 +19,18 @@ export const CANDY_SPACE_2_SKY_URL = CANDY_BACK_SPACE_SKY_URL;
 export const BACK_SPACE_SKY_CAMERA_PARALLAX = 0.08;
 /** @deprecated Use {@link BACK_SPACE_SKY_CAMERA_PARALLAX}. */
 export const SPACE_2_SKY_CAMERA_PARALLAX = BACK_SPACE_SKY_CAMERA_PARALLAX;
-/** back 5000 — far sky from {@link BACKGROUND_TIER_SWITCH_METERS} upward. */
-export const CANDY_LAYER1_SKY_HIGH_URL = layerAssetUrl('back 5000.png');
+/** teset 5002 — far sky from {@link BACKGROUND_TIER_SWITCH_METERS} upward; vertical film-roll tile. */
+export const CANDY_LAYER1_SKY_HIGH_URL = layerAssetUrl('teset 5002.png');
 /** space mid — static layer between {@link CANDY_SPACE_2_SKY_URL} and {@link CANDY_LAYER2_MIDDLE_URL}. */
 export const CANDY_SPACE_MID_URL = `${BG_TESET_DIR}/${encodeURIComponent('space mid.png')}?v=${LAYER_ASSET_REVISION}`;
-/** space 1 — foreground midground below {@link BACKGROUND_TIER_SWITCH_METERS}. */
-export const CANDY_LAYER2_MIDDLE_URL = layerAssetUrl('space 1.png');
+/** new main ship 1 — foreground midground below {@link BACKGROUND_TIER_SWITCH_METERS}. */
+export const CANDY_LAYER2_MIDDLE_URL = layerAssetUrl('new main ship 1.png');
 /** Gentle vertical bob on space 1 (screen px, peak amplitude). */
 export const SPACE_1_MIDDLE_BOB_RANGE_PX = 8;
 /** Bob phase speed — 1 rad/s (~6.3 s full cycle), matches legacy teset-2 oscillation. */
 export const SPACE_1_MIDDLE_BOB_SPEED_RAD_PER_SEC = 1;
-/** 5000 factory — midground [5000, {@link BACKGROUND_TIER_2_SWITCH_METERS}) m. */
-export const CANDY_LAYER2_MIDDLE_HIGH_URL = layerAssetUrl('5000 factory.png');
+/** teset 5001 — foreground [5000, {@link BACKGROUND_TIER_2_SWITCH_METERS}) m (mirrors {@link CANDY_LAYER2_MIDDLE_URL}). */
+export const CANDY_LAYER2_MIDDLE_HIGH_URL = layerAssetUrl('teset 5001.png');
 /** castle 10000 — midground from {@link BACKGROUND_TIER_2_SWITCH_METERS} upward. */
 export const CANDY_LAYER2_MIDDLE_ULTRA_URL = layerAssetUrl('castle 10000.png');
 /** HUD climb (m) at which sky switches to 5k assets. */

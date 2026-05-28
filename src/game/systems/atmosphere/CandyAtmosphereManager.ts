@@ -47,9 +47,9 @@ export type CandyAtmosphereUpdate = {
 };
 
 /**
- * - back space / back 5000: far sky (back space film-roll tile while climbing; back 5000 at 5k+ m)
- * - space mid: static layer between space 2 and space 1 (below 5k m)
- * - space 1 / 5000 factory / castle 10000: foreground midground (switches at 5k / 10k m)
+ * - back space / teset 5002: far sky (film-roll tile)
+ * - space mid: static mid layer below 5k m only
+ * - new main ship 1 / teset 5001 / castle 10000: foreground (switches at 5k / 10k m)
  * - optional: 5000 wall / 10000 walls foreground tiles ({@link ENABLE_CANDY_FRONT_WALLS})
  * - {@link SpaceFloatingRocks}: three rocks from `rocks 1.png` in the bottom-right triangle
  */
@@ -61,9 +61,10 @@ export class CandyAtmosphereManager {
   /** Below 5k m — `back space.png`; vertical seamless tile unrolls while climbing (film reel). */
   private skyBackSpaceTile: TilingSprite | null = null;
   private backSpaceTileScale = 1;
-  /** 5k+ m — `back 5000.png` cover tile + slow ambient drift. */
+  /** 5k+ m — `teset 5002.png` vertical film-roll tile while climbing. */
   private skyTileHigh: TilingSprite | null = null;
-  /** Below 5k m — `space mid.png`, viewport-locked between space 2 and space 1. */
+  private highSkyTileScale = 1;
+  /** Below 5k m — `space mid.png`, viewport-locked between sky and foreground. */
   private spaceMidSprite: Sprite | null = null;
   private middleSprite: Sprite | null = null;
   private frontTile: TilingSprite | null = null;
@@ -75,6 +76,8 @@ export class CandyAtmosphereManager {
   private skyTexBackSpace: Texture | null = null;
   private backSpaceFilmScrollPx = 0;
   private lastBackSpaceCameraY = 0;
+  private highSkyFilmScrollPx = 0;
+  private lastHighSkyCameraY = 0;
   private skyTexSpaceMid: Texture | null = null;
   private skyTexHigh: Texture | null = null;
   private activeSkyTier: 'low' | 'high' = 'low';
@@ -178,6 +181,9 @@ export class CandyAtmosphereManager {
       this.backSpaceFilmScrollPx = 0;
       this.lastBackSpaceCameraY = 0;
       this.backSpaceTileScale = 1;
+      this.highSkyFilmScrollPx = 0;
+      this.lastHighSkyCameraY = 0;
+      this.highSkyTileScale = 1;
       this.skyAmbientScrollY = 0;
       this.loaded = true;
 
@@ -211,7 +217,8 @@ export class CandyAtmosphereManager {
     try {
       const deferredPromises: Promise<Texture>[] = [
         prepareStaticBackgroundTexture(CANDY_LAYER1_SKY_HIGH_URL, {
-          skipEdgeKeying: true,
+          verticalRepeat: true,
+          nearestScale: true,
         }),
         prepareStaticBackgroundTexture(CANDY_LAYER2_MIDDLE_HIGH_URL),
         prepareStaticBackgroundTexture(CANDY_LAYER2_MIDDLE_ULTRA_URL),
@@ -274,6 +281,7 @@ export class CandyAtmosphereManager {
       if (this.lastLayout) {
         this.layout(this.lastLayout);
       }
+      this.syncSpaceMidVisibility();
     } catch (error) {
       console.error('[CandyAtmosphereManager] Deferred layer load failed:', error);
     }
@@ -291,6 +299,7 @@ export class CandyAtmosphereManager {
 
     const viewport = buildLayerBackgroundLayout(viewportW, viewportH, bottomAnchorY);
     this.syncSkyTier(layout.climbMeters ?? 0, viewport);
+    this.syncSpaceMidVisibility();
     this.applySkyLayout(viewport, layout.cameraY ?? 0);
     this.applySpaceMidLayout(viewport);
     if (this.spaceRocks.isReady) {
@@ -312,18 +321,13 @@ export class CandyAtmosphereManager {
     }
 
     this.skyAmbientScrollY -= SKY_TILE_SCROLL_PX_PER_SEC * params.dt;
-    if (this.activeSkyTier === 'high' && this.skyTileHigh) {
-      this.skyTileHigh.tilePosition.y = Math.round(this.skyAmbientScrollY * 0.2);
-    }
 
     this.syncSkyTier(params.climbMeters);
+    this.syncSpaceMidVisibility();
     if (this.activeSkyTier === 'low' && this.lastLayout) {
-      const viewport = buildLayerBackgroundLayout(
-        this.lastLayout.viewportW,
-        this.lastLayout.viewportH,
-        this.lastLayout.bottomAnchorY,
-      );
       this.syncBackSpaceFilmRoll(params.cameraY);
+    } else if (this.activeSkyTier === 'high') {
+      this.syncHighSkyFilmRoll(params.cameraY);
     }
     this.syncMiddleTier(params.climbMeters);
     this.space1MiddleBobPhaseSec += params.dt * SPACE_1_MIDDLE_BOB_SPEED_RAD_PER_SEC;
@@ -344,7 +348,7 @@ export class CandyAtmosphereManager {
     this.root.destroy({ children: true });
   }
 
-  /** back space below 5k m; back 5000 at and above. */
+  /** back space below 5k m; teset 5002 at and above. */
   private syncSkyTier(climbMeters: number, layout?: LayerBackgroundLayout): void {
     const skyBackSpace = this.skyBackSpaceTile;
     const skyHigh = this.skyTileHigh;
@@ -365,10 +369,11 @@ export class CandyAtmosphereManager {
     if (!wantHigh) {
       this.backSpaceFilmScrollPx = 0;
       this.lastBackSpaceCameraY = this.lastLayout?.cameraY ?? 0;
+    } else {
+      this.highSkyFilmScrollPx = 0;
+      this.lastHighSkyCameraY = this.lastLayout?.cameraY ?? 0;
     }
-    if (this.spaceMidSprite) {
-      this.spaceMidSprite.visible = !wantHigh;
-    }
+    this.syncSpaceMidVisibility();
 
     const viewport =
       layout ??
@@ -385,7 +390,15 @@ export class CandyAtmosphereManager {
     }
   }
 
-  /** space 1 below 5k m; 5000 factory [5k, 10k); castle 10000 at 10k+. */
+  /** Hide space mid at 5k+ m (no high-tier mid layer for now). */
+  private syncSpaceMidVisibility(): void {
+    const showHigh = this.activeSkyTier === 'high';
+    if (this.spaceMidSprite) {
+      this.spaceMidSprite.visible = !showHigh;
+    }
+  }
+
+  /** new main ship 1 below 5k m; teset 5001 [5k, 10k); castle 10000 at 10k+. */
   private resolveThreeTier(climbMeters: number): 'low' | 'high' | 'ultra' {
     if (climbMeters >= BACKGROUND_TIER_2_SWITCH_METERS) {
       return 'ultra';
@@ -499,7 +512,7 @@ export class CandyAtmosphereManager {
 
   private applySkyLayout(layout: LayerBackgroundLayout, cameraY: number): void {
     if (this.activeSkyTier === 'high') {
-      this.applyHighSkyLayout(layout);
+      this.applyHighSkyLayout(layout, cameraY);
       return;
     }
     this.applyBackSpaceSkyLayout(layout, cameraY);
@@ -546,7 +559,30 @@ export class CandyAtmosphereManager {
     }
   }
 
-  private applyHighSkyLayout(layout: LayerBackgroundLayout): void {
+  /**
+   * Vertical film-roll for teset 5002 — same parallax as {@link syncBackSpaceFilmRoll}.
+   */
+  private syncHighSkyFilmRoll(cameraY: number): void {
+    const sky = this.skyTileHigh;
+    if (!sky || this.activeSkyTier !== 'high') {
+      return;
+    }
+
+    const climbedPx = this.lastHighSkyCameraY - cameraY;
+    if (climbedPx > 0) {
+      this.highSkyFilmScrollPx += climbedPx * BACK_SPACE_SKY_CAMERA_PARALLAX;
+    }
+    this.lastHighSkyCameraY = cameraY;
+
+    const texH = Math.max(1, sky.texture.height);
+    const tileScreenH = texH * this.highSkyTileScale;
+    if (tileScreenH > 0) {
+      const scroll = Math.round(this.highSkyFilmScrollPx);
+      sky.tilePosition.y = ((scroll % tileScreenH) + tileScreenH) % tileScreenH;
+    }
+  }
+
+  private applyHighSkyLayout(layout: LayerBackgroundLayout, cameraY: number): void {
     const sky = this.skyTileHigh;
     if (!sky) {
       return;
@@ -555,11 +591,13 @@ export class CandyAtmosphereManager {
     const texW = Math.max(1, sky.texture.width);
     const texH = Math.max(1, sky.texture.height);
     const scale = coverScaleForTexture(layout.viewportW, layout.fillH, texW, texH);
+    this.highSkyTileScale = scale;
+
     sky.tileScale.set(scale, scale);
     sky.width = layout.viewportW;
     sky.height = layout.fillH;
     sky.position.set(0, 0);
-    sky.tilePosition.y = Math.round(this.skyAmbientScrollY * 0.2);
+    this.syncHighSkyFilmRoll(cameraY);
   }
 
   private applySpaceMidLayout(layout: LayerBackgroundLayout): void {
@@ -590,10 +628,10 @@ export class CandyAtmosphereManager {
     this.syncSpace1MiddleBob(layout);
   }
 
-  /** Subtle float on space 1 only — runs after layout/camera so Y is not reset the same frame. */
+  /** Bob on new main ship 1 only (below 5k). teset 5001 front stays locked at center. */
   private syncSpace1MiddleBob(layout?: LayerBackgroundLayout): void {
     const middle = this.middleSprite;
-    if (!middle || this.activeMiddleTier !== 'low') {
+    if (!middle) {
       return;
     }
 
@@ -610,8 +648,13 @@ export class CandyAtmosphereManager {
       return;
     }
 
-    const bobY = Math.sin(this.space1MiddleBobPhaseSec) * SPACE_1_MIDDLE_BOB_RANGE_PX;
-    middle.position.set(viewport.centerX, viewport.centerY + bobY);
+    if (this.activeMiddleTier === 'low') {
+      const bobY = Math.sin(this.space1MiddleBobPhaseSec) * SPACE_1_MIDDLE_BOB_RANGE_PX;
+      middle.position.set(viewport.centerX, viewport.centerY + bobY);
+      return;
+    }
+
+    middle.position.set(viewport.centerX, viewport.centerY);
   }
 
   private unload(): void {
@@ -655,6 +698,9 @@ export class CandyAtmosphereManager {
     this.backSpaceFilmScrollPx = 0;
     this.lastBackSpaceCameraY = 0;
     this.backSpaceTileScale = 1;
+    this.highSkyFilmScrollPx = 0;
+    this.lastHighSkyCameraY = 0;
+    this.highSkyTileScale = 1;
     this.skyTexSpaceMid = null;
     this.skyTexHigh = null;
     this.activeSkyTier = 'low';
